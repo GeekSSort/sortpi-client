@@ -17,7 +17,7 @@ export default function PosLayout({ children }: { children: React.ReactNode }) {
       <PosRail />
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white">
         <PosHead />
-        <main className="min-h-0 w-full flex-1 overflow-hidden py-[24px] pr-[16px] pl-[24px]">
+        <main className="min-h-0 w-full flex-1 overflow-y-auto py-[24px] pr-[16px] pl-[24px]">
           {children}
         </main>
       </div>
