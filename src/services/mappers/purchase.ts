@@ -25,6 +25,7 @@ function paymentStatus(total: number, due: number): PurchaseRecord["paymentStatu
 export function toPurchaseRecord(row: any): PurchaseRecord {
   const total = toAmount(row?.grandTotal ?? row?.grand_total);
   const due = toAmount(row?.dueAmount ?? row?.due_amount);
+  const paid = toAmount(row?.paidAmount ?? row?.paid_amount);
   return {
     id: String(row?.id ?? ""),
     purchaseId: String(row?.referenceNo ?? row?.reference_no ?? "—"),
@@ -37,7 +38,13 @@ export function toPurchaseRecord(row: any): PurchaseRecord {
     itemsCount: Array.isArray(row?.items) ? row.items.length : 0,
     totalAmount: total,
     totalAmountFormatted: formatMoney(total),
+    paidAmount: paid,
+    paidAmountFormatted: formatMoney(paid),
+    dueAmount: due,
+    dueAmountFormatted: formatMoney(due),
     paymentStatus: paymentStatus(total, due),
     status: STATUS[String(row?.status || "").toUpperCase()] ?? "Pending",
+    rawStatus: String(row?.status || "").toUpperCase(),
+    supplierId: String(row?.supplier ?? ""),
   };
 }
