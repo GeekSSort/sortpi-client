@@ -84,6 +84,12 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
   // So the search box IS the scan target, and Enter is the whole protocol —
   // there is no device to open and no permission to ask for.
   const searchRef = useRef<HTMLInputElement>(null);
+  const queryRef = useRef("");
+  const scannerBufferRef = useRef("");
+  const scannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputLastKeyAtRef = useRef(0);
+  const inputRapidCountRef = useRef(0);
+  const submitScanRef = useRef<(scannedCode?: string) => Promise<void>>(async () => {});
   const [scanning, setScanning] = useState(false);
   const [scanNote, setScanNote] = useState<string | null>(null);
 
@@ -155,8 +161,8 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
    * and answers on an exact barcode. Only if that finds nothing does the box
    * fall back to being a search box.
    */
-  const submitScan = async () => {
-    const code = query.trim();
+  const submitScan = async (scannedCode?: string) => {
+    const code = (scannedCode ?? queryRef.current).trim();
     if (!code || scanning) return;
 
     const onTheWall = shown.find(
@@ -164,8 +170,10 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
     );
     if (onTheWall) {
       onSelectProduct?.(onTheWall);
+      queryRef.current = "";
       setQuery("");
       setScanNote(`Added ${onTheWall.name}`);
+      searchRef.current?.focus();
       return;
     }
 
@@ -175,6 +183,7 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
       const found = await PosService.lookupBarcode(code);
       if (found) {
         onSelectProduct?.(found);
+        queryRef.current = "";
         setQuery("");
         setScanNote(`Added ${found.name}`);
       } else {
@@ -193,6 +202,54 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
       searchRef.current?.focus();
     }
   };
+  useEffect(() => {
+    submitScanRef.current = submitScan;
+  });
+
+  // USB scanners behave like keyboards, but some models are configured without
+  // an Enter suffix. Capture only rapid keystrokes outside text fields and
+  // submit the barcode after the scanner pauses.
+  useEffect(() => {
+    const onScannerKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+
+      if (event.key === "Enter") {
+        const code = scannerBufferRef.current;
+        scannerBufferRef.current = "";
+        if (scannerTimerRef.current) clearTimeout(scannerTimerRef.current);
+        if (code.length >= 3) {
+          event.preventDefault();
+          void submitScanRef.current(code);
+        }
+        return;
+      }
+
+      if (event.key.length !== 1 || !/[0-9A-Za-z]/.test(event.key)) return;
+      scannerBufferRef.current += event.key;
+
+      if (scannerTimerRef.current) clearTimeout(scannerTimerRef.current);
+      if (scannerBufferRef.current.length >= 3) {
+        scannerTimerRef.current = setTimeout(() => {
+          const code = scannerBufferRef.current;
+          scannerBufferRef.current = "";
+          void submitScanRef.current(code);
+        }, 120);
+      }
+    };
+
+    window.addEventListener("keydown", onScannerKey, true);
+    return () => {
+      window.removeEventListener("keydown", onScannerKey, true);
+      if (scannerTimerRef.current) clearTimeout(scannerTimerRef.current);
+    };
+  }, []);
 
   return (
     <div className="relative flex h-full w-full flex-col">
@@ -206,13 +263,30 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
             autoFocus
             value={query}
             onChange={(e) => {
+              queryRef.current = e.target.value;
               setQuery(e.target.value);
               setScanNote(null);
             }}
             onKeyDown={(e) => {
-              if (e.key !== "Enter") return;
-              e.preventDefault();
-              void submitScan();
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void submitScanRef.current();
+                return;
+              }
+
+              if (e.key.length !== 1) return;
+              const now = performance.now();
+              inputRapidCountRef.current =
+                now - inputLastKeyAtRef.current < 60 ? inputRapidCountRef.current + 1 : 1;
+              inputLastKeyAtRef.current = now;
+
+              if (inputRapidCountRef.current >= 3) {
+                if (scannerTimerRef.current) clearTimeout(scannerTimerRef.current);
+                scannerTimerRef.current = setTimeout(() => {
+                  inputRapidCountRef.current = 0;
+                  void submitScanRef.current();
+                }, 140);
+              }
             }}
             disabled={scanning}
             placeholder="Scan a barcode, or search by name or SKU..."
@@ -225,6 +299,7 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
           // The scanner types wherever the cursor is, so "scan" means "put the
           // cursor back in the box". Pressed with something typed, it rings
           // that code up — the same thing Enter does.
+          onMouseDown={(event) => event.preventDefault()}
           onClick={() => (query.trim() ? void submitScan() : searchRef.current?.focus())}
           disabled={scanning}
           aria-label={query.trim() ? "Look up this barcode" : "Scan barcode"}
@@ -312,7 +387,12 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
             onFocus={(e) => peek(p, e.currentTarget)}
             onMouseLeave={() => setPeeked(null)}
             onBlur={() => setPeeked(null)}
-            onClick={() => onSelectProduct?.(p)}
+            onClick={() => {
+              onSelectProduct?.(p);
+              // USB scanners such as the Yumite YT-100 send keystrokes to the
+              // focused element. Keep the scan field ready after a sale.
+              searchRef.current?.focus();
+            }}
             className={`flex items-center overflow-clip rounded-[10px] border-[0.6px] border-solid border-[#eaeaea] bg-white p-[10px] text-left transition-colors ${
               soldOut ? "cursor-not-allowed opacity-55" : "cursor-pointer hover:border-[#f5b800]"
             }`}
