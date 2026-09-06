@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { ApiError } from "@/services/apiClient";
 import { PlatformService, SubscriptionRow, toDate, toLabel } from "@/services/platformService";
+import { invalidate, queryKey, useQuery } from "@/lib/query/useQuery";
 import ConsoleList, { Column, Stat } from "@/components/platform/ConsoleList";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import { formatMoney } from "@/lib/format";
@@ -30,18 +31,14 @@ const FIELD =
   "h-[44px] w-full rounded-[10px] bg-white px-[12px] text-[14px] text-[#1e1e1e] shadow-[inset_0_0_0_1px_#eaeaea] outline-none focus:shadow-[inset_0_0_0_1.5px_#f5b800]";
 const FILTERS = ["All subscriptions", "Active", "On trial", "Past due", "Cancelled"] as const;
 const STATUSES = ["ACTIVE", "TRIALING", "PAST_DUE", "SUSPENDED", "CANCELLED"] as const;
-
+/** The same tracks as `columns` below, as a literal so Tailwind emits the class. */
+const GRID = "grid-cols-[1.4fr_1fr_1fr_1fr_1fr_150px_83px]";
 
 
 export default function PlatformSubscriptionsPage() {
-  const [rows, setRows] = useState<SubscriptionRow[]>([]);
-  const [names, setNames] = useState<Map<string, string>>(new Map());
   const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("All subscriptions");
-  const [reloadKey, setReloadKey] = useState(0);
   const [saving, setSaving] = useState(false);
   const [planOf, setPlanOf] = useState<SubscriptionRow | null>(null);
   const [nextPlan, setNextPlan] = useState("");
@@ -50,36 +47,35 @@ export default function PlatformSubscriptionsPage() {
   const [billOf, setBillOf] = useState<SubscriptionRow | null>(null);
   const [dueDays, setDueDays] = useState("14");
   const [cancelOf, setCancelOf] = useState<SubscriptionRow | null>(null);
-  const [plans, setPlans] = useState<{ code: string; name: string }[]>([]);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [subs, tenantNames, planList] = await Promise.all([
-          PlatformService.listSubscriptions(),
-          PlatformService.tenantNames(),
-          PlatformService.listPlans(),
-        ]);
-        if (cancelled) return;
-        setRows(subs.data);
-        setNames(tenantNames);
-        setPlans(planList.data.map((p) => ({ code: p.code, name: p.name })));
-        setError(null);
-      } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof ApiError ? e.message : "Could not load subscriptions.");
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [reloadKey]);
+  const subs = useQuery("platform-subscriptions", async () => {
+    const res = await PlatformService.listSubscriptions();
+    return res.data;
+  });
+  // Company names sit under the companies base so a change over there reaches
+  // this column, and the plan list under the plans base so a plan taken off
+  // sale drops out of the "change plan" picker without a reload.
+  const names = useQuery(queryKey("platform-companies", { view: "names" }), () =>
+    PlatformService.tenantNames()
+  );
+  const planList = useQuery("platform-plans", async () => {
+    const res = await PlatformService.listPlans();
+    return res.data;
+  });
 
-  const act = async (fn: () => Promise<void>, done: string) => {
+  const rows = subs.data ?? [];
+  const plans = (planList.data ?? []).map((p) => ({ code: p.code, name: p.name }));
+  const loading = subs.loading || names.loading;
+  const fetching = subs.fetching || names.fetching || planList.fetching;
+  const hasData = subs.data !== undefined && names.data !== undefined;
+  const error = subs.error ?? names.error ?? planList.error;
+  const refetch = () => {
+    void subs.refetch();
+    void names.refetch();
+    void planList.refetch();
+  };
+
+  const act = async (fn: () => Promise<void>, done: string, touched: string[]) => {
     setSaving(true);
     try {
       await fn();
@@ -88,7 +84,7 @@ export default function PlatformSubscriptionsPage() {
       setStatusOf(null);
       setBillOf(null);
       setCancelOf(null);
-      setReloadKey((k) => k + 1);
+      invalidate(...touched);
     } catch (e) {
       setNote(PlatformService.describeError(e));
     } finally {
@@ -96,7 +92,8 @@ export default function PlatformSubscriptionsPage() {
     }
   };
 
-  const nameOf = (r: SubscriptionRow) => names.get(r.organizationId) || r.organizationId.slice(0, 8);
+  const nameOf = (r: SubscriptionRow) =>
+    names.data?.get(r.organizationId) || r.organizationId.slice(0, 8);
   const needle = search.trim().toLowerCase();
   const byFilter = rows.filter((r) => {
     if (filter === "Active") return r.status === "ACTIVE";
@@ -203,7 +200,17 @@ export default function PlatformSubscriptionsPage() {
         stats={stats}
         columns={columns}
         loading={loading}
-        error={error}
+        fetching={fetching}
+        hasData={hasData}
+        skeletonGrid={GRID}
+        error={
+          error
+            ? error instanceof ApiError
+              ? error.message
+              : "Could not load subscriptions."
+            : null
+        }
+        onRetry={refetch}
         note={note}
         filters={FILTERS}
         onFilter={setFilter}
@@ -232,7 +239,15 @@ export default function PlatformSubscriptionsPage() {
                 planOf &&
                 act(
                   () => PlatformService.changePlan(planOf.id, nextPlan),
-                  `${nameOf(planOf)} moved to a new plan.`
+                  `${nameOf(planOf)} moved to a new plan.`,
+                  // The company's Plan column and every per-plan figure move
+                  // with it, so all four collections are stale.
+                  [
+                    "platform-subscriptions",
+                    "platform-plans",
+                    "platform-companies",
+                    "platform-overview",
+                  ]
                 )
               }
             >
@@ -279,7 +294,9 @@ export default function PlatformSubscriptionsPage() {
                 statusOf &&
                 act(
                   () => PlatformService.setSubscriptionStatus(statusOf.id, nextStatus),
-                  `${nameOf(statusOf)} is now ${toLabel(nextStatus)}.`
+                  `${nameOf(statusOf)} is now ${toLabel(nextStatus)}.`,
+                  // Companies shows the same status in its own Status column.
+                  ["platform-subscriptions", "platform-companies", "platform-overview"]
                 )
               }
             >
@@ -325,7 +342,9 @@ export default function PlatformSubscriptionsPage() {
                 billOf &&
                 act(
                   () => PlatformService.issueInvoice(billOf.id, Number(dueDays) || 14),
-                  `Invoice raised for ${nameOf(billOf)}.`
+                  `Invoice raised for ${nameOf(billOf)}.`,
+                  // The new bill must be on the Invoices screen straight away.
+                  ["platform-invoices", "platform-subscriptions", "platform-overview"]
                 )
               }
             >
@@ -371,7 +390,9 @@ export default function PlatformSubscriptionsPage() {
                 cancelOf &&
                 act(
                   () => PlatformService.cancelSubscription(cancelOf.id, true),
-                  `${nameOf(cancelOf)} will end at the period end.`
+                  `${nameOf(cancelOf)} will end at the period end.`,
+                  // A cancellation drops the company out of the paying counts.
+                  ["platform-subscriptions", "platform-companies", "platform-overview"]
                 )
               }
             >
