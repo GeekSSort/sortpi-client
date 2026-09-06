@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import TableSkeleton from "@/components/shared/TableSkeleton";
+import { ErrorState } from "@/components/shared/QueryBoundary";
 import TablePagination from "@/components/shared/TablePagination";
 
 /**
@@ -63,6 +65,15 @@ export interface OverviewPanelProps<T> {
   renderRow: (row: T) => React.ReactNode;
   minWidth?: number;
   emptyText?: string;
+  /**
+   * The panel owns the waiting state because it owns the table's geometry.
+   * Without these three the modals each swallowed their own failure with
+   * `.catch(() => {})` and showed the empty-search sentence instead, so "the
+   * request failed" and "nothing matched" were the same picture.
+   */
+  loading?: boolean;
+  error?: unknown;
+  onRetry?: () => void;
 }
 
 /**
@@ -84,6 +95,9 @@ function PanelBody<T extends { id: string }>({
   renderRow,
   minWidth = 780,
   emptyText = "Nothing matches that search.",
+  loading = false,
+  error,
+  onRetry,
 }: OverviewPanelProps<T>) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState(filters?.[0] ?? "All");
@@ -255,7 +269,11 @@ function PanelBody<T extends { id: string }>({
               {head}
             </div>
             <div className="sp-stagger mt-[6px]">
-              {paged.length === 0 && (
+              {loading && rows.length === 0 && <TableSkeleton rows={pageSize} columns={grid} />}
+              {!loading && Boolean(error) && rows.length === 0 && (
+                <ErrorState message="Could not load this list." onRetry={onRetry} compact />
+              )}
+              {!loading && !error && paged.length === 0 && (
                 <p className="py-[40px] text-center text-[13px] text-[#525252]">{emptyText}</p>
               )}
               {paged.map((r, i) => (
