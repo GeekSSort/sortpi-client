@@ -2,10 +2,14 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { NotificationService } from "@/services";
-import { NotificationItem } from "@/types/notifications";
 import { setPosView, usePosView } from "./posView";
+import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { ListSkeleton } from "@/components/shared/Skeleton";
+import BranchSwitcher from "@/components/shared/BranchSwitcher";
+import { QueryBoundary } from "@/components/shared/QueryBoundary";
 import { useSession } from "@/services/useSession";
 
 /**
@@ -65,6 +69,22 @@ function titleForPath(pathname: string): string {
   return "POS";
 }
 
+function ExitIcon() {
+  const s = {
+    stroke: "currentColor",
+    strokeWidth: 1.6,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+  };
+  return (
+    <svg className="block size-[18px] shrink-0" viewBox="0 0 18 18" fill="none" aria-hidden>
+      <path d="M11.25 5.6V4.5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-1.1" {...s} />
+      <path d="M7.5 9h7.25" {...s} />
+      <path d="M12.6 6.9 14.75 9l-2.15 2.1" {...s} />
+    </svg>
+  );
+}
+
 export default function PosHead() {
   const pathname = usePathname();
   const { user: session } = useSession();
@@ -73,19 +93,47 @@ export default function PosHead() {
   // opening it lists the notifications and marks them read.
   const [open, setOpen] = useState(false);
   const view = usePosView();
-  const [items, setItems] = useState<NotificationItem[]>([]);
-  const [unread, setUnread] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
 
+  // Through the cache so the badge follows the same count the dashboard's
+  // header shows, and so marking a batch read here clears it there too.
+  const { data: unreadCount } = useQuery(
+    queryKey("notifications", { scope: "unread-count" }),
+    () => NotificationService.unreadCount(),
+    { staleMs: 60_000 }
+  );
+  const unread = unreadCount ?? 0;
+
+  // Only asked for once the panel is open — a till loads this header on every
+  // screen and the list is worth nothing until somebody looks at it.
+  const {
+    data: items,
+    loading: itemsLoading,
+    error: itemsError,
+    refetch: refetchItems,
+  } = useQuery(
+    queryKey("notifications", { scope: "list" }),
+    () => NotificationService.list(),
+    { enabled: open, staleMs: 30_000 }
+  );
+
+  // Opening the panel is what marks them read. Kept in an effect rather than
+  // in the click handler because the rows arrive from the cache, which may
+  // hand them over before the click has finished.
+  const markedRef = useRef(false);
   useEffect(() => {
-    let alive = true;
-    NotificationService.unreadCount()
-      .then((n) => alive && setUnread(n))
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, []);
+    if (!open || !items) return;
+    const unreadIds = items.filter((n) => !n.isRead).map((n) => n.id);
+    if (!unreadIds.length || markedRef.current) return;
+    markedRef.current = true;
+    NotificationService.markRead(unreadIds)
+      .then(() => invalidate("notifications"))
+      // A failed mark-read must not leave a badge that lies in the other
+      // direction: the count stays as it was and the next open tries again.
+      .catch(() => {
+        markedRef.current = false;
+      });
+  }, [open, items]);
 
   useEffect(() => {
     if (!open) return;
@@ -101,17 +149,13 @@ export default function PosHead() {
     };
   }, [open]);
 
-  const toggleBell = async () => {
-    if (open) return setOpen(false);
-    setOpen(true);
-    const list = await NotificationService.list();
-    setItems(list);
-    const unreadIds = list.filter((n) => !n.isRead).map((n) => n.id);
-    if (unreadIds.length) {
-      await NotificationService.markRead(unreadIds);
-      setUnread(0);
-      setItems((prev) => prev.map((n) => ({ ...n, isRead: true })));
+  const toggleBell = () => {
+    if (open) {
+      setOpen(false);
+      return;
     }
+    markedRef.current = false;
+    setOpen(true);
   };
 
   return (
@@ -150,6 +194,30 @@ export default function PosHead() {
           </div>
         )}
 
+        {/* Same control as the back office's header, same component. The till
+            is branch-scoped like every other screen, and a supervisor who
+            opens it in the wrong branch could previously only fix that by
+            leaving. It renders nothing for anyone without `branch.view`, so a
+            cashier's till bar is unchanged. */}
+        <div className="hidden md:block">
+          <BranchSwitcher onChange={() => window.location.reload()} />
+        </div>
+
+        {/* The way out.
+            The till owns the whole window — it has its own rail and its own
+            head, and nothing in either led back to the back office. A cashier
+            who opened the POS could only return by editing the address bar,
+            which on a touch terminal is no way out at all. */}
+        <Link
+          href="/dashboard"
+          aria-label="Back to dashboard"
+          title="Back to dashboard"
+          className="flex h-[40px] shrink-0 cursor-pointer items-center gap-[8px] rounded-[22px] border-[0.5px] border-solid border-[#eaeaea] bg-white px-[14px] text-[14px] leading-[1.5] font-medium tracking-[-0.28px] whitespace-nowrap text-[#525252] shadow-[0px_1px_2px_0px_rgba(82,88,102,0.06)] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e]"
+        >
+          <ExitIcon />
+          <span className="hidden sm:inline">Dashboard</span>
+        </Link>
+
         <button
           type="button"
           onClick={toggleBell}
@@ -180,13 +248,25 @@ export default function PosHead() {
             <p className="border-b border-[#f0f0f0] px-[16px] py-[12px] text-[13px] font-semibold text-[#1e1e1e]">
               Notifications
             </p>
-            {items.length === 0 ? (
+            <QueryBoundary
+              loading={itemsLoading}
+              error={itemsError}
+              hasData={items !== undefined}
+              skeleton={
+                <div className="px-[16px]">
+                  <ListSkeleton rows={4} />
+                </div>
+              }
+              errorMessage="Could not load notifications."
+              onRetry={refetchItems}
+            >
+            {(items ?? []).length === 0 ? (
               <p className="px-[16px] py-[20px] text-center text-[13px] text-[#737373]">
                 Nothing yet.
               </p>
             ) : (
               <ul className="max-h-[320px] overflow-y-auto">
-                {items.map((n) => (
+                {(items ?? []).map((n) => (
                   <li key={n.id} className="border-b border-[#f5f5f5] px-[16px] py-[10px] last:border-b-0">
                     <p className="text-[13px] font-medium text-[#1e1e1e]">{n.title}</p>
                     <p className="text-[12px] leading-[1.5] text-[#525252]">{n.message}</p>
@@ -194,6 +274,7 @@ export default function PosHead() {
                 ))}
               </ul>
             )}
+            </QueryBoundary>
           </div>
         )}
       </div>
