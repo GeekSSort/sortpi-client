@@ -74,7 +74,7 @@ export default function Receipt({
 }: ReceiptProps) {
   return (
     <div
-      className="mx-auto w-full max-w-[320px] bg-white text-[11px] leading-[1.7] text-[#1e1e1e]"
+      className="mx-auto w-full max-w-[300px] bg-white text-[11px] leading-[1.6] text-[#1e1e1e] box-border"
       style={{ fontFamily: MONO, fontVariantNumeric: "tabular-nums" }}
     >
       {/* Masthead */}
@@ -113,24 +113,24 @@ export default function Receipt({
 
       {/* Items. Grid rather than a table so the four columns keep their widths
           whatever the description does. */}
-      <div className="grid grid-cols-[1fr_58px_28px_62px] gap-x-[4px]">
-        <span className="font-bold">SL {itemsHeading}</span>
-        <span className="text-right font-bold">Price</span>
-        <span className="text-right font-bold">Qty</span>
-        <span className="text-right font-bold">Total</span>
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-x-[8px] items-center">
+        <span className="min-w-0 font-bold">SL {itemsHeading}</span>
+        <span className="text-right font-bold whitespace-nowrap">Price</span>
+        <span className="text-center font-bold whitespace-nowrap px-1">Qty</span>
+        <span className="text-right font-bold whitespace-nowrap">Total</span>
       </div>
 
       <Rule />
 
-      <div className="grid grid-cols-[1fr_58px_28px_62px] gap-x-[4px] gap-y-[2px]">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-x-[8px] gap-y-[3px] items-start">
         {items.map((it, i) => (
           <React.Fragment key={`${it.name}-${i}`}>
-            <span className="break-words">
+            <span className="min-w-0 break-words">
               {i + 1}. {it.name}
             </span>
-            <span className="text-right">{it.price}</span>
-            <span className="text-right">{it.qty}</span>
-            <span className="text-right">{it.total}</span>
+            <span className="text-right tabular-nums whitespace-nowrap">{it.price}</span>
+            <span className="text-center tabular-nums whitespace-nowrap px-1">{it.qty}</span>
+            <span className="text-right tabular-nums whitespace-nowrap font-medium">{it.total}</span>
           </React.Fragment>
         ))}
         {items.length === 0 && (
@@ -140,14 +140,14 @@ export default function Receipt({
 
       <Rule />
 
-      <div className="flex flex-col">
+      <div className="flex flex-col gap-[2px]">
         {totals.map((t, i) => (
           <React.Fragment key={`${t.label}-${i}`}>
             {t.ruleAbove && <Rule />}
-            <p className={`flex justify-between gap-[12px] ${t.strong ? "font-bold" : ""}`}>
-              <span>{t.label}</span>
-              <span>{t.value}</span>
-            </p>
+            <div className={`flex items-center justify-between gap-[8px] ${t.strong ? "font-bold text-[12px]" : ""}`}>
+              <span className="min-w-0 break-words">{t.label}</span>
+              <span className="shrink-0 text-right tabular-nums whitespace-nowrap">{t.value}</span>
+            </div>
           </React.Fragment>
         ))}
       </div>
