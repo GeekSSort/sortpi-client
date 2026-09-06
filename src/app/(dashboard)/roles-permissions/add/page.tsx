@@ -9,6 +9,9 @@ import { tokenStore } from "@/services/apiClient";
 import { EmployeeRecord } from "@/types/hrm";
 import { Branch } from "@/types/branch";
 import { GOLD_GRADIENT } from "@/components/shared/Modal";
+import { useQuery, queryKey, useMutation } from "@/lib/query/useQuery";
+import { FormSkeleton } from "@/components/shared/Skeleton";
+import { QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 
 /**
  * Add User — Figma 76:8029.
@@ -142,36 +145,50 @@ export default function AddUserPage() {
   const [role, setRole] = useState("");
   const [department, setDepartment] = useState("");
   const [branchId, setBranchId] = useState("");
-  const [employees, setEmployees] = useState<EmployeeRecord[]>([]);
-  const [branches, setBranches] = useState<Branch[]>([]);
-  const [roles, setRoles] = useState<RoleOption[]>([]);
-  const [departments, setDepartments] = useState<string[]>([]);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const [people, roleList, lookups, branchList] = await Promise.all([
-        HrmService.getEmployees({ limit: 500 }).catch(() => ({ data: [] as EmployeeRecord[] })),
-        RoleService.getRoles().catch(() => [] as RoleOption[]),
-        HrmService.getLookups().catch(() => ({ departments: [], designations: [] })),
-        BranchService.list().catch(() => [] as Branch[]),
-      ]);
-      if (cancelled) return;
-      setEmployees(people.data);
-      setRoles(roleList);
-      setDepartments(lookups.departments.map((d) => d.name));
-      setBranches(branchList);
-      // Default to the branch this administrator is standing in — the branch
-      // whose list they were looking at when they pressed Add New.
-      const active = tokenStore.branch();
-      if (active && branchList.some((b) => b.id === active)) setBranchId(active);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Four lists, four cache entries under the prefixes the screens that own
+  // them invalidate — so adding an employee on /hrm refreshes this picker
+  // rather than leaving it a page behind.
+  const employeeQuery = useQuery(queryKey("employees", { limit: 500 }), () =>
+    HrmService.getEmployees({ limit: 500 })
+  );
+  const roleQuery = useQuery(queryKey("roles", { part: "options" }), () =>
+    RoleService.getRoles()
+  );
+  const lookupQuery = useQuery(queryKey("employees", { part: "lookups" }), () =>
+    HrmService.getLookups()
+  );
+  const branchQuery = useQuery(queryKey("branches"), () => BranchService.list());
+
+  const employees: EmployeeRecord[] = employeeQuery.data?.data ?? [];
+  const roles: RoleOption[] = roleQuery.data ?? [];
+  const departments: string[] = (lookupQuery.data?.departments ?? []).map((d) => d.name);
+  const branches: Branch[] = branchQuery.data ?? [];
+
+  // Default to the branch this administrator is standing in — the branch whose
+  // list they were looking at when they pressed Add New. Derived rather than
+  // written into state by an effect, so the select is never briefly wrong; the
+  // moment a branch is chosen by hand, `branchId` wins.
+  const active = tokenStore.branch();
+  const selectedBranch =
+    branchId || (active && branches.some((b) => b.id === active) ? active : "");
+
+  const { mutate: createUser, pending: saving } = useMutation(
+    (payload: Parameters<typeof RoleService.createUser>[0]) => RoleService.createUser(payload),
+    // The new account belongs in the user directory straight away.
+    { invalidates: ["roles"] }
+  );
+
+  const optionsLoading =
+    employeeQuery.loading || roleQuery.loading || lookupQuery.loading || branchQuery.loading;
+  const optionsError =
+    employeeQuery.error ?? roleQuery.error ?? lookupQuery.error ?? branchQuery.error;
+  const optionsReady =
+    employeeQuery.data !== undefined &&
+    roleQuery.data !== undefined &&
+    lookupQuery.data !== undefined &&
+    branchQuery.data !== undefined;
 
   /** Picking somebody from HRM fills in what HRM already knows about them. */
   const fillFromEmployee = (name: string) => {
@@ -183,25 +200,22 @@ export default function AddUserPage() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setSaving(true);
     try {
-      await RoleService.createUser({
+      await createUser({
         name: employee,
         phone,
         mail: email,
         role,
-        branchId: branchId || undefined,
+        branchId: selectedBranch || undefined,
       });
       router.push("/roles-permissions");
     } catch (err) {
       setError(RoleService.describeError(err));
-    } finally {
-      setSaving(false);
     }
   };
 
   return (
-    <form onSubmit={submit} className="flex w-full flex-col items-center select-none">
+    <form onSubmit={submit} className="flex w-full flex-col items-center">
       <div className="flex w-full max-w-[565px] flex-col gap-[24px]">
         {/* Card — 76:8564 */}
         <div className="flex w-full flex-col items-center gap-[9px] overflow-hidden rounded-[10px] border border-solid border-[#eaeaea] bg-white pb-[16px]">
@@ -211,7 +225,28 @@ export default function AddUserPage() {
             </p>
           </div>
 
-          <div className="flex w-full flex-col gap-[12px] px-[16px]">
+          <div className="relative flex w-full flex-col gap-[12px] px-[16px]">
+            <RefreshBar
+              active={
+                employeeQuery.fetching ||
+                roleQuery.fetching ||
+                lookupQuery.fetching ||
+                branchQuery.fetching
+              }
+            />
+            <QueryBoundary
+              loading={optionsLoading}
+              error={optionsError}
+              hasData={optionsReady}
+              skeleton={<FormSkeleton fields={6} columns={1} />}
+              errorMessage="The employee, role and branch lists could not be loaded."
+              onRetry={() => {
+                void employeeQuery.refetch();
+                void roleQuery.refetch();
+                void lookupQuery.refetch();
+                void branchQuery.refetch();
+              }}
+            >
             {error && (
               <p role="alert" className="rounded-[8px] bg-[#ffdfe2] px-[12px] py-[8px] text-[13px] text-[#e63946]">
                 {error}
@@ -271,7 +306,7 @@ export default function AddUserPage() {
               </label>
               <select
                 id="user-branch"
-                value={branchId}
+                value={selectedBranch}
                 onChange={(e) => setBranchId(e.target.value)}
                 className={`${INPUT} cursor-pointer`}
               >
@@ -295,6 +330,7 @@ export default function AddUserPage() {
               placeholder="Select department"
               options={departments}
             />
+            </QueryBoundary>
           </div>
         </div>
 
