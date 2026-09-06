@@ -13,6 +13,7 @@ export default function Modal({
   children,
   footer,
   width = 520,
+  fillBody = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -20,6 +21,18 @@ export default function Modal({
   children: React.ReactNode;
   footer?: React.ReactNode;
   width?: number;
+  /**
+   * Hand the body's height to the content instead of scrolling it here.
+   *
+   * The default is right for a dialog that is a run of fields: it grows to fit
+   * and scrolls once it hits 90vh. It is wrong for one with a LIST in the
+   * middle — the invoice, whose totals belong under the items and kept being
+   * pushed below the fold by a long sale. With this set the body no longer
+   * scrolls, and the child is expected to be a flex column that gives its list
+   * `min-h-0 flex-1 overflow-y-auto`, so the list absorbs the leftover height
+   * and everything after it stays on screen.
+   */
+  fillBody?: boolean;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -56,7 +69,13 @@ export default function Modal({
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-[20px] py-[16px]">{children}</div>
+        <div
+          className={`min-h-0 flex-1 px-[20px] py-[16px] ${
+            fillBody ? "flex flex-col overflow-hidden" : "overflow-y-auto"
+          }`}
+        >
+          {children}
+        </div>
 
         {footer && (
           <div className="flex shrink-0 items-center justify-end gap-[12px] border-t border-solid border-[#eaeaea] px-[20px] py-[16px]">
