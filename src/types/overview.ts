@@ -5,7 +5,11 @@ export interface SalesOverviewItem {
   customer: string;
   totalAmount: number;
   totalAmountFormatted: string;
-  paymentMethod: "Cash" | "bKash" | "Card" | "Bank Transfer";
+  /** The four the design names, and whatever else the shop takes: the API's
+      `payment_provider` is free text, which is why SaleRecord is widened the
+      same way. Closed, this type could not be assigned the record it is
+      mapped from and a production build failed on it. */
+  paymentMethod: "Cash" | "bKash" | "Card" | "Bank Transfer" | string;
   status: "Paid" | "Unpaid";
 }
 
