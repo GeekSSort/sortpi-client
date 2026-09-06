@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo } from "react";
 import { OverviewService } from "@/services";
+import { useQuery, queryKey } from "@/lib/query/useQuery";
 import { SalesOverviewItem } from "@/types/overview";
 import StatusPill from "@/components/shared/StatusPill";
 import OverviewPanel, { PANEL_CELL, PANEL_HEAD, PANEL_TEXT } from "./OverviewPanel";
@@ -13,23 +14,27 @@ const FILTERS = ["All payments", "Paid", "Unpaid"] as const;
 const taka = (n: number) => `৳ ${n.toLocaleString("en-IN")}`;
 
 export default function SalesOverviewModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
-  const [sales, setSales] = useState<SalesOverviewItem[]>([]);
+  // Only asks while the panel is open, and the answer is shared with every
+  // other screen reading this key — reopening the panel repaints from cache
+  // instead of blanking the table for the length of a round trip.
+  const {
+    data: sales,
+    loading,
+    error,
+    refetch,
+  } = useQuery(queryKey("overview-sales"), () => OverviewService.getSalesOverview(), { enabled: isOpen });
 
-  useEffect(() => {
-    OverviewService.getSalesOverview()
-      .then(setSales)
-      .catch(() => {});
-  }, []);
+  const rows = useMemo(() => sales ?? [], [sales]);
 
   const stats = useMemo(() => {
-    const total = sales.reduce((s, x) => s + x.totalAmount, 0);
-    const unpaid = sales.filter((x) => x.status === "Unpaid");
+    const total = rows.reduce((s, x) => s + x.totalAmount, 0);
+    const unpaid = rows.filter((x) => x.status === "Unpaid");
     return [
-      { label: "Invoices", value: String(sales.length) },
+      { label: "Invoices", value: String(rows.length) },
       { label: "Collected", value: taka(total - unpaid.reduce((s, x) => s + x.totalAmount, 0)) },
       { label: "Unpaid", value: `${unpaid.length} · ${taka(unpaid.reduce((s, x) => s + x.totalAmount, 0))}` },
     ];
-  }, [sales]);
+  }, [rows]);
 
   return (
     <OverviewPanel<SalesOverviewItem>
@@ -38,12 +43,15 @@ export default function SalesOverviewModal({ isOpen, onClose }: { isOpen: boolea
       title="Sales Overview"
       subtitle="Every invoice behind today’s sales figure."
       searchPlaceholder="Search by customer, invoice or method..."
-      rows={sales}
+      rows={rows}
       searchable={(r) => `${r.customer} ${r.invoiceNo} ${r.paymentMethod}`}
       filters={FILTERS}
       matchesFilter={(r, f) => r.status === f}
       stats={stats}
       grid={GRID}
+      loading={loading}
+      error={error}
+      onRetry={refetch}
       emptyText="No invoices match that search."
       head={
         <>
