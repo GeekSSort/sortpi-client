@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React from "react";
 
 import DateField from "@/components/shared/DateField";
 
@@ -17,17 +17,22 @@ import DateField from "@/components/shared/DateField";
 
 export interface HeadlineProps {
   name: string;
+  /**
+   * The picked day, owned by the PAGE.
+   *
+   * It used to live in this component, and picking a date started a fetch for
+   * that day — which left the page with no data for the new key, so it swapped
+   * the headline for a skeleton, unmounted this component and threw the state
+   * away. The figures changed and the pill snapped back to "All time",
+   * claiming to show everything while showing one day.
+   */
+  date: Date | null;
   /** Fires when a day is picked; null clears the filter. */
   onDateChange?: (date: Date | null) => void;
 }
 
-export default function Headline({ name, onDateChange }: HeadlineProps) {
-  // The label is suppressHydrationWarning'd below, which covers the case where
-  // the server and the browser sit in different time zones.
-  const [selected, setSelected] = useState<Date | null>(null);
-
+export default function Headline({ name, date, onDateChange }: HeadlineProps) {
   const pick = (d: Date | null) => {
-    setSelected(d);
     onDateChange?.(d);
   };
 
@@ -48,7 +53,7 @@ export default function Headline({ name, onDateChange }: HeadlineProps) {
           server-side state that every page answers to, so one control on
           every screen beats a second copy on this one. */}
       <div className="flex w-full items-center gap-[12px] sm:w-auto">
-        <DateField value={selected} onChange={pick} variant="gold" />
+        <DateField value={date} onChange={pick} variant="gold" />
       </div>
     </div>
   );
