@@ -10,6 +10,8 @@ import TableSkeleton from "@/components/shared/TableSkeleton";
 import Avatar from "@/components/shared/Avatar";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
+import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/QueryBoundary";
 
 /**
  * Payroll — Figma 75:5509.
@@ -74,47 +76,47 @@ function AddIcon() {
 }
 
 export default function PayrollPage() {
-  const [rows, setRows] = useState<PayrollRecord[]>([]);
-  const [total, setTotal] = useState(0);
   const [query, setQuery] = useState("");
+  /** The debounce settles the term before it reaches the cache key, so typing
+      a name is one request rather than one per letter. */
+  const [term, setTerm] = useState("");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("Payroll");
   const [filterOpen, setFilterOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
-  const [loading, setLoading] = useState(true);
   const [note, setNote] = useState<string | null>(null);
   const [runOpen, setRunOpen] = useState(false);
   const [running, setRunning] = useState(false);
   const [period, setPeriod] = useState(() => PayrollService.monthBounds());
-  const [reloadKey, setReloadKey] = useState(0);
   const [editOf, setEditOf] = useState<PayrollRecord | null>(null);
   const [form, setForm] = useState({ basicSalary: "", allowances: "", deductions: "" });
   const [saving, setSaving] = useState(false);
   const filterRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await PayrollService.getPayroll({
-          search: query || undefined,
-          status: filter === "Payroll" ? undefined : filter,
-          page,
-          limit: pageSize,
-        });
-        if (cancelled) return;
-        setRows(res.data);
-        setTotal(res.total);
-      } catch (e) {
-        if (!cancelled) setNote(PayrollService.describeError(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [query, filter, page, pageSize, reloadKey]);
+    if (query === term) return;
+    const id = setTimeout(() => setTerm(query), 250);
+    return () => clearTimeout(id);
+  }, [query, term]);
+
+  const { data, loading, fetching, error, refetch } = useQuery(
+    queryKey("payroll", {
+      page,
+      limit: pageSize,
+      search: term,
+      status: filter === "Payroll" ? undefined : filter,
+    }),
+    () =>
+      PayrollService.getPayroll({
+        search: term || undefined,
+        status: filter === "Payroll" ? undefined : filter,
+        page,
+        limit: pageSize,
+      })
+  );
+
+  const rows = data?.data ?? [];
+  const total = data?.total ?? 0;
 
   useEffect(() => {
     if (!filterOpen) return;
@@ -151,7 +153,9 @@ export default function PayrollPage() {
       });
       setNote(`${editOf.employee.name}'s payroll updated.`);
       setEditOf(null);
-      setReloadKey((k) => k + 1);
+      // The payslip figures are what this table and the employee's record both
+      // report, so neither is allowed to keep the old numbers.
+      invalidate("payroll", "employees");
     } catch (e) {
       setNote(PayrollService.describeError(e));
     } finally {
@@ -166,7 +170,9 @@ export default function PayrollPage() {
       setNote(`Payroll run for ${period.start} to ${period.end}.`);
       setRunOpen(false);
       setPage(1);
-      setReloadKey((k) => k + 1);
+      // A run writes a payslip per employee and posts the wage bill, so the
+      // roster and the dashboard's expense figures move with it.
+      invalidate("payroll", "employees", "dashboard");
     } catch (e) {
       setNote(PayrollService.describeError(e));
     } finally {
@@ -175,7 +181,7 @@ export default function PayrollPage() {
   };
 
   return (
-    <div className="flex w-full flex-col gap-[14px] select-none">
+    <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 75:5511 */}
       <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
         <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
@@ -259,7 +265,8 @@ export default function PayrollPage() {
       </div>
 
       {/* Table card — 75:5543 */}
-      <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+        <RefreshBar active={fetching} />
         {note && (
           <p role="status" className="mx-[16px] mt-[16px] rounded-[8px] bg-[#fdf7e6] px-[12px] py-[8px] text-[13px] text-[#6d5b46]">
             {note}
@@ -280,23 +287,37 @@ export default function PayrollPage() {
                 <div className={`${CELL} h-[40px] justify-center border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Status</span></div>
                 <div className={`${CELL} h-[40px] justify-center border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Action</span></div>
 
-                {loading && (
-                  <div className="col-span-8 px-[12px] py-[28px] text-center text-[14px] text-[#525252]">
-                    Loading payroll...
+                <QueryBoundary
+                  loading={loading}
+                  error={error}
+                  hasData={data !== undefined}
+                  skeleton={
+                    <div className="col-span-8">
+                      <TableSkeleton columns={GRID} rows={pageSize} />
+                    </div>
+                  }
+                  errorMessage={PayrollService.describeError(error)}
+                  onRetry={refetch}
+                >
+                {rows.length === 0 && (
+                  <div className="col-span-8">
+                    <EmptyState
+                      message={
+                        term || filter !== "Payroll"
+                          ? "No payslips match this view."
+                          : "No payslips yet."
+                      }
+                      hint={
+                        term || filter !== "Payroll"
+                          ? undefined
+                          : "Use Add New to run payroll for this month."
+                      }
+                      compact
+                    />
                   </div>
                 )}
 
-                {loading && rows.length === 0 && (
-                  <TableSkeleton columns={GRID} rows={pageSize} />
-                )}
-                {!loading && rows.length === 0 && (
-                  <div className="col-span-8 px-[12px] py-[28px] text-center text-[14px] text-[#525252]">
-                    No payslips yet. Use Add New to run payroll for this month.
-                  </div>
-                )}
-
-                {!loading &&
-                  rows.map((r) => (
+                {rows.map((r) => (
                     <React.Fragment key={r.id}>
                       <div className={`${CELL} h-[54px] border-b border-solid border-[#eaeaea]`}>
                         <span className={BODY}>{r.index}</span>
@@ -330,6 +351,7 @@ export default function PayrollPage() {
                       </div>
                     </React.Fragment>
                   ))}
+                </QueryBoundary>
               </div>
             </div>
           </div>
