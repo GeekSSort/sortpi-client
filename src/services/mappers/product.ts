@@ -1,6 +1,7 @@
 import { ProductItem } from "@/types/pos";
 import { toAmount } from "../apiClient";
 import { formatMoney } from "@/lib/format";
+import { safeImageUrl } from "./imageUrl";
 
 /**
  * A catalogue product -> a tile on the till.
@@ -20,13 +21,20 @@ export function toProductItem(
   const variant = variants.find((v) => v?.isDefault) || variants[0] || {};
   const sku = String(variant?.sku ?? "");
 
+  // The scanner's key. A variant may carry several codes — the manufacturer's
+  // and the shop's own label — so the primary one wins, and the first is the
+  // fallback for a variant nobody has nominated one on.
+  const codes: any[] = Array.isArray(variant?.barcodes) ? variant.barcodes : [];
+  const primaryCode = codes.find((b) => b?.isPrimary) ?? codes[0];
+  const barcode = String(primaryCode?.barcode ?? "");
+
   const images: any[] = Array.isArray(row?.images) ? row.images : [];
   // Only READY rows are ever served; a PENDING one has no bytes behind it yet.
   const ready = images.filter((i) => !i?.status || i.status === "READY");
   const primary = ready.find((i) => i?.isPrimary) ?? ready[0];
   const raw = String(primary?.url ?? primary ?? "");
   // Some filenames contain spaces. Left unencoded they break the request.
-  const image = raw ? encodeURI(raw) : "";
+  const image = raw ? safeImageUrl(raw) : "";
 
   const categoryName = opts?.categoryNames?.get(String(row?.category ?? "")) ?? "";
 
@@ -37,6 +45,7 @@ export function toProductItem(
     id: String(variant?.id ?? row?.id ?? ""),
     name: String(row?.name ?? ""),
     sku,
+    barcode,
     // The UI type names four categories; the catalogue has twenty. The real
     // name is carried through and the grid filters on it as a string.
     category: (categoryName || "Uncategorised") as ProductItem["category"],
