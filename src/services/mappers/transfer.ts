@@ -1,4 +1,4 @@
-import { TransferRecord } from "@/types/transfers";
+import { TransferLine, TransferRecord } from "@/types/transfers";
 import { toAmount } from "../apiClient";
 
 /**
@@ -55,6 +55,15 @@ export function toTransferRecord(row: any): TransferRecord {
     productsSummary: summarise(items),
     // The lines carry the quantity; the transfer itself does not.
     quantity: items.reduce((n, i) => n + toAmount(i?.quantity), 0),
+    lines: items.map(
+      (i): TransferLine => ({
+        id: String(i?.id ?? ""),
+        name: String(i?.productName ?? i?.product_name ?? "—"),
+        sku: String(i?.sku ?? "—"),
+        quantity: toAmount(i?.quantity),
+        receivedQuantity: toAmount(i?.receivedQuantity ?? i?.received_quantity),
+      })
+    ),
     // Dispatch is the date a transfer is about; before that it is still a draft
     // and the date that means anything is when it was written.
     dateTime: whenOf(row?.dispatchedAt ?? row?.dispatched_at ?? row?.createdAt ?? row?.created_at),
