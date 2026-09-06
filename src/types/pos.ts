@@ -2,6 +2,9 @@ export interface ProductItem {
   id: string;
   name: string;
   sku: string;
+  /** The primary barcode on the default variant, "" when the product has
+      none. What the scanner at the till reads. */
+  barcode: string;
   category: "Electronics" | "Groceries" | "Fashion" | "Home & Living";
   price: number;
   priceFormatted: string;
@@ -38,13 +41,16 @@ export interface CheckoutPayload {
     quantity: number;
     unitPrice: number;
   }[];
-  paymentMethod: "Cash" | "Online" | "bKash" | "Card";
-  discountCode?: string;
+  paymentMethod: "Cash" | "Online" | "bKash" | "Card" | string;
   discountAmount: number;
   totalAmount: number;
   /** VAT for this sale as a fraction &mdash; 0.15 is 15%. Left out, the shop's
       own rate applies. Sending one needs the price-override permission. */
   taxRate?: number;
+  /** The bKash / card transaction number, when the tender has one. Read by
+      `PosService.checkout` — which the type did not admit, so a production
+      build failed on six references to a field the runtime has always used. */
+  referenceNo?: string;
 }
 
 /** A cart parked at the till, waiting for the customer to come back. */
