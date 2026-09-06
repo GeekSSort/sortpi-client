@@ -8,12 +8,12 @@ import { AuthService } from "@/services";
 import { resolveRealm, currentSubdomain } from "@/services/apiClient";
 
 /**
- * Figma: SORTPoint / Login — node 19:7398.
- * Geometry below mirrors the frame boxes exactly: 549x563 card, 24px padding,
- * 24px gaps, 501px content column, 56px control height.
+ * Login — Figma 19:7398.
+ * Sizes match the frame: a 549x563 card, 24px padding and gaps, a 501px
+ * column, 56px controls.
  */
 
-/** Interface/Outline/eye-disable — node 19:7428, exported to public/auth/eye-disable.svg. */
+/** Eye with a slash, node 19:7428. */
 function EyeDisableIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
@@ -27,7 +27,7 @@ function EyeDisableIcon() {
   );
 }
 
-/** The un-slashed counterpart, drawn in the same 20x20 / 1.5 stroke system. */
+/** The same eye without the slash. */
 function EyeIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
@@ -47,7 +47,7 @@ function EyeIcon() {
   );
 }
 
-/** stop — node 19:7431, exported to public/auth/checkbox-stop.svg. Same squircle when checked. */
+/** Checkbox, node 19:7431. Same shape when ticked. */
 function CheckboxIcon({ checked }: { checked: boolean }) {
   return (
     <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
@@ -75,13 +75,12 @@ export default function LoginPage() {
   const [rememberMe, setRememberMe] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Which front door this is. The console and a shop are different sign-ins
-  // with different accounts; the address decides which one you are looking at.
+  // Which sign-in this is. The console and a shop use different accounts, and
+  // the address decides which one you are looking at.
   //
-  // Read with useSyncExternalStore rather than an effect: the value comes from
-  // the browser's address, which the server render cannot know. This gives the
-  // server a stable answer and the browser the real one, with no flash and no
-  // hydration mismatch.
+  // Read with useSyncExternalStore, not an effect: the answer comes from the
+  // browser address, which the server cannot know. This gives the server a
+  // steady answer and the browser the real one, with no flash.
   const subscribe = () => () => {};
   const realm = useSyncExternalStore(subscribe, resolveRealm, () => "tenant" as const);
   const shop = useSyncExternalStore(subscribe, currentSubdomain, () => null);
@@ -93,17 +92,17 @@ export default function LoginPage() {
     setError(null);
     try {
       const session = await AuthService.login({ email, password });
-      // Back to wherever the guard interrupted them, or their own home: a
-      // cashier has no back office, so /pos is where they belong.
+      // Back to wherever the guard stopped them, or to their own home page: a
+      // cashier has no back office, so they go to /pos.
       const next = new URLSearchParams(window.location.search).get("next");
       const home = resolveRealm() === "platform" ? "/platform" : session.home;
-      // A full navigation, not router.replace: the browser's "save password?"
-      // prompt fires when a form submit is followed by a real page load, and it
-      // also guarantees the app re-reads the new session from scratch.
+      // A real page load, not router.replace. The browser only offers to save
+      // the password when a form submit is followed by one, and it makes the
+      // app read the new session fresh.
       window.location.assign(next && next.startsWith("/") ? next : home);
     } catch (err) {
-      // Stay on this page and say what went wrong. Redirecting regardless is
-      // what let people into the app without an account.
+      // Stay here and say what went wrong. Redirecting anyway is what let
+      // people into the app without an account.
       setError(AuthService.describeError(err));
       setIsLoading(false);
     }
@@ -170,8 +169,8 @@ export default function LoginPage() {
               <input
                 id="email"
                 name="email"
-                // Password managers key on these. Without them the browser does
-                // not recognise this as a sign-in form and never offers to save.
+                // Password managers look for these. Without them the browser
+                // does not see a sign-in form and never offers to save.
                 autoComplete="username"
                 type="email"
                 value={email}

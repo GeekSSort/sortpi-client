@@ -8,6 +8,7 @@ import ProfitLossChart from "@/components/modules/dashboard/ProfitLossChart";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import TablePagination from "@/components/shared/TablePagination";
+import TableSkeleton from "@/components/shared/TableSkeleton";
 import Modal, { MODAL_GHOST } from "@/components/shared/Modal";
 import { DashboardService, PosService, CustomerService, initialDashboardData } from "@/services";
 import { DashboardResponse, MetricCardData } from "@/types/dashboard";
@@ -15,15 +16,14 @@ import { ProductItem } from "@/types/pos";
 import { CustomerRecord } from "@/types/customer";
 
 /**
- * Figma: SORTPoint — POS Reports 247:7564.
+ * POS Reports — Figma 247:7564.
  *
- * Four branch figures, then Sales Summary beside Profit & Loss, then the top
- * sellers, then the recent customers table. The charts and the KPI row are the
- * dashboard's own components — same design, same code, so a fix to either lands
- * in both places.
+ * Four branch figures, Sales Summary beside Profit & Loss, top sellers, then
+ * recent customers. The charts and the figures are the dashboard's own
+ * components, so a fix to either shows up in both places.
  *
- * The frame's head reads "Products", which is a copy slip in the file: the rail
- * highlights Reports and the route is Reports, so PosHead titles it Reports.
+ * The frame says "Products" in its heading, which is a mistake in the file: the menu
+ * and the route both say Reports, so the page does too.
  */
 
 const TYPE_TONE: Record<CustomerRecord["type"], Tone> = {
@@ -38,7 +38,7 @@ const CELL = "flex min-w-0 items-center p-[12px]";
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e]";
 const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
 
-/** The branch figures the design names, derived from the dashboard's own data. */
+/** The four branch figures the design asks for, taken from dashboard data. */
 function branchMetrics(d: DashboardResponse): MetricCardData[] {
   const revenue = d.profitLoss.totalRevenue;
   const expenses = d.profitLoss.totalExpenses;
@@ -111,6 +111,8 @@ export default function PosReportsPage() {
   const [pageSize, setPageSize] = useState(8);
   const [note, setNote] = useState<string | null>(null);
   const [detailOf, setDetailOf] = useState<CustomerRecord | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     DashboardService.getDashboardData()
@@ -122,9 +124,21 @@ export default function PosReportsPage() {
   }, []);
 
   useEffect(() => {
+    // Guarded so a slow answer for "ra" cannot land after "rahman" and
+    // repopulate the table with the wrong rows.
+    let live = true;
+    setLoading(true);
     CustomerService.getCustomers({ search: query })
-      .then((res) => setCustomers(res.data))
-      .catch(() => {});
+      .then((res) => {
+        if (!live) return;
+        setCustomers(res.data);
+        setFailed(false);
+      })
+      .catch(() => live && setFailed(true))
+      .finally(() => live && setLoading(false));
+    return () => {
+      live = false;
+    };
   }, [query]);
 
   const metrics = useMemo(() => branchMetrics(data), [data]);
@@ -221,7 +235,7 @@ export default function PosReportsPage() {
 
         <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="overflow-x-auto">
-            <div className="min-w-[1080px]">
+            <div className="min-w-[1140px]">
               <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 {["Customer ID", "Customer", "Phone", "Email", "Type", "Total Spent", "Due"].map((h) => (
                   <div key={h} className={`${CELL} h-[40px] bg-white`}>
@@ -234,7 +248,10 @@ export default function PosReportsPage() {
               </div>
 
               <div className="mt-[6px]">
-                {rows.length === 0 && (
+                {rows.length === 0 && loading && (
+                  <TableSkeleton columns={GRID} rows={pageSize} />
+                )}
+                {rows.length === 0 && !loading && (
                   <p className="py-[40px] text-center text-[14px] text-[#525252]">
                     No customers match that search.
                   </p>

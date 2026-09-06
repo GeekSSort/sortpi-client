@@ -11,6 +11,8 @@ export interface EmployeeRecord {
 }
 
 export interface HrmQueryFilter {
+  /** Which day's attendance to show against each employee. Defaults to today. */
+  day?: string;
   search?: string;
   department?: string;
   status?: string;

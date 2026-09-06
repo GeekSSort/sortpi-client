@@ -10,6 +10,7 @@ import SalesOverviewModal from "@/components/modules/dashboard/SalesOverviewModa
 import OrderListModal from "@/components/modules/dashboard/OrderListModal";
 import CustomerListModal from "@/components/modules/dashboard/CustomerListModal";
 import RevenueOverviewModal from "@/components/modules/dashboard/RevenueOverviewModal";
+import { tokenStore } from "@/services/apiClient";
 import { DashboardService, initialDashboardData } from "@/services";
 import { DashboardResponse } from "@/types/dashboard";
 import { OverviewModalType } from "@/types/overview";
@@ -20,14 +21,12 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(false);
   const [activeModal, setActiveModal] = useState<OverviewModalType>(null);
   const [day, setDay] = useState<Date | null>(null);
-  // Bumped by the branch switcher to re-run the fetch below.
-  const [branchKey, setBranchKey] = useState(0);
 
   useEffect(() => {
     async function loadData() {
       try {
         setLoading(true);
-        const res = await DashboardService.getDashboardData();
+        const res = await DashboardService.getDashboardData(tokenStore.branch());
         setData(res);
       } catch (err) {
         console.error("Failed to fetch dashboard data:", err);
@@ -36,7 +35,11 @@ export default function DashboardPage() {
       }
     }
     loadData();
-  }, [branchKey]);
+    // No branch key any more. The switcher moved to the top bar and reloads
+    // the page, because a switch changes the answer to every request on it —
+    // re-running this one fetch left the rest of the screen on the branch the
+    // user had just left.
+  }, []);
 
   const handleMetricCardClick = (cardId: string) => {
     if (cardId === "revenue") {
@@ -55,11 +58,7 @@ export default function DashboardPage() {
     <div className="flex w-full flex-col gap-[24px]">
       {/* Headline + KPI row travel together, 14px apart (Figma 30:15371). */}
       <div className="flex flex-col gap-[14px]">
-        <Headline
-          name={data.user?.name ?? "there"}
-          onDateChange={setDay}
-          onBranchChange={() => setBranchKey((k) => k + 1)}
-        />
+        <Headline name={data.user?.name ?? "there"} onDateChange={setDay} />
         <MetricCards metrics={data.metrics} onCardClick={handleMetricCardClick} />
       </div>
 

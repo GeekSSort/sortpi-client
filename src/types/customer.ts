@@ -16,8 +16,10 @@ export interface CustomerRecord {
 
 export interface CustomerQueryFilter {
   search?: string;
-  type?: string;
+  /** "Active" narrows to active customers; the API has no inactive-only filter. */
   status?: string;
+  /** The API's own two kinds: RETAIL or WHOLESALE. */
+  customerType?: "RETAIL" | "WHOLESALE";
   page?: number;
   limit?: number;
 }

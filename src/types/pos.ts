@@ -42,6 +42,27 @@ export interface CheckoutPayload {
   discountCode?: string;
   discountAmount: number;
   totalAmount: number;
+  /** VAT for this sale as a fraction &mdash; 0.15 is 15%. Left out, the shop's
+      own rate applies. Sending one needs the price-override permission. */
+  taxRate?: number;
+}
+
+/** A cart parked at the till, waiting for the customer to come back. */
+export interface HeldCart {
+  id: string;
+  reference: string;
+  customerName: string;
+  cashierName: string;
+  items: {
+    productId: string;
+    name: string;
+    sku: string;
+    price: number;
+    quantity: number;
+    /** What the shelf held when it was parked, so the tile reads right again. */
+    stock?: number;
+  }[];
+  at: string;
 }
 
 export interface OrderResponse {

@@ -1,9 +1,8 @@
 import Glyph from "@/components/shared/FigmaGlyph";
 
 /**
- * KPI card glyphs exported from Figma (SORTPoint node 30:15392).
- * 24x24 frames; every path is flat #F5B800 in the file, so they render as
- * currentColor and the card sets the tone.
+ * The icons on the dashboard cards, exported from Figma (node 30:15392).
+ * 24x24, drawn in currentColor so the card picks the colour.
  */
 
 export function RevenueIcon() {

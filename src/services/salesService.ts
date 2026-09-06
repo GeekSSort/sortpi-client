@@ -22,17 +22,18 @@ export class SalesService {
       if (params?.status) {
         result = result.filter((s) => s.status.toLowerCase() === params.status?.toLowerCase());
       }
-      return {
-        data: result,
-        total: 50,
-      };
+      // The pager reads this, and it is now the real count: a hardcoded 50
+      // meant the offline fallback claimed pages that did not exist.
+      return { data: result, total: result.length };
     };
 
     const searchParams = new URLSearchParams();
     if (params?.search) searchParams.set("search", params.search);
     if (params?.status) searchParams.set("status", params.status);
     if (params?.page) searchParams.set("page", String(params.page));
-    if (params?.limit) searchParams.set("limit", String(params.limit));
+    // The API caps a page at 200 (StandardPagination.max_page_size); asking
+    // for more than that just gets 200 back.
+    searchParams.set("limit", String(params?.limit ?? 200));
     // The API names these date_from / date_to. Sending startDate silently
     // returned every sale, because an unknown query parameter is ignored.
     if (params?.startDate) searchParams.set("date_from", params.startDate);

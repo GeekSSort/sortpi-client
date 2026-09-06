@@ -1,21 +1,26 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
-import Link from "next/link";
 import { StockItem } from "@/types/stock";
 import { StockService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import TablePagination from "@/components/shared/TablePagination";
-import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
+import TableSkeleton from "@/components/shared/TableSkeleton";
+import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
 
 /**
  * Figma: SORTPoint — Stock 57:13117.
  *
- * Search left, Add New right; an 898px card holding the 1128-wide eight-column
- * table (40px head, 54px rows) over the 64px pagination bar. Column tracks are
- * the design widths as fr units so extra width spreads evenly.
+ * Search left; a card holding the 1128-wide table (40px head, 54px rows) over
+ * the 64px pagination bar. Column tracks are the design widths as fr units so
+ * extra width spreads evenly.
+ *
+ * Counting happens in the row. The design had an Add New button leading to a
+ * separate screen that made you find the product again by name — but the row
+ * already knows its variant and its warehouse, which is everything an
+ * adjustment needs, so the count is typed where the number already is.
  */
 
 const STATUS_TONE: Record<StockItem["status"], Tone> = {
@@ -23,19 +28,6 @@ const STATUS_TONE: Record<StockItem["status"], Tone> = {
   "Low Stock": "gold",
   "Out of Stock": "rose",
 };
-
-/** Availability decides the badge, so it is derived rather than stored. */
-const statusFor = (available: number, lowStock: number): StockItem["status"] =>
-  available === 0 ? "Out of Stock" : available <= lowStock ? "Low Stock" : "In Stock";
-
-function AddIcon() {
-  return (
-    <svg className="block size-[20px] shrink-0" viewBox="0 0 20 20" fill="none" aria-hidden>
-      <rect x="0.9" y="0.9" width="18.2" height="18.2" rx="5" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M10 6.4v7.2M6.4 10h7.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 function SearchIcon() {
   return (
@@ -55,35 +47,199 @@ function FilterIcon() {
 }
 
 // Product Name  SKU  Warehouse  Available  Reserved  Low Stock  Status  Action
-const GRID = "grid-cols-[225fr_195fr_155fr_110fr_110fr_110fr_140fr_83fr]";
+// Product Name  SKU  Warehouse  Available  Reserved  Low Stock  Manage  Status  Action
+const GRID = "grid-cols-[205fr_170fr_135fr_100fr_100fr_100fr_170fr_130fr_83fr]";
 const CELL = "flex min-w-0 items-center p-[12px]";
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e]";
 const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
+
+/**
+ * Counting a line, in the row.
+ *
+ * The number shown is what the shelf holds. Typing a different one, or
+ * stepping it, arms a tick; nothing is sent until that tick is pressed, because
+ * this writes a stock movement and a stray keystroke should not. Escape puts
+ * the row back.
+ */
+function CountCell({
+  row,
+  busy,
+  onApply,
+}: {
+  row: StockItem;
+  busy: boolean;
+  onApply: (next: number) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? String(row.available);
+  const next = Number(shown);
+  const dirty = draft !== null && Number.isFinite(next) && next >= 0 && next !== row.available;
+
+  // A refetch after applying brings a new `available`; drop the draft so the
+  // row shows the server's number rather than the one just typed.
+  useEffect(() => {
+    setDraft(null);
+  }, [row.available]);
+
+  const step = (by: number) => setDraft(String(Math.max(0, (Number(shown) || 0) + by)));
+
+  return (
+    <div className="flex items-center gap-[4px]">
+      <button
+        type="button"
+        onClick={() => step(-1)}
+        disabled={busy || next <= 0}
+        aria-label={`One fewer ${row.name}`}
+        className="flex size-[26px] shrink-0 items-center justify-center rounded-[7px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] not-disabled:cursor-pointer hover:not-disabled:text-[#1e1e1e] disabled:opacity-40"
+      >
+        &minus;
+      </button>
+
+      <input
+        value={shown}
+        onChange={(e) => setDraft(e.target.value.replace(/\D/g, ""))}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && dirty) onApply(next);
+          if (e.key === "Escape") setDraft(null);
+        }}
+        disabled={busy}
+        inputMode="numeric"
+        aria-label={`Counted quantity for ${row.name}`}
+        className={`h-[26px] w-[52px] rounded-[7px] bg-white text-center text-[13px] tabular-nums outline-none ${
+          dirty
+            ? "text-[#1e1e1e] shadow-[inset_0_0_0_1.5px_#f5b800]"
+            : "text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea]"
+        } disabled:opacity-50`}
+      />
+
+      <button
+        type="button"
+        onClick={() => step(1)}
+        disabled={busy}
+        aria-label={`One more ${row.name}`}
+        className="flex size-[26px] shrink-0 items-center justify-center rounded-[7px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] not-disabled:cursor-pointer hover:not-disabled:text-[#1e1e1e] disabled:opacity-40"
+      >
+        +
+      </button>
+
+      {/* Only once the number differs: an always-on Save invites a click that
+          writes a movement saying nothing changed. */}
+      {dirty && (
+        <button
+          type="button"
+          onClick={() => onApply(next)}
+          disabled={busy}
+          aria-label={`Apply count of ${next} for ${row.name}`}
+          title={`Count ${row.available} → ${next}`}
+          className="sp-fade flex size-[26px] shrink-0 cursor-pointer items-center justify-center rounded-[7px] bg-[#f5b800] text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          {busy ? (
+            <span className="size-[10px] animate-pulse rounded-full bg-white" />
+          ) : (
+            <svg className="block size-[13px]" viewBox="0 0 16 16" fill="none" aria-hidden>
+              <path
+                d="M3.5 8.5l3 3 6-6.5"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          )}
+        </button>
+      )}
+    </div>
+  );
+}
 
 export default function StockPage() {
   const [stock, setStock] = useState<StockItem[]>([]);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  /** The debounce is for typing. Waiting 250ms to make the FIRST request
+      just adds a quarter second of blank table on reload. */
+  const firstLoad = useRef(true);
+  /** The API's count of everything matching, not of what this page holds. */
+  const [total, setTotal] = useState(0);
+  const [adjusting, setAdjusting] = useState(false);
+  /** Which row is mid-write, so only that one's control locks. */
+  const [countingId, setCountingId] = useState<string | null>(null);
+  const [refresh, setRefresh] = useState(0);
   const [note, setNote] = useState<string | null>(null);
   const [detailOf, setDetailOf] = useState<StockItem | null>(null);
   const [adjustOf, setAdjustOf] = useState<StockItem | null>(null);
   const [adjustBy, setAdjustBy] = useState("");
   const [adjustError, setAdjustError] = useState<string | null>(null);
-  const [removeOf, setRemoveOf] = useState<StockItem | null>(null);
 
   useEffect(() => {
-    StockService.getStock({ search: query })
-      .then((res) => setStock(res.data))
-      .catch(() => {});
-  }, [query]);
+    // Debounced and guarded: a request per keystroke let a slow answer for
+    // "so" land after "sony" and repopulate the table with the wrong rows.
+    let live = true;
+    const id = setTimeout(() => {
+      setLoading(true);
+      // One page at a time. The whole list used to be requested and sliced in
+      // the browser, but the API caps a page at 200, so anything past that was
+      // silently truncated and the pager called 200 the total.
+      StockService.getStock({ search: query, page, limit: pageSize })
+        .then((res) => {
+          if (!live) return;
+          setStock(res.data);
+          setTotal(res.total);
+          setFailed(false);
+        })
+        .catch(() => live && setFailed(true))
+        .finally(() => live && setLoading(false));
+    }, firstLoad.current ? 0 : 250);
+    firstLoad.current = false;
+    return () => {
+      live = false;
+      clearTimeout(id);
+    };
+  }, [query, refresh, page, pageSize]);
 
-  const totalPages = Math.max(1, Math.ceil(stock.length / pageSize));
+  /**
+   * Count one line to a new quantity, from the row.
+   *
+   * Same endpoint the Adjust dialog uses: a draft adjustment then applied, and
+   * the server works out the movement against the balance at that moment. The
+   * table is refetched rather than patched, because the ledger owns the number.
+   */
+  const applyCount = async (row: StockItem, next: number) => {
+    if (countingId) return;
+    if (!row.variantId || !row.warehouseId) {
+      return setNote(`${row.name}: that line is missing its variant or warehouse.`);
+    }
+    setCountingId(row.id);
+    setNote(null);
+    try {
+      await StockService.adjustStock({
+        warehouseId: row.warehouseId,
+        variantId: row.variantId,
+        newQuantity: next,
+        referenceNo: `ADJ-${Date.now()}`,
+        reason: next > row.available ? "STOCK_IN" : "STOCK_OUT",
+        note: `Counted ${row.available} to ${next}`,
+      });
+      setNote(`${row.name}: ${row.available} → ${next}`);
+      setRefresh((n) => n + 1);
+    } catch (err) {
+      setNote(
+        err instanceof Error && err.message
+          ? `${row.name}: ${err.message}`
+          : `${row.name}: the count could not be applied.`
+      );
+    } finally {
+      setCountingId(null);
+    }
+  };
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const current = Math.min(page, totalPages);
-  const rows = useMemo(
-    () => stock.slice((current - 1) * pageSize, current * pageSize),
-    [stock, current, pageSize]
-  );
+  // The server already sliced. `rows` is the page.
+  const rows = stock;
 
   return (
     <div className="flex w-full flex-col gap-[14px] select-none">
@@ -113,21 +269,13 @@ export default function StockPage() {
           </button>
         </div>
 
-        <Link
-          href="/inventory/stock/add"
-          style={{ backgroundImage: GOLD_GRADIENT }}
-          className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-        >
-          <AddIcon />
-          Add New
-        </Link>
       </div>
 
       {/* Table card — 57:13151 */}
       <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
         <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="overflow-x-auto">
-            <div className="min-w-[1000px]">
+            <div className="min-w-[1128px]">
               <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Product Name</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>SKU</span></div>
@@ -135,13 +283,21 @@ export default function StockPage() {
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Available</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Reserved</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Low Stock</span></div>
+                <div className={`${CELL} h-[40px] justify-center bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Manage Stock</span></div>
                 <div className={`${CELL} h-[40px] justify-center bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Status</span></div>
                 <div className={`${CELL} h-[40px] justify-center bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Action</span></div>
               </div>
 
               <div className="mt-[6px]">
-                {rows.length === 0 && (
-                  <p className="py-[40px] text-center text-[14px] text-[#525252]">No stock matches that search.</p>
+                {rows.length === 0 && loading && (
+                  <TableSkeleton columns={GRID} rows={pageSize} />
+                )}
+                {rows.length === 0 && !loading && (
+                  <p className="py-[40px] text-center text-[14px] text-[#525252]">
+                    {failed
+                      ? "Stock could not be loaded. Refresh to try again."
+                      : "No stock matches that search."}
+                  </p>
                 )}
                 {rows.map((r, i) => (
                   <div
@@ -161,6 +317,13 @@ export default function StockPage() {
                     <div className={CELL}><span className={`${TEXT} truncate`}>{r.reserved}</span></div>
                     <div className={CELL}><span className={`${TEXT} truncate`}>{r.lowStock}</span></div>
                     <div className={`${CELL} justify-center`}>
+                      <CountCell
+                        row={r}
+                        busy={countingId === r.id}
+                        onApply={(next) => applyCount(r, next)}
+                      />
+                    </div>
+                    <div className={`${CELL} justify-center`}>
                       <StatusPill label={r.status} tone={STATUS_TONE[r.status] ?? "slate"} />
                     </div>
                     <div className={`${CELL} justify-center`}>
@@ -176,7 +339,6 @@ export default function StockPage() {
                               setAdjustOf(r);
                             },
                           },
-                          { label: "Remove stock line", onSelect: () => setRemoveOf(r) },
                         ]}
                       />
                     </div>
@@ -208,6 +370,12 @@ export default function StockPage() {
               <p className="mt-[10px] text-[12px] tracking-[-0.24px] text-[#525252]">
                 {r.available} available · {r.reserved} reserved · low at {r.lowStock}
               </p>
+              {/* Same control as the table's Manage column — a phone is where a
+                  stock count actually gets typed, walking the aisle. */}
+              <div className="mt-[10px] flex items-center justify-between gap-[10px]">
+                <span className="text-[12px] text-[#8f8d87]">Counted</span>
+                <CountCell row={r} busy={countingId === r.id} onApply={(n) => applyCount(r, n)} />
+              </div>
             </div>
           ))}
         </div>
@@ -219,7 +387,7 @@ export default function StockPage() {
           <TablePagination
             page={current}
             pageSize={pageSize}
-            total={stock.length}
+            total={total}
             onPageChange={setPage}
             onPageSizeChange={(n) => {
               setPageSize(n);
@@ -304,29 +472,50 @@ export default function StockPage() {
             </button>
             <button
               type="button"
+              disabled={adjusting}
               style={{ backgroundImage: GOLD_GRADIENT }}
               className={MODAL_PRIMARY}
-              onClick={() => {
-                if (!adjustOf) return;
+              onClick={async () => {
+                if (!adjustOf || adjusting) return;
                 const delta = Number(adjustBy);
                 if (!adjustBy.trim() || Number.isNaN(delta) || delta === 0) {
                   return setAdjustError("Enter a non-zero amount, e.g. 12 or -5.");
                 }
                 const next = adjustOf.available + delta;
                 if (next < 0) return setAdjustError("That would take available stock below zero.");
-                // Optimistic: the mock backend has no adjust endpoint yet.
-                setStock((list) =>
-                  list.map((x) =>
-                    x.id === adjustOf.id
-                      ? { ...x, available: next, status: statusFor(next, x.lowStock) }
-                      : x
-                  )
-                );
-                setNote(`${adjustOf.name}: available ${adjustOf.available} → ${next}`);
-                setAdjustOf(null);
+                if (!adjustOf.variantId || !adjustOf.warehouseId) {
+                  return setAdjustError("That line is missing its variant or warehouse.");
+                }
+                // Drafted and applied against the ledger, not edited on screen.
+                // This used to change the row and nothing else.
+                setAdjusting(true);
+                setAdjustError(null);
+                try {
+                  await StockService.adjustStock({
+                    warehouseId: adjustOf.warehouseId,
+                    variantId: adjustOf.variantId,
+                    // A count, not a delta — the service works out the movement.
+                    newQuantity: next,
+                    referenceNo: `ADJ-${Date.now()}`,
+                    reason: delta > 0 ? "STOCK_IN" : "STOCK_OUT",
+                    note: `Adjusted by ${delta > 0 ? "+" : ""}${delta}`,
+                  });
+                  setNote(`${adjustOf.name}: available ${adjustOf.available} → ${next}`);
+                  setAdjustOf(null);
+                  // Refetch rather than patch: the ledger owns the balance.
+                  setRefresh((n) => n + 1);
+                } catch (err) {
+                  setAdjustError(
+                    err instanceof Error && err.message
+                      ? err.message
+                      : "The adjustment could not be applied."
+                  );
+                } finally {
+                  setAdjusting(false);
+                }
               }}
             >
-              Apply adjustment
+              {adjusting ? "Applying…" : "Apply adjustment"}
             </button>
           </>
         }
@@ -368,41 +557,6 @@ export default function StockPage() {
         )}
       </Modal>
 
-      {/* Remove line */}
-      <Modal
-        open={removeOf !== null}
-        onClose={() => setRemoveOf(null)}
-        title="Remove stock line"
-        width={440}
-        footer={
-          <>
-            <button type="button" className={MODAL_GHOST} onClick={() => setRemoveOf(null)}>
-              Cancel
-            </button>
-            <button
-              type="button"
-              style={{ backgroundImage: RED_GRADIENT }}
-              className={MODAL_PRIMARY}
-              onClick={() => {
-                if (!removeOf) return;
-                setStock((list) => list.filter((x) => x.id !== removeOf.id));
-                setNote(`${removeOf.name} removed from ${removeOf.warehouse}`);
-                setRemoveOf(null);
-              }}
-            >
-              Confirm remove
-            </button>
-          </>
-        }
-      >
-        {removeOf && (
-          <p className="text-[14px] leading-[1.6] text-[#525252]">
-            Remove <span className="font-medium text-[#1e1e1e]">{removeOf.name}</span> from{" "}
-            <span className="font-medium text-[#1e1e1e]">{removeOf.warehouse}</span>? The product itself is
-            not deleted.
-          </p>
-        )}
-      </Modal>
     </div>
   );
 }

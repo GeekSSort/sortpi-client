@@ -23,11 +23,11 @@ import {
 } from "./SidebarIcons";
 
 /**
- * Figma: SORTPoint — sidebar 20:7588 (default) and 31:17154 (section open).
+ * The sidebar — Figma 20:7588, and 31:17154 with a section open.
  *
- * 240px rail = 16px padding + a 208px column. Rows are 37px (px-10 py-8) and
- * the active row is 41px (p-10) on white; an open section turns the row into a
- * #f5b800 card holding a 154px sub-menu column.
+ * 240px wide: 16px padding around a 208px column. Rows are 37px, the selected
+ * row is 41px on white, and an open section becomes a gold card holding its
+ * sub-menu.
  */
 
 type SubItem = { name: string; href: string; match: (p: string) => boolean };
@@ -47,8 +47,8 @@ const NAV: NavItem[] = [
     icon: DashboardIcon,
     match: (p) => p === "/" || p === "/dashboard",
   },
-  // POS is its own environment now, not a page inside Sales — it takes the whole
-  // window and has its own rail, so it is a top-level destination here.
+  // POS is its own environment, not a page inside Sales: it takes the whole
+  // window and has its own menu, so it sits at the top level here.
   {
     name: "POS",
     href: "/pos",
@@ -122,12 +122,12 @@ export default function Sidebar() {
   const pathname = usePathname();
   const { isCollapsed, setIsCollapsed } = useSidebar();
 
-  // A section is open when the route is inside it; clicking the row toggles.
+  // A section is open when the current page is inside it, and clicking the row
+  // toggles it.
   //
-  // Read once at mount, this went stale: the sidebar lives in the layout and
-  // does not remount, so navigating between sections left the wrong one open.
-  // Adjusting during render keeps it in step — React's own recommendation for
-  // state that has to follow a changing input.
+  // Read once at mount this went stale: the sidebar lives in the layout and
+  // never remounts, so moving between sections left the wrong one open.
+  // Setting it during render keeps it in step.
   const { user: session } = useSession();
   const router = useRouter();
 
@@ -177,10 +177,10 @@ export default function Sidebar() {
               const Icon = item.icon;
               const active = item.match(pathname);
 
-              // Section row (20:7600 closed / 31:17169 open). One element for
-              // both states so the colour, caret and sub-menu can transition
-              // instead of swapping: 0fr -> 1fr grows to the sub-menu's natural
-              // height without measuring it.
+              // Section row, closed 20:7600 and open 31:17169. One element for
+              // both, so the colour, arrow and sub-menu animate instead of
+              // swapping. 0fr -> 1fr grows to the sub-menu's own height with no
+              // measuring.
               if (item.children) {
                 const isOpen = openSection === item.name;
                 return (
@@ -272,8 +272,8 @@ export default function Sidebar() {
                 );
               }
 
-              // Leaf row: active is a 41px white card with a 13px icon gap
-              // (20:7596); resting is 37px with a 14px gap (26:9567).
+              // A plain row: 41px white card when selected (20:7596), 37px
+              // otherwise (26:9567).
               return (
                 <Link
                   key={item.name}
@@ -309,8 +309,8 @@ export default function Sidebar() {
           <button
             type="button"
             onClick={async () => {
-              // Was a bare redirect: the tokens stayed in place, so the guard
-              // let you straight back in.
+              // This used to be a plain redirect. The tokens stayed, so the
+              // guard let you straight back in.
               await AuthService.logout();
               clearSessionCache();
               router.replace("/login");

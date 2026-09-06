@@ -13,6 +13,17 @@ import { Branch, CreateBranchPayload } from "@/types/branch";
  * together. "Whole company" clears it.
  */
 
+/**
+ * No local cache of branches, deliberately.
+ *
+ * There used to be one, module-level, holding every branch this browser had
+ * ever been shown — because `/branches/` narrowed to the branch you were
+ * standing in, so picking one left no way back. The server now scopes that
+ * list to the caller's ASSIGNMENTS instead of their cursor, which is the real
+ * fix; the cache was also a leak, since it outlived a sign-out and could show
+ * the previous account's branch names to the next person at the till.
+ */
+
 export default function BranchSwitcher({ onChange }: { onChange?: (branchId: string | null) => void }) {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -94,7 +105,7 @@ export default function BranchSwitcher({ onChange }: { onChange?: (branchId: str
   };
 
   const active = branches.find((b) => b.id === activeId);
-  const label = switching ? "Switching…" : active ? `${active.code} · ${active.name}` : "All branches";
+  const label = switching ? "Switching…" : active ? `${active.code} · ${active.name}` : "Choose a branch";
 
   return (
     <div ref={rootRef} className="relative select-none">
@@ -108,12 +119,7 @@ export default function BranchSwitcher({ onChange }: { onChange?: (branchId: str
       >
         <span className="flex min-w-0 items-center gap-[10px]">
           <StoreIcon />
-          <span className="flex min-w-0 flex-col items-start leading-tight">
-            <span className="text-[11px] font-normal tracking-[0.04em] text-[#8a8a8a] uppercase">
-              Branch
-            </span>
-            <span className="truncate text-[14px] font-medium text-[#1e1e1e]">{label}</span>
-          </span>
+          <span className="truncate text-[14px] font-medium text-[#1e1e1e]">{label}</span>
         </span>
         <ChevronIcon open={open} />
       </button>
@@ -127,24 +133,6 @@ export default function BranchSwitcher({ onChange }: { onChange?: (branchId: str
             Showing figures for
           </p>
           <ul className="max-h-[260px] overflow-y-auto pb-[6px]">
-            <li>
-              <button
-                type="button"
-                role="option"
-                aria-selected={activeId === null}
-                onClick={() => select(null)}
-                className={`flex w-full cursor-pointer items-center gap-[10px] px-[14px] py-[10px] text-left text-[14px] transition-colors hover:bg-[#fdf7e6] ${
-                  activeId === null ? "bg-[#fdf7e6] font-semibold text-[#1e1e1e]" : "text-[#525252]"
-                }`}
-              >
-                <span className="shrink-0 rounded-[5px] bg-[#f0f0f0] px-[7px] py-[2px] font-mono text-[11px] font-medium text-[#525252]">
-                  ALL
-                </span>
-                <span className="min-w-0 flex-1 truncate">Whole company</span>
-                {activeId === null && <TickIcon />}
-              </button>
-            </li>
-
             {branches.map((b) => (
               <li key={b.id}>
                 <button

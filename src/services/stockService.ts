@@ -1,15 +1,7 @@
 import { StockItem, StockQueryFilter } from "@/types/stock";
 import { initialStockData } from "@/lib/services/stock.service";
 import { apiFetch, apiList } from "./apiClient";
-
-export interface AddStockPayload {
-  productName: string;
-  sku: string;
-  warehouse: string;
-  currentStock: number;
-  addQuantity: number;
-  date?: string;
-}
+import { toStockItem } from "./mappers/inventory";
 
 export class StockService {
   /**
@@ -30,10 +22,9 @@ export class StockService {
       if (params?.status) {
         list = list.filter((s) => s.status.toLowerCase() === params.status?.toLowerCase());
       }
-      return {
-        data: list,
-        total: 50,
-      };
+      // The pager reads this, and it is now the real count: a hardcoded 50
+      // meant the offline fallback claimed pages that did not exist.
+      return { data: list, total: list.length };
     };
 
     const searchParams = new URLSearchParams();
@@ -41,39 +32,57 @@ export class StockService {
     if (params?.warehouse) searchParams.set("warehouse", params.warehouse);
     if (params?.status) searchParams.set("status", params.status);
     if (params?.page) searchParams.set("page", String(params.page));
-    if (params?.limit) searchParams.set("limit", String(params.limit));
+    // The API caps a page at 200 (StandardPagination.max_page_size); asking
+    // for more than that just gets 200 back.
+    searchParams.set("limit", String(params?.limit ?? 200));
     const qs = searchParams.toString() ? `?${searchParams.toString()}` : "";
 
     return apiList<StockItem>(
       `/inventory/stock/${qs}`,
       { method: "GET" },
-      fallback
+      fallback,
+      (row: any) => (row?.lowStock !== undefined ? row : toStockItem(row))
     );
   }
 
   /**
-   * Add stock quantity to a product
+   * Count a line to a new quantity.
+   *
+   * Two steps, because that is what the API is: `POST /inventory/adjustments/`
+   * drafts a count, and `{id}/apply/` writes the movements. Applying
+   * recomputes the difference against the balance AT THAT MOMENT rather than
+   * trusting the draft, so a count drafted this morning cannot post the day's
+   * sales into the ledger a second time.
+   *
+   * `newQuantity` is a COUNT, not a delta — the endpoint takes what is on the
+   * shelf, and the service works out the movement.
+   *
+   * The old version posted `{productName, sku, warehouse, currentStock,
+   * addQuantity}` to this path. Nothing there matches the serializer, so the
+   * request 400'd into a fallback and the screen reported stock it never
+   * added.
    */
-  static async addStock(payload: AddStockPayload): Promise<StockItem> {
-    const fallbackStock: StockItem = {
-      id: `stock-${Date.now()}`,
-      name: payload.productName,
-      image: "/product_images/sony_headphone.png",
-      sku: payload.sku,
-      warehouse: payload.warehouse,
-      available: payload.currentStock + payload.addQuantity,
-      reserved: 0,
-      lowStock: 10,
-      status: "In Stock",
-    };
+  static async adjustStock(input: {
+    warehouseId: string;
+    variantId: string;
+    newQuantity: number;
+    referenceNo: string;
+    reason: string;
+    note?: string;
+  }): Promise<void> {
+    const draft = await apiFetch<any>("/inventory/adjustments/", {
+      method: "POST",
+      body: JSON.stringify({
+        reference_no: input.referenceNo,
+        warehouse: input.warehouseId,
+        reason: input.reason,
+        note: input.note || "",
+        items: [{ variant: input.variantId, new_quantity: input.newQuantity }],
+      }),
+    });
 
-    return apiFetch<StockItem>(
-      "/inventory/adjustments/",
-      {
-        method: "POST",
-        body: JSON.stringify(payload),
-      },
-      fallbackStock
-    );
+    const id = String(draft?.id ?? "");
+    if (!id) throw new Error("The adjustment was not created.");
+    await apiFetch<any>(`/inventory/adjustments/${id}/apply/`, { method: "POST" });
   }
 }

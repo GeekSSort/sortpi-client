@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { InventoryProduct } from "@/types/inventory";
@@ -8,16 +8,17 @@ import { InventoryService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import TablePagination from "@/components/shared/TablePagination";
+import TableSkeleton from "@/components/shared/TableSkeleton";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
 
 /**
- * Figma: SORTPoint — Product 51:10942.
+ * Products — Figma 51:10942.
  *
- * 1160 page: search on the left of the headline, date field + Add New on the
- * right, then an 898px card holding a 1128-wide nine-column table (40px head,
- * 54px rows) and the 64px pagination bar. Column tracks are the design widths
- * as fr units, so extra width is shared evenly rather than pooling in one
- * column.
+ * Search on the left of the headline, date and Add New on the right, then a
+ * nine-column table: 40px head, 54px rows, pager below.
+ *
+ * The columns use the design's widths as fr units, so a wider screen shares
+ * the extra space instead of piling it into one column.
  */
 
 const STATUS_TONE: Record<InventoryProduct["status"], Tone> = {
@@ -63,6 +64,13 @@ export default function InventoryPage() {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  /** The debounce is for typing. Waiting 250ms to make the FIRST request
+      just adds a quarter second of blank table on reload. */
+  const firstLoad = useRef(true);
+  /** The API's count of everything matching, not of what this page holds. */
+  const [total, setTotal] = useState(0);
   const [note, setNote] = useState<string | null>(null);
   const [detailOf, setDetailOf] = useState<InventoryProduct | null>(null);
   const [deleteOf, setDeleteOf] = useState<InventoryProduct | null>(null);
@@ -81,17 +89,35 @@ export default function InventoryPage() {
     stock === 0 ? "Out of Stock" : stock <= 10 ? "Low Stock" : "In Stock";
 
   useEffect(() => {
-    InventoryService.getProducts({ search: query })
-      .then((res) => setProducts(res.data))
-      .catch(() => {});
-  }, [query]);
+    // Debounced and guarded: a request per keystroke let a slow answer for
+    // "so" land after "sony" and repopulate the table with the wrong rows.
+    let live = true;
+    const id = setTimeout(() => {
+      setLoading(true);
+      // One page at a time. The whole list used to be requested and sliced in
+      // the browser, but the API caps a page at 200, so anything past that was
+      // silently truncated and the pager called 200 the total.
+      InventoryService.getProducts({ search: query, page, limit: pageSize })
+        .then((res) => {
+          if (!live) return;
+          setProducts(res.data);
+          setTotal(res.total);
+          setFailed(false);
+        })
+        .catch(() => live && setFailed(true))
+        .finally(() => live && setLoading(false));
+    }, firstLoad.current ? 0 : 250);
+    firstLoad.current = false;
+    return () => {
+      live = false;
+      clearTimeout(id);
+    };
+  }, [query, page, pageSize]);
 
-  const totalPages = Math.max(1, Math.ceil(products.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const current = Math.min(page, totalPages);
-  const rows = useMemo(
-    () => products.slice((current - 1) * pageSize, current * pageSize),
-    [products, current, pageSize]
-  );
+  // The server already sliced. `rows` is the page.
+  const rows = products;
 
   return (
     <div className="flex w-full flex-col gap-[14px] select-none">
@@ -137,7 +163,7 @@ export default function InventoryPage() {
       <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
         <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="overflow-x-auto">
-            <div className="min-w-[1050px]">
+            <div className="min-w-[1128px]">
               <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 <div className={`${CELL} h-[40px] justify-center bg-white`}><span className={HEAD}>#</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Product Name</span></div>
@@ -151,8 +177,15 @@ export default function InventoryPage() {
               </div>
 
               <div className="mt-[6px]">
-                {rows.length === 0 && (
-                  <p className="py-[40px] text-center text-[14px] text-[#525252]">No products match that search.</p>
+                {rows.length === 0 && loading && (
+                  <TableSkeleton columns={GRID} rows={pageSize} />
+                )}
+                {rows.length === 0 && !loading && (
+                  <p className="py-[40px] text-center text-[14px] text-[#525252]">
+                    {failed
+                      ? "Products could not be loaded. Refresh to try again."
+                      : "No products match that search."}
+                  </p>
                 )}
                 {rows.map((r, i) => (
                   <div
@@ -227,7 +260,7 @@ export default function InventoryPage() {
           <TablePagination
             page={current}
             pageSize={pageSize}
-            total={products.length}
+            total={total}
             onPageChange={setPage}
             onPageSizeChange={(n) => {
               setPageSize(n);
@@ -312,7 +345,7 @@ export default function InventoryPage() {
               className={MODAL_PRIMARY}
               onClick={() => {
                 if (!deleteOf) return;
-                // Optimistic: the mock backend has no delete endpoint yet.
+                // Changed on screen only: there is no delete endpoint yet.
                 setProducts((list) => list.filter((x) => x.id !== deleteOf.id));
                 setNote(`${deleteOf.name} deleted`);
                 setDeleteOf(null);
@@ -358,7 +391,7 @@ export default function InventoryPage() {
                   return setEditError("Enter a valid price.");
                 if (!draft.stock.trim() || Number.isNaN(stock) || stock < 0)
                   return setEditError("Enter a valid stock count.");
-                // Optimistic: the mock backend has no update endpoint yet.
+                // Changed on screen only: there is no update endpoint yet.
                 setProducts((list) =>
                   list.map((x) =>
                     x.id === editOf.id

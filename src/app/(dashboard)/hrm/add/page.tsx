@@ -1,200 +1,290 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { CloudUpload, ChevronDown, CheckCircle2 } from "lucide-react";
-import { HrmService } from "@/services";
+import { HrmService, Lookup } from "@/services/hrmService";
+import { GOLD_GRADIENT } from "@/components/shared/Modal";
 
-export default function AddEmployeePage() {
-  const router = useRouter();
+/**
+ * Add Employees — Figma 74:4463.
+ *
+ * A 565px card centred on the page: a title strip, then 56px fields at 12px
+ * apart, an 88px upload box, and a full-width gold submit below the card.
+ */
 
-  // Form State
-  const [employeeName, setEmployeeName] = useState("");
-  const [phoneNumber, setPhoneNumber] = useState("");
-  const [emailAddress, setEmailAddress] = useState("");
-  const [department, setDepartment] = useState("");
-  const [isDepartmentOpen, setIsDepartmentOpen] = useState(false);
-  const [designation, setDesignation] = useState("");
+const LABEL = "w-full text-[18px] leading-[24px] font-medium text-[#525252]";
+const INPUT =
+  "flex h-[56px] w-full items-center rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] py-[8px] text-[16px] leading-[24px] text-[#525252] outline-none placeholder:text-[#525252] focus:border-[#f5b800]";
 
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [successMessage, setSuccessMessage] = useState(false);
+function CaretIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden
+      className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
+    >
+      <path
+        d="m7 10 5 5 5-5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
 
-  const departments = ["Management", "HR", "Sales", "Accounts", "IT"];
+/** A 56px box that opens a list, and still accepts a name that is not on it. */
+function PickerField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  options,
+  caret,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  options: Lookup[];
+  caret?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!employeeName) return;
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
 
-    setIsSubmitting(true);
-    try {
-      await HrmService.createEmployee({
-        name: employeeName,
-        department: (department as any) || "Management",
-        designation: designation || "Sales Executive",
-        status: "Present",
-      });
-
-      setSuccessMessage(true);
-      setTimeout(() => {
-        router.push("/hrm");
-      }, 1400);
-    } catch (err) {
-      console.error("Failed to add employee:", err);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
+  const matches = options.filter((o) =>
+    o.name.toLowerCase().includes(value.trim().toLowerCase())
+  );
 
   return (
-    <div className="w-full flex flex-col gap-6 pb-12 select-none">
-      {/* Top Title & Subtitle */}
-      <div>
-        <h2 className="text-xl sm:text-2xl font-extrabold text-gray-900 tracking-tight">
-          Add Employees
-        </h2>
-        <p className="text-xs sm:text-sm text-gray-500 mt-0.5">
-          Create a new employee profile and add their information to the HRM system.
-        </p>
-      </div>
+    <div className="flex w-full flex-col gap-[8px]">
+      <label className={LABEL} htmlFor={label}>
+        {label}
+      </label>
+      <div ref={ref} className="relative w-full">
+        <div className={`${INPUT} gap-[12px] focus-within:border-[#f5b800]`}>
+          <input
+            id={label}
+            value={value}
+            onChange={(e) => {
+              onChange(e.target.value);
+              setOpen(true);
+            }}
+            onFocus={() => setOpen(true)}
+            placeholder={placeholder}
+            className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-[#525252]"
+          />
+          {caret && (
+            <button
+              type="button"
+              aria-label={`Choose ${label.toLowerCase()}`}
+              onClick={() => setOpen((v) => !v)}
+              className="shrink-0 cursor-pointer text-[#525252]"
+            >
+              <CaretIcon open={open} />
+            </button>
+          )}
+        </div>
 
-      {/* Centered Form Container */}
-      <div className="mx-auto w-full max-w-[560px] flex flex-col gap-5 pt-2">
-        <form onSubmit={handleSubmit} className="flex flex-col gap-5">
-          {/* Card Form Box */}
-          <div className="bg-white rounded-2xl border border-gray-200/90 shadow-[0_2px_12px_rgba(0,0,0,0.03)] overflow-hidden">
-            {/* Header */}
-            <div className="py-3 px-4 text-center border-b border-gray-100 bg-white">
-              <h3 className="text-xs sm:text-sm font-semibold text-gray-800">
-                Add Employee
-              </h3>
-            </div>
-
-            {/* Form Fields with Exact Spacing */}
-            <div className="p-6 flex flex-col gap-4">
-              {/* 1. Employee Name */}
-              <div>
-                <label className="text-xs font-bold text-gray-800 block mb-1.5">
-                  Employee Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={employeeName}
-                  onChange={(e) => setEmployeeName(e.target.value)}
-                  placeholder="Enter employee name"
-                  className="w-full border border-gray-200 focus:border-amber-400 rounded-xl px-4 py-2.5 text-xs text-gray-800 placeholder:text-gray-400 bg-white focus:outline-none transition-colors"
-                />
-              </div>
-
-              {/* 2. Phone Number */}
-              <div>
-                <label className="text-xs font-bold text-gray-800 block mb-1.5">
-                  Phone Number
-                </label>
-                <input
-                  type="text"
-                  value={phoneNumber}
-                  onChange={(e) => setPhoneNumber(e.target.value)}
-                  placeholder="Enter supplier phone number"
-                  className="w-full border border-gray-200 focus:border-amber-400 rounded-xl px-4 py-2.5 text-xs text-gray-800 placeholder:text-gray-400 bg-white focus:outline-none transition-colors"
-                />
-              </div>
-
-              {/* 3. Email Address */}
-              <div>
-                <label className="text-xs font-bold text-gray-800 block mb-1.5">
-                  Email Address
-                </label>
-                <input
-                  type="email"
-                  value={emailAddress}
-                  onChange={(e) => setEmailAddress(e.target.value)}
-                  placeholder="Enter email address"
-                  className="w-full border border-gray-200 focus:border-amber-400 rounded-xl px-4 py-2.5 text-xs text-gray-800 placeholder:text-gray-400 bg-white focus:outline-none transition-colors"
-                />
-              </div>
-
-              {/* 4. Department */}
-              <div className="relative">
-                <label className="text-xs font-bold text-gray-800 block mb-1.5">
-                  Department
-                </label>
+        {open && matches.length > 0 && (
+          <ul
+            role="listbox"
+            className="absolute top-[60px] right-0 left-0 z-30 max-h-[220px] overflow-y-auto rounded-[12px] border border-[#eaeaea] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)]"
+          >
+            {matches.map((o) => (
+              <li key={o.id}>
                 <button
                   type="button"
-                  onClick={() => setIsDepartmentOpen(!isDepartmentOpen)}
-                  className="w-full border border-gray-200 hover:border-gray-300 rounded-xl px-4 py-2.5 text-xs bg-white flex items-center justify-between transition-colors cursor-pointer"
+                  role="option"
+                  aria-selected={o.name === value}
+                  onClick={() => {
+                    onChange(o.name);
+                    setOpen(false);
+                  }}
+                  className="w-full cursor-pointer px-[16px] py-[10px] text-left text-[15px] text-[#525252] transition-colors hover:bg-[#fdf7e6]"
                 >
-                  <span className={department ? "text-gray-800 font-medium" : "text-gray-400"}>
-                    {department || "Select employee department"}
-                  </span>
-                  <ChevronDown className="w-4 h-4 text-gray-400" />
+                  {o.name}
                 </button>
-
-                {isDepartmentOpen && (
-                  <div className="absolute top-full mt-1 left-0 right-0 bg-white border border-gray-100 rounded-xl shadow-lg py-1 z-30">
-                    {departments.map((dept) => (
-                      <button
-                        key={dept}
-                        type="button"
-                        onClick={() => {
-                          setDepartment(dept);
-                          setIsDepartmentOpen(false);
-                        }}
-                        className={`w-full text-left px-4 py-2 text-xs hover:bg-amber-50 hover:text-[#F4B41A] ${
-                          department === dept ? "font-bold text-[#F4B41A]" : "text-gray-700"
-                        }`}
-                      >
-                        {dept}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* 5. Designation */}
-              <div>
-                <label className="text-xs font-bold text-gray-800 block mb-1.5">
-                  Designation
-                </label>
-                <input
-                  type="text"
-                  value={designation}
-                  onChange={(e) => setDesignation(e.target.value)}
-                  placeholder="Select employee designation"
-                  className="w-full border border-gray-200 focus:border-amber-400 rounded-xl px-4 py-2.5 text-xs text-gray-800 placeholder:text-gray-400 bg-white focus:outline-none transition-colors"
-                />
-              </div>
-
-              {/* 6. Upload Image Box */}
-              <div>
-                <label className="w-full border border-gray-200 hover:border-gray-300 rounded-xl py-6 flex items-center justify-center gap-2.5 text-xs font-medium text-gray-700 hover:bg-gray-50/70 transition-colors cursor-pointer">
-                  <input type="file" accept="image/*" className="hidden" />
-                  <CloudUpload className="w-5 h-5 text-gray-700" />
-                  <span>Upload Image</span>
-                </label>
-              </div>
-            </div>
-          </div>
-
-          {/* Success Alert */}
-          {successMessage && (
-            <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs font-semibold text-emerald-700 flex items-center justify-center gap-2 animate-in fade-in">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              <span>Employee added successfully! Redirecting to employee list...</span>
-            </div>
-          )}
-
-          {/* Action Button */}
-          <button
-            type="submit"
-            disabled={isSubmitting}
-            className="w-full py-3.5 bg-[#F4B41A] hover:bg-[#E5A612] text-white font-bold rounded-xl text-xs sm:text-sm transition-all shadow-xs text-center cursor-pointer disabled:opacity-60"
-          >
-            {isSubmitting ? "Adding Employee..." : "Add Employee"}
-          </button>
-        </form>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   );
 }
 
+export default function AddEmployeePage() {
+  const router = useRouter();
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [department, setDepartment] = useState("");
+  const [designation, setDesignation] = useState("");
+  const [photo, setPhoto] = useState<string | null>(null);
+  const [lookups, setLookups] = useState<{ departments: Lookup[]; designations: Lookup[] }>({
+    departments: [],
+    designations: [],
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    HrmService.getLookups()
+      .then((l) => !cancelled && setLookups(l))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSaving(true);
+    try {
+      await HrmService.createEmployee({ name, email, phone, department, designation });
+      router.push("/hrm");
+    } catch (err) {
+      setError(HrmService.describeError(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="flex w-full flex-col items-center select-none">
+      <div className="flex w-full max-w-[565px] flex-col gap-[24px]">
+        {/* Card — 74:5325 */}
+        <div className="flex w-full flex-col items-center gap-[9px] overflow-hidden rounded-[10px] border border-solid border-[#eaeaea] bg-white pb-[16px]">
+          <div className="flex w-full items-center justify-center border-b border-solid border-[#eaeaea] px-[16px] pt-[16px] pb-[8px]">
+            <p className="text-[16px] leading-[1.5] tracking-[-0.32px] whitespace-nowrap text-[#1e1e1e]">
+              Add Employee
+            </p>
+          </div>
+
+          <div className="flex w-full flex-col gap-[12px] px-[16px]">
+            {error && (
+              <p role="alert" className="rounded-[8px] bg-[#ffdfe2] px-[12px] py-[8px] text-[13px] text-[#e63946]">
+                {error}
+              </p>
+            )}
+
+            <div className="flex w-full flex-col gap-[8px]">
+              <label className={LABEL} htmlFor="employee-name">
+                Employee Name
+              </label>
+              <input
+                id="employee-name"
+                required
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Enter employee name"
+                className={INPUT}
+              />
+            </div>
+
+            <div className="flex w-full flex-col gap-[8px]">
+              <label className={LABEL} htmlFor="employee-phone">
+                Phone Number
+              </label>
+              <input
+                id="employee-phone"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="Enter supplier phone number"
+                className={INPUT}
+              />
+            </div>
+
+            <div className="flex w-full flex-col gap-[8px]">
+              <label className={LABEL} htmlFor="employee-email">
+                Email Address
+              </label>
+              <input
+                id="employee-email"
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Enter email address"
+                className={INPUT}
+              />
+            </div>
+
+            <PickerField
+              label="Department"
+              value={department}
+              onChange={setDepartment}
+              placeholder="Select employee department"
+              options={lookups.departments}
+              caret
+            />
+
+            <PickerField
+              label="Designation"
+              value={designation}
+              onChange={setDesignation}
+              placeholder="Select employee designation"
+              options={lookups.designations}
+            />
+
+            {/* Upload box — 74:5342 */}
+            <label className="flex h-[88px] w-full cursor-pointer items-center justify-center rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] py-[8px]">
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  setPhoto(file ? URL.createObjectURL(file) : null);
+                }}
+              />
+              <span className="flex items-center gap-[10px]">
+                {photo ? (
+                  <Image src={photo} alt="" width={33} height={24} className="h-[24px] w-[32.984px] object-cover" unoptimized />
+                ) : (
+                  <Image src="/icons/upload-cloud.svg" alt="" width={33} height={24} className="h-[24px] w-[32.984px]" />
+                )}
+                <span className="w-[106px] text-center text-[16px] leading-[24px] text-[#525252]">
+                  Upload Image
+                </span>
+              </span>
+            </label>
+
+            {photo && (
+              <p className="text-[13px] text-[#525252]">
+                Preview only — the employee API has no photo field yet, so this image is not saved.
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* Submit — 74:5347 */}
+        <button
+          type="submit"
+          disabled={saving}
+          style={{ backgroundImage: GOLD_GRADIENT }}
+          className="flex w-full cursor-pointer items-center justify-center rounded-[12px] px-[16px] py-[12px] text-[16px] leading-[24px] font-semibold text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {saving ? "Adding..." : "Add Employee"}
+        </button>
+      </div>
+    </form>
+  );
+}

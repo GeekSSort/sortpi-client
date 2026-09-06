@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { InventoryService } from "@/services";
+import type { CatalogOption, CatalogOptions } from "@/services/inventoryService";
 import { GOLD_GRADIENT } from "@/components/shared/Modal";
 import UploadIcon from "@/components/shared/UploadIcon";
 
@@ -15,9 +16,10 @@ import UploadIcon from "@/components/shared/UploadIcon";
  * full-width Save Product button 24px below the card.
  */
 
-const CATEGORIES = ["Electronics", "Home & Living", "Accessories", "Footwear", "Bags"] as const;
-const BRANDS = ["Sony", "Apple", "Nike", "Samsonite", "Ray-Ban", "Logitech", "Philips", "Decathlon"] as const;
-const TAX_RATES = [0, 5, 7.5, 10, 15] as const;
+// The category, brand, unit and tax lists come from the catalogue. They used
+// to be hardcoded names — five categories and eight brands with nothing to do
+// with this shop — so nothing the form offered could be resolved to an id, and
+// every save was refused.
 
 function Caret() {
   return (
@@ -40,6 +42,8 @@ const blank = {
   name: "",
   category: "",
   brand: "",
+  unit: "",
+  sku: "",
   purchasePrice: "",
   sellingPrice: "",
   discount: "",
@@ -47,7 +51,7 @@ const blank = {
   image: "",
 };
 
-type SelectKind = "category" | "brand" | "tax";
+type SelectKind = "category" | "brand" | "unit" | "tax";
 
 /** The shared dropdown field: same 56px shell as the text inputs. */
 function Select({
@@ -60,10 +64,11 @@ function Select({
   setOpen,
 }: {
   kind: SelectKind;
+  /** The picked option's ID, not its name — an id is what the API takes. */
   value: string;
   placeholder: string;
-  options: readonly (string | number)[];
-  onPick: (v: string) => void;
+  options: readonly CatalogOption[];
+  onPick: (id: string) => void;
   open: SelectKind | null;
   setOpen: React.Dispatch<React.SetStateAction<SelectKind | null>>;
 }) {
@@ -78,7 +83,7 @@ function Select({
         className={`${FIELD} cursor-pointer justify-between text-left`}
       >
         <span className="truncate text-[16px] leading-[24px] text-[#525252]">
-          {value === "" ? placeholder : kind === "tax" ? `${value} %` : value}
+          {options.find((o) => o.id === value)?.name || placeholder}
         </span>
         <span className="text-[#525252]">
           <Caret />
@@ -86,19 +91,22 @@ function Select({
       </button>
       {open === kind && (
         <div className="absolute top-[60px] right-0 left-0 z-40 max-h-[220px] overflow-y-auto rounded-[10px] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)] ring-1 ring-[#eaeaea]">
+          {options.length === 0 && (
+            <p className="px-[14px] py-[9px] text-[14px] text-[#8f8d87]">Nothing to choose yet.</p>
+          )}
           {options.map((o) => (
             <button
-              key={String(o)}
+              key={o.id}
               type="button"
               onClick={() => {
-                onPick(String(o));
+                onPick(o.id);
                 setOpen(null);
               }}
               className={`block w-full cursor-pointer px-[14px] py-[9px] text-left text-[14px] transition-colors hover:bg-[#fafafa] ${
-                String(o) === value ? "font-medium text-[#f5b800]" : "text-[#525252]"
+                o.id === value ? "font-medium text-[#f5b800]" : "text-[#525252]"
               }`}
             >
-              {kind === "tax" ? `${o} %` : o}
+              {o.name}
             </button>
           ))}
         </div>
@@ -114,6 +122,22 @@ export default function AddProductPage() {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [options, setOptions] = useState<CatalogOptions>({
+    categories: [],
+    brands: [],
+    units: [],
+    taxes: [],
+  });
+
+  useEffect(() => {
+    InventoryService.getCatalogOptions()
+      .then((opts) => {
+        setOptions(opts);
+        // A shop with one unit should not have to pick it every time.
+        if (opts.units.length === 1) setForm((f) => ({ ...f, unit: opts.units[0].id }));
+      })
+      .catch(() => setError("The category and unit lists could not be loaded."));
+  }, []);
 
   const set = (k: keyof typeof blank, v: string) => {
     setForm((f) => ({ ...f, [k]: v }));
@@ -139,24 +163,29 @@ export default function AddProductPage() {
     if (saving) return;
     if (!form.name.trim()) return setError("Product name is required.");
     if (!form.category) return setError("Pick a category.");
-    if (!form.brand) return setError("Pick a brand.");
+    // Brand is optional on the API, so it is optional here. Unit is not.
+    if (!form.unit) return setError("Pick a unit.");
     if (!Number(form.sellingPrice)) return setError("Selling price must be greater than zero.");
     setSaving(true);
     try {
       const created = await InventoryService.createProduct({
         name: form.name.trim(),
-        category: form.category,
-        brand: form.brand,
-        purchasePrice: Number(form.purchasePrice) || 0,
+        categoryId: form.category,
+        unitId: form.unit,
+        brandId: form.brand || undefined,
+        taxId: form.tax || undefined,
         sellingPrice: Number(form.sellingPrice),
-        discount: Number(form.discount) || 0,
-        tax: Number(form.tax) || 0,
-        image: form.image || undefined,
+        purchasePrice: Number(form.purchasePrice) || undefined,
+        sku: form.sku.trim() || undefined,
       });
       setNote(`${created.name} saved`);
       window.setTimeout(() => router.push("/inventory"), 700);
-    } catch {
-      setError("Could not save the product. Try again.");
+    } catch (err) {
+      // The server names the real problem — a duplicate SKU, a missing
+      // permission — and that is more use than "try again".
+      setError(
+        err instanceof Error && err.message ? err.message : "Could not save the product."
+      );
     } finally {
       setSaving(false);
     }
@@ -190,12 +219,28 @@ export default function AddProductPage() {
 
             <div className="flex flex-col gap-[8px]">
               <span className={LABEL}>Category</span>
-              <Select kind="category" value={form.category} placeholder="Select product category" options={CATEGORIES} onPick={(v) => set("category", v)} open={open} setOpen={setOpen} />
+              <Select kind="category" value={form.category} placeholder="Select product category" options={options.categories} onPick={(v) => set("category", v)} open={open} setOpen={setOpen} />
             </div>
 
             <div className="flex flex-col gap-[8px]">
               <span className={LABEL}>Brand</span>
-              <Select kind="brand" value={form.brand} placeholder="Select product brand" options={BRANDS} onPick={(v) => set("brand", v)} open={open} setOpen={setOpen} />
+              <Select kind="brand" value={form.brand} placeholder="Select product brand (optional)" options={options.brands} onPick={(v) => set("brand", v)} open={open} setOpen={setOpen} />
+            </div>
+
+            {/* Unit is a required foreign key on the API; SKU is the one
+                write-only convenience worth exposing, since a shop labels its
+                own shelves. */}
+            <div className="flex flex-col gap-[30px] sm:flex-row sm:items-start">
+              <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
+                <span className={LABEL}>Unit</span>
+                <Select kind="unit" value={form.unit} placeholder="Select unit" options={options.units} onPick={(v) => set("unit", v)} open={open} setOpen={setOpen} />
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
+                <label htmlFor="p-sku" className={LABEL}>SKU <span className="text-[#8f8d87]">(optional)</span></label>
+                <div className={FIELD}>
+                  <input id="p-sku" value={form.sku} onChange={(e) => set("sku", e.target.value)} placeholder="Left blank, the API makes one" className={INPUT} />
+                </div>
+              </div>
             </div>
 
             {/* 57:12790 — two columns, 30px apart */}
@@ -224,7 +269,7 @@ export default function AddProductPage() {
               </div>
               <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
                 <span className={LABEL}>Tax / VAT</span>
-                <Select kind="tax" value={form.tax} placeholder="Select tax rate" options={TAX_RATES} onPick={(v) => set("tax", v)} open={open} setOpen={setOpen} />
+                <Select kind="tax" value={form.tax} placeholder="Select tax (optional)" options={options.taxes} onPick={(v) => set("tax", v)} open={open} setOpen={setOpen} />
               </div>
             </div>
 

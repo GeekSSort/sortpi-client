@@ -1,13 +1,15 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { TransferRecord } from "@/types/transfers";
-import { TransferService } from "@/services";
+import { StockItem } from "@/types/stock";
+import { StockService, TransferService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import TablePagination from "@/components/shared/TablePagination";
+import TableSkeleton from "@/components/shared/TableSkeleton";
 import DateField from "@/components/shared/DateField";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
-import { matchesDay } from "@/lib/dateFilter";
+import { toApiDay } from "@/lib/dateFilter";
 
 /**
  * Figma: SORTPoint — Transfers 57:14237.
@@ -20,20 +22,11 @@ import { matchesDay } from "@/lib/dateFilter";
  */
 
 const STATUS_TONE: Record<TransferRecord["status"], Tone> = {
-  "In Stock": "green",
-  "Low Stock": "gold",
-  "Out of Stock": "rose",
-  Completed: "green",
-  Pending: "amber",
+  Draft: "slate",
+  Dispatched: "amber",
+  Received: "green",
+  Cancelled: "red",
 };
-
-const LOCATIONS = [
-  "Head Office, Dhaka",
-  "Uttara Branch, Dhaka",
-  "Gulshan Branch, Dhaka",
-  "Chittagong Warehouse",
-  "Sylhet Outlet",
-] as const;
 
 function AddIcon() {
   return (
@@ -70,15 +63,17 @@ function ArrowRight() {
   );
 }
 
-// Transfer ID  From  To  Products  Quantity  Date  Status
-const GRID = "grid-cols-[145fr_184fr_184fr_142fr_142fr_190fr_140fr]";
+// Transfer ID  From  To  Products  Quantity  Date  Status  Action
+const GRID = "grid-cols-[135fr_165fr_165fr_130fr_110fr_170fr_130fr_120fr]";
 const CELL = "flex min-w-0 items-center p-[12px]";
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e]";
 const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
 const FORM_FIELD =
   "flex h-[44px] items-center rounded-[10px] bg-white px-[12px] text-[14px] tracking-[-0.28px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] outline-none placeholder:text-[rgba(82,82,82,0.6)]";
 
-const blank = { from: "", to: "", products: "", quantity: "" };
+// Warehouse ids and a stock line — a transfer moves a specific variant between
+// two specific warehouses, so names were never enough to send one.
+const blank = { from: "", to: "", stockLineId: "", quantity: "" };
 
 export default function TransfersPage() {
   const [transfers, setTransfers] = useState<TransferRecord[]>([]);
@@ -91,50 +86,144 @@ export default function TransfersPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [draft, setDraft] = useState({ ...blank });
   const [formError, setFormError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  /** The debounce is for typing. Waiting 250ms to make the FIRST request
+      just adds a quarter second of blank table on reload. */
+  const firstLoad = useRef(true);
+  /** The API's count of everything matching, not of what this page holds. */
+  const [total, setTotal] = useState(0);
+  const [refresh, setRefresh] = useState(0);
+  const [saving, setSaving] = useState(false);
+  /** Which transfer is mid-dispatch or mid-receive. */
+  const [movingId, setMovingId] = useState<string | null>(null);
+  const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
+  /** Stock in the chosen source, so a line can name a real variant. */
+  const [sourceStock, setSourceStock] = useState<StockItem[]>([]);
 
   useEffect(() => {
-    TransferService.getTransfers({ search: query })
-      .then((res) => setTransfers(res.data))
+    // Debounced and guarded: a request per keystroke let a slow answer for
+    // "TR" land after "TRF-2" and repopulate the table with the wrong rows.
+    let live = true;
+    const day = date ? toApiDay(date) : undefined;
+    const id = setTimeout(() => {
+      setLoading(true);
+      TransferService.getTransfers({
+        search: query,
+        startDate: day,
+        endDate: day,
+        page,
+        limit: pageSize,
+      })
+        .then((res) => {
+          if (!live) return;
+          setTransfers(res.data);
+          setTotal(res.total);
+          setFailed(false);
+        })
+        .catch(() => live && setFailed(true))
+        .finally(() => live && setLoading(false));
+    }, firstLoad.current ? 0 : 250);
+    firstLoad.current = false;
+    return () => {
+      live = false;
+      clearTimeout(id);
+    };
+  }, [query, date, refresh, page, pageSize]);
+
+  // The two ends of a transfer. Loaded once — a shop's warehouse list does not
+  // change while somebody is filling in this form.
+  useEffect(() => {
+    TransferService.getWarehouses()
+      .then(setWarehouses)
       .catch(() => {});
-  }, [query]);
+  }, []);
 
-  const visible = useMemo(
-    () => transfers.filter((t) => matchesDay(t.dateTime, date)),
-    [transfers, date]
-  );
-  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+  // What is actually on the source shelf. A transfer cannot send what is not
+  // there, and this is where the variant id comes from.
+  useEffect(() => {
+    if (!draft.from) {
+      setSourceStock([]);
+      return;
+    }
+    let live = true;
+    StockService.getStock({ warehouse: draft.from, limit: 200 })
+      .then((res) => live && setSourceStock(res.data.filter((r) => r.available > 0)))
+      .catch(() => live && setSourceStock([]));
+    return () => {
+      live = false;
+    };
+  }, [draft.from]);
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const current = Math.min(page, totalPages);
-  const rows = useMemo(
-    () => visible.slice((current - 1) * pageSize, current * pageSize),
-    [visible, current, pageSize]
-  );
+  // The server already filtered and sliced. `rows` is the page.
+  const rows = transfers;
 
-  const createTransfer = () => {
+  const pickedLine = sourceStock.find((r) => r.id === draft.stockLineId) ?? null;
+
+  const createTransfer = async () => {
     const qty = Number(draft.quantity);
-    if (!draft.from) return setFormError("Pick a source location.");
-    if (!draft.to) return setFormError("Pick a destination.");
+    if (!draft.from) return setFormError("Pick a source warehouse.");
+    if (!draft.to) return setFormError("Pick a destination warehouse.");
     if (draft.from === draft.to) return setFormError("Source and destination must differ.");
-    if (!draft.products.trim()) return setFormError("Describe what is being transferred.");
+    if (!pickedLine) return setFormError("Pick a product to send.");
+    if (!pickedLine.variantId) return setFormError("That line is missing its variant.");
     if (!draft.quantity.trim() || Number.isNaN(qty) || qty <= 0)
       return setFormError("Enter a quantity greater than zero.");
-    const now = new Date();
-    const created: TransferRecord = {
-      id: `trf-${Date.now()}`,
-      transferId: `TRF-${String(transfers.length + 1).padStart(4, "0")}`,
-      fromLocation: draft.from,
-      toLocation: draft.to,
-      productsSummary: draft.products.trim(),
-      quantity: qty,
-      dateTime: `${now.getDate()} ${now.toLocaleString("en-GB", { month: "long" })} ${now.getFullYear()}, ${now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: true })}`,
-      status: "Pending",
-    };
-    // Optimistic: the mock backend has no create endpoint yet.
-    setTransfers((list) => [created, ...list]);
-    setNote(`${created.transferId} created`);
-    setDraft({ ...blank });
+    if (qty > pickedLine.available)
+      return setFormError(`Only ${pickedLine.available} available in that warehouse.`);
+
+    setSaving(true);
     setFormError(null);
-    setCreateOpen(false);
-    setPage(1);
+    try {
+      // A draft. Nothing leaves the shelf until it is dispatched — the screen
+      // used to build a record in local state and call it created.
+      const created = await TransferService.createTransfer({
+        referenceNo: `TRF-${Date.now()}`,
+        fromWarehouseId: draft.from,
+        toWarehouseId: draft.to,
+        items: [{ variantId: pickedLine.variantId, quantity: qty }],
+      });
+      setNote(`${created.transferId} drafted — dispatch it to move the stock`);
+      setDraft({ ...blank });
+      setCreateOpen(false);
+      setPage(1);
+      setRefresh((n) => n + 1);
+    } catch (err) {
+      setFormError(
+        err instanceof Error && err.message ? err.message : "The transfer could not be created."
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /**
+   * Move a transfer along: source -> transit on dispatch, transit ->
+   * destination on receive. Both write two stock movements each, which is why
+   * neither is undoable from here.
+   */
+  const advance = async (row: TransferRecord, to: "dispatch" | "receive") => {
+    if (movingId) return;
+    setMovingId(row.id);
+    setNote(null);
+    try {
+      if (to === "dispatch") await TransferService.dispatchTransfer(row.id);
+      // No lines: what arrived is what was sent. Recording a short delivery
+      // needs a per-line count, and that belongs in its own screen.
+      else await TransferService.receiveTransfer(row.id);
+      setNote(`${row.transferId} ${to === "dispatch" ? "dispatched" : "received"}`);
+      setRefresh((n) => n + 1);
+    } catch (err) {
+      setNote(
+        err instanceof Error && err.message
+          ? `${row.transferId}: ${err.message}`
+          : `${row.transferId} could not be ${to === "dispatch" ? "dispatched" : "received"}.`
+      );
+    } finally {
+      setMovingId(null);
+    }
   };
 
   return (
@@ -166,7 +255,15 @@ export default function TransfersPage() {
         </div>
 
         <div className="flex shrink-0 items-center gap-[16px]">
-          <DateField value={date} onChange={setDate} ariaLabel="Filter transfers by date" />
+          <DateField
+            value={date}
+            onChange={(d) => {
+              setDate(d);
+              // Page 1 of the new filter, not page 5 of the old one.
+              setPage(1);
+            }}
+            ariaLabel="Filter transfers by date"
+          />
           <button
             type="button"
             onClick={() => {
@@ -187,7 +284,7 @@ export default function TransfersPage() {
       <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
         <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="overflow-x-auto">
-            <div className="min-w-[980px]">
+            <div className="min-w-[1127px]">
               <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Transfer ID</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>From</span></div>
@@ -196,12 +293,18 @@ export default function TransfersPage() {
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Quantity</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Date</span></div>
                 <div className={`${CELL} h-[40px] justify-center bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Status</span></div>
+                <div className={`${CELL} h-[40px] justify-center bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Action</span></div>
               </div>
 
               <div className="mt-[6px]">
-                {rows.length === 0 && (
+                {rows.length === 0 && loading && (
+                  <TableSkeleton columns={GRID} rows={pageSize} />
+                )}
+                {rows.length === 0 && !loading && (
                   <p className="py-[40px] text-center text-[14px] text-[#525252]">
-                    No transfers match that search or date.
+                    {failed
+                      ? "Transfers could not be loaded. Refresh to try again."
+                      : "No transfers match that search."}
                   </p>
                 )}
                 {rows.map((t, i) => (
@@ -222,6 +325,37 @@ export default function TransfersPage() {
                     <div className={CELL}><span className={`${TEXT} truncate`}>{t.dateTime}</span></div>
                     <div className={`${CELL} justify-center`}>
                       <StatusPill label={t.status} tone={STATUS_TONE[t.status] ?? "slate"} />
+                    </div>
+                    {/* A transfer moves in two halves, and neither was
+                        reachable from this screen: it could be drafted and then
+                        sit there forever. */}
+                    <div
+                      className={`${CELL} justify-center`}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {t.status === "Draft" && (
+                        <button
+                          type="button"
+                          disabled={movingId === t.id}
+                          onClick={() => advance(t, "dispatch")}
+                          className="flex h-[30px] cursor-pointer items-center rounded-[8px] bg-[#f5b800] px-[12px] text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                        >
+                          {movingId === t.id ? "Sending…" : "Dispatch"}
+                        </button>
+                      )}
+                      {t.status === "Dispatched" && (
+                        <button
+                          type="button"
+                          disabled={movingId === t.id}
+                          onClick={() => advance(t, "receive")}
+                          className="flex h-[30px] cursor-pointer items-center rounded-[8px] px-[12px] text-[12px] font-semibold text-[#00b837] shadow-[inset_0_0_0_1px_#00b837] transition-colors hover:bg-[#f5fff8] disabled:opacity-50"
+                        >
+                          {movingId === t.id ? "Receiving…" : "Receive"}
+                        </button>
+                      )}
+                      {(t.status === "Received" || t.status === "Cancelled") && (
+                        <span className="text-[13px] text-[#d4d4d4]">—</span>
+                      )}
                     </div>
                   </button>
                 ))}
@@ -266,7 +400,7 @@ export default function TransfersPage() {
           <TablePagination
             page={current}
             pageSize={pageSize}
-            total={visible.length}
+            total={total}
             onPageChange={setPage}
             onPageSizeChange={(n) => {
               setPageSize(n);
@@ -341,9 +475,10 @@ export default function TransfersPage() {
               type="button"
               style={{ backgroundImage: GOLD_GRADIENT }}
               className={MODAL_PRIMARY}
+              disabled={saving}
               onClick={createTransfer}
             >
-              Create transfer
+              {saving ? "Creating…" : "Create transfer"}
             </button>
           </>
         }
@@ -358,15 +493,20 @@ export default function TransfersPage() {
                 value={draft[k]}
                 aria-label={k === "from" ? "Transfer from" : "Transfer to"}
                 onChange={(e) => {
-                  setDraft((d) => ({ ...d, [k]: e.target.value }));
+                  // Changing the source invalidates the line picked from it.
+                  setDraft((d) => ({
+                    ...d,
+                    [k]: e.target.value,
+                    ...(k === "from" ? { stockLineId: "", quantity: "" } : {}),
+                  }));
                   setFormError(null);
                 }}
                 className={`${FORM_FIELD} cursor-pointer`}
               >
-                <option value="">Select a location</option>
-                {LOCATIONS.map((l) => (
-                  <option key={l} value={l}>
-                    {l}
+                <option value="">Select a warehouse</option>
+                {warehouses.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name}
                   </option>
                 ))}
               </select>
@@ -374,17 +514,26 @@ export default function TransfersPage() {
           ))}
 
           <label className="flex flex-col gap-[6px]">
-            <span className="text-[14px] font-medium tracking-[-0.28px] text-[#525252]">Products</span>
-            <input
-              value={draft.products}
+            <span className="text-[14px] font-medium tracking-[-0.28px] text-[#525252]">Product</span>
+            <select
+              value={draft.stockLineId}
+              disabled={!draft.from}
+              aria-label="Product to transfer"
               onChange={(e) => {
-                setDraft((d) => ({ ...d, products: e.target.value }));
+                setDraft((d) => ({ ...d, stockLineId: e.target.value }));
                 setFormError(null);
               }}
-              placeholder="e.g. 5 Products"
-              aria-label="Products"
-              className={FORM_FIELD}
-            />
+              className={`${FORM_FIELD} cursor-pointer disabled:opacity-60`}
+            >
+              <option value="">
+                {draft.from ? "Select a product in stock there" : "Pick a source warehouse first"}
+              </option>
+              {sourceStock.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name} — {r.available} available
+                </option>
+              ))}
+            </select>
           </label>
 
           <label className="flex flex-col gap-[6px]">
@@ -400,9 +549,17 @@ export default function TransfersPage() {
               aria-label="Quantity"
               className={FORM_FIELD}
             />
+            {pickedLine && (
+              <span className="text-[12px] text-[#8a8a8a]">
+                {pickedLine.available} available in that warehouse.
+              </span>
+            )}
           </label>
 
-          <p className="text-[12px] text-[#8a8a8a]">New transfers start as Pending.</p>
+          <p className="text-[12px] text-[#8a8a8a]">
+            A new transfer is a draft. Dispatching it is what takes the stock off the
+            source shelf.
+          </p>
           {formError && <p className="text-[13px] text-[#ef4444]">{formError}</p>}
         </div>
       </Modal>

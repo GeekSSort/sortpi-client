@@ -14,6 +14,8 @@ export interface PayrollRecord {
   netSalary: number;
   netSalaryFormatted: string;
   status: "Paid" | "Pending";
+  /** Draft-run payslips can be corrected; posted ones are in the ledger. */
+  editable?: boolean;
 }
 
 export interface PayrollQueryFilter {

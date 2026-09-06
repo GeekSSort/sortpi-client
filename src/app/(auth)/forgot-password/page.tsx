@@ -7,14 +7,14 @@ import AuthShell, { AuthAlert, AuthButton, AuthField } from "@/components/auth/A
 import { RegistrationService } from "@/services/registrationService";
 
 /**
- * Forgotten password, for someone inside a company.
+ * Forgotten password for someone inside a company.
  *
- * Runs on that company's own address, because that is where the account lives.
- * Opening this page on a different company's address must not find them — the
- * server looks the email up within the company the address names, and nowhere
- * else. That is what stops the page being used to discover who banks with whom.
+ * It runs on that company's own address, because that is where the account
+ * lives. On another company's address it must not find them: the server looks
+ * the email up only inside the company the address names. That stops the page
+ * being used to find out who is a customer of whom.
  *
- * Platform staff have their own page at /platform/forgot-password.
+ * Our own staff use /platform/forgot-password.
  */
 export default function ForgotPasswordPage() {
   const router = useRouter();

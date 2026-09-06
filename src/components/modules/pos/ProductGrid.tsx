@@ -3,18 +3,18 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import { ProductCategory, ProductItem } from "@/types/pos";
+import ProductPeek, { PeekAnchor } from "./ProductPeek";
 import { PosService } from "@/services";
 import TablePagination from "@/components/shared/TablePagination";
 
 /**
- * Figma: SORTPoint — POS product list 45:2171.
+ * The till's product list — Figma 45:2171.
  *
- * 565-wide column: a 44px search bar, 16px gap, then the category row (40px),
- * 24px gap and a 3-up grid of 180x248 cards (12.5 across, 14 down) over a 48px
- * pagination bar.
+ * A 565 column: 44px search, the category row, then three 180x248 cards
+ * across over a 48px pager.
  *
- * Below the design width the grid reflows on its own track size rather than
- * holding three columns — mine, no Figma frame for it.
+ * On a narrower screen the cards keep their size and the grid drops a column.
+ * There is no Figma frame for that; it is our choice.
  */
 
 const CATEGORIES: ProductCategory[] = [
@@ -25,7 +25,7 @@ const CATEGORIES: ProductCategory[] = [
   "Home & Living",
 ];
 
-/** Node 45:2174 — magnifier. */
+/** Magnifier, node 45:2174. */
 function SearchIcon() {
   return (
     <svg className="block size-[24px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -42,7 +42,7 @@ function SearchIcon() {
   );
 }
 
-/** Node 45:2179 — barcode scan. */
+/** Barcode scanner, node 45:2179. */
 function ScanIcon() {
   return (
     <svg className="block size-[24px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -57,7 +57,7 @@ function ScanIcon() {
   );
 }
 
-/** vuesax/linear/more, turned upright — node 45:2196. */
+/** The upright "more" dots, node 45:2196. */
 function MoreIcon() {
   return (
     <svg className="block size-[16px] -rotate-90" viewBox="0 0 16 16" fill="none" aria-hidden>
@@ -73,11 +73,19 @@ interface ProductGridProps {
 }
 
 export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
+  const [peeked, setPeeked] = useState<PeekAnchor | null>(null);
+
+  /** Remember which tile the pointer is on, and where it sits on screen. */
+  const peek = (product: ProductItem, el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    setPeeked({ product, rect: { top: r.top, left: r.left, right: r.right, bottom: r.bottom } });
+  };
+
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [category, setCategory] = useState<ProductCategory>("All Categories");
 
-  // Built from what the catalogue actually holds. The hard-coded list only ever
-  // matched the sample data, so every real product fell outside all four tabs.
+  // Built from what the catalogue holds. The old fixed list only matched the
+  // sample data, so every real product fell outside all four tabs.
   const categories = React.useMemo(() => {
     const found = Array.from(new Set(products.map((p) => p.category).filter(Boolean)));
     found.sort();
@@ -85,9 +93,8 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
   }, [products]);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
-  // 9 a page — 3 across x 3 down at the design width, which is the Figma page.
-  // The grid stays on 150-180px cards and simply adds columns on a wider screen
-  // rather than stretching three of them to 300px each.
+  // Nine a page: three across, three down, as in the design. On a wider
+  // screen the grid adds columns instead of stretching the cards.
   const [pageSize, setPageSize] = useState(9);
 
   useEffect(() => {
@@ -168,22 +175,37 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
       </div>
 
       {/* Grid — 45:2197, 24px below the category row */}
+      <ProductPeek anchor={peeked} />
+
       <div className="mt-[24px] grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-x-[12.5px] gap-y-[14px]">
-        {shown.map((p) => (
+        {shown.map((p) => {
+          // The server refuses to sell what is not on the shelf, so the till
+          // should not let a cashier add it and find out at payment.
+          const soldOut = p.stock <= 0;
+          return (
           <button
             key={p.id}
             type="button"
+            disabled={soldOut}
+            // Hovering opens the details card beside the tile. Focus does the
+            // same, so a keyboard reaches it too.
+            onMouseEnter={(e) => peek(p, e.currentTarget)}
+            onFocus={(e) => peek(p, e.currentTarget)}
+            onMouseLeave={() => setPeeked(null)}
+            onBlur={() => setPeeked(null)}
             onClick={() => onSelectProduct?.(p)}
-            className="flex cursor-pointer items-center overflow-clip rounded-[10px] border-[0.6px] border-solid border-[#eaeaea] bg-white p-[10px] text-left transition-colors hover:border-[#f5b800]"
+            className={`flex items-center overflow-clip rounded-[10px] border-[0.6px] border-solid border-[#eaeaea] bg-white p-[10px] text-left transition-colors ${
+              soldOut ? "cursor-not-allowed opacity-55" : "cursor-pointer hover:border-[#f5b800]"
+            }`}
           >
             <div className="flex w-full flex-col items-center justify-center gap-[12px]">
               <div className="relative aspect-square w-full overflow-hidden rounded-[8px] border-[0.3px] border-solid border-[#eaeaea] bg-[#fafafa]">
                 {p.image ? (
                   <Image src={p.image} alt={p.name} fill sizes="180px" className="object-cover" />
                 ) : (
-                  // Real products carry no image yet, and an empty src makes the
-                  // browser re-download the page. Initials are enough to tell
-                  // two products apart on a till screen.
+                  // Real products have no image yet, and an empty src makes the
+                  // browser reload the page. Initials are enough to tell two
+                  // products apart on a till.
                   <span
                     aria-hidden
                     className="flex h-full w-full items-center justify-center text-[22px] font-semibold text-[#c9c9c9]"
@@ -200,17 +222,27 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
                   <span className="text-[16px] leading-[24px] font-medium whitespace-nowrap text-[#f5b800]">
                     {p.priceFormatted}
                   </span>
-                  <span className="flex h-[24px] shrink-0 items-center gap-[7px] overflow-clip rounded-[17px] bg-[#f5fff8] px-[8px]">
-                    <span className="size-[6px] shrink-0 rounded-full bg-[#00b837]" />
-                    <span className="text-[12px] leading-normal font-normal tracking-[-0.24px] whitespace-nowrap text-[#00b837]">
-                      Stock {p.stock}
+                  <span
+                    className="flex h-[24px] shrink-0 items-center gap-[7px] overflow-clip rounded-[17px] px-[8px]"
+                    style={{ backgroundColor: soldOut ? "#ffdfe2" : "#f5fff8" }}
+                  >
+                    <span
+                      className="size-[6px] shrink-0 rounded-full"
+                      style={{ backgroundColor: soldOut ? "#e63946" : "#00b837" }}
+                    />
+                    <span
+                      className="text-[12px] leading-normal font-normal tracking-[-0.24px] whitespace-nowrap"
+                      style={{ color: soldOut ? "#e63946" : "#00b837" }}
+                    >
+                      {soldOut ? "None left" : `Stock ${p.stock}`}
                     </span>
                   </span>
                 </div>
               </div>
             </div>
           </button>
-        ))}
+          );
+        })}
       </div>
 
       {filtered.length === 0 && (
@@ -237,7 +269,7 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
   );
 }
 
-/** First letters of the first two words — a stand-in for a missing photo. */
+/** First letters of the first two words, standing in for a missing photo. */
 function initials(name: string): string {
   return (name || "?")
     .split(/\s+/)

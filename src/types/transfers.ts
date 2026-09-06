@@ -6,7 +6,8 @@ export interface TransferRecord {
   productsSummary: string;
   quantity: number;
   dateTime: string;
-  status: "In Stock" | "Low Stock" | "Out of Stock" | "Completed" | "Pending";
+  /** The API's four, not the stock screen's — those were copied in by mistake. */
+  status: "Draft" | "Dispatched" | "Received" | "Cancelled";
 }
 
 export interface TransferQueryFilter {
@@ -14,7 +15,18 @@ export interface TransferQueryFilter {
   status?: string;
   from?: string;
   to?: string;
+  startDate?: string;
+  endDate?: string;
   page?: number;
   limit?: number;
 }
 
+
+/** What `POST /inventory/transfers/` needs. Ids, and quantities only. */
+export interface CreateTransferPayload {
+  referenceNo: string;
+  fromWarehouseId: string;
+  toWarehouseId: string;
+  note?: string;
+  items: { variantId: string; quantity: number }[];
+}

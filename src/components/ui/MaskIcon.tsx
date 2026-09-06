@@ -1,9 +1,9 @@
 import React from "react";
 
 /**
- * Renders an exported Figma SVG through a CSS mask so the glyph stays exact
- * while its colour follows `currentColor`. Figma exports bake the fill in,
- * which breaks any component that needs the same icon in two colours.
+ * Draws a Figma SVG through a CSS mask, so the shape stays exact and the
+ * colour follows `currentColor`. Figma bakes the fill into its exports, which
+ * breaks any component that needs the same icon in two colours.
  */
 export default function MaskIcon({
   src,

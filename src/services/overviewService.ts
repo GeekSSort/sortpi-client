@@ -9,12 +9,11 @@ import {
 /**
  * The dashboard's pop-out panels.
  *
- * Each one reads a real resource list. There is no `/ceo-overview/...` on the
- * server and there does not need to be — a panel showing recent sales wants
- * the sales list, not a second endpoint returning the same rows under another
- * name.
+ * There is no `/ceo-overview/...` on the server, and there does not need to
+ * be: a panel of recent sales wants the sales list, not a second endpoint
+ * returning the same rows under another name.
  *
- * A modest page size on purpose: these are glance panels, not reports.
+ * Small pages on purpose. These are for a quick look, not for reporting.
  */
 
 const PANEL_SIZE = 25;

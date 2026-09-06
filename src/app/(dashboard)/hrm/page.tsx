@@ -1,393 +1,522 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import Image from "next/image";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import {
-  Calendar,
-  Plus,
-  Search,
-  Filter,
-  MoreVertical,
-  ChevronLeft,
-  ChevronRight,
-  ChevronDown,
-  X,
-  CreditCard,
-} from "lucide-react";
 import { EmployeeRecord } from "@/types/hrm";
-import { HrmService } from "@/services";
+import { HrmService } from "@/services/hrmService";
+import StatusPill, { Tone } from "@/components/shared/StatusPill";
+import RowActionMenu from "@/components/shared/RowActionMenu";
+import TablePagination from "@/components/shared/TablePagination";
+import TableSkeleton from "@/components/shared/TableSkeleton";
+import Avatar from "@/components/shared/Avatar";
+import DateField from "@/components/shared/DateField";
+import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
+import { toTimeInput } from "@/services/mappers/employee";
+import { toApiDay } from "@/lib/dateFilter";
 
+/**
+ * All Employees — Figma 59:17405.
+ *
+ * Columns are fixed at both ends and share the middle: # 80, Employee 230,
+ * then four equal columns, then Status 140 and Action 83. Rows are 54 tall
+ * with 12px cells, matching the frame.
+ */
+
+const GRID = "grid-cols-[80px_230px_1fr_1fr_1fr_1fr_140px_83px]";
+const CELL = "flex items-center px-[12px]";
+const HEAD =
+  "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e] whitespace-nowrap";
+const BODY =
+  "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252] whitespace-nowrap";
+
+const STATUS_TONE: Record<EmployeeRecord["status"], Tone> = {
+  Present: "mint",
+  "On Leave": "gold",
+  Absent: "rose",
+};
+
+const FILTERS = ["All Employees", "Present", "On Leave", "Absent"] as const;
+
+const FIELD =
+  "h-[44px] w-full rounded-[10px] bg-white px-[12px] text-[14px] text-[#1e1e1e] shadow-[inset_0_0_0_1px_#eaeaea] outline-none focus:shadow-[inset_0_0_0_1.5px_#f5b800]";
+
+/** Local clock as "HH:MM", the value a time input wants. */
+function nowTime(): string {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function SearchIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden className="shrink-0">
+      <circle cx="11" cy="11" r="7.5" stroke="currentColor" strokeWidth="1.5" />
+      <path d="m20 20-3.2-3.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function FilterIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden className="shrink-0">
+      <path
+        d="M2.25 4.5h13.5M4.5 9h9m-6.75 4.5h4.5"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function CaretIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden
+      className={`shrink-0 transition-transform duration-150 ${open ? "rotate-180" : ""}`}
+    >
+      <path d="m7 10 5 5 5-5" fill="currentColor" />
+    </svg>
+  );
+}
+
+function PayrollIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden className="shrink-0">
+      <rect x="2.5" y="5" width="15" height="10" rx="2" stroke="currentColor" strokeWidth="1.5" />
+      <circle cx="10" cy="10" r="2.25" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M5.5 8.5v3M14.5 8.5v3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function AddIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden className="shrink-0">
+      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** No employee photos exist server-side, so the avatar cell shows initials. */
 export default function HrmPage() {
-  const [employees, setEmployees] = useState<EmployeeRecord[]>([]);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedDate, setSelectedDate] = useState("24 August 2026");
+  const [rows, setRows] = useState<EmployeeRecord[]>([]);
+  const [total, setTotal] = useState(0);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<(typeof FILTERS)[number]>("All Employees");
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [day, setDay] = useState<Date | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [note, setNote] = useState<string | null>(null);
+  const filterRef = useRef<HTMLDivElement>(null);
 
-  // New employee state
-  const [name, setName] = useState("");
-  const [department, setDepartment] = useState<"Management" | "HR" | "Sales" | "Accounts" | "IT">("Management");
-  const [designation, setDesignation] = useState("");
+  // Row actions open a dialog rather than firing straight at the API, so the
+  // time can be corrected before it is saved.
+  const [clockOf, setClockOf] = useState<{ row: EmployeeRecord; kind: "in" | "out" } | null>(null);
+  const [clockTime, setClockTime] = useState("");
+  const [dropOf, setDropOf] = useState<EmployeeRecord | null>(null);
+  const [saving, setSaving] = useState(false);
+  /** The debounce is for typing. Waiting 250ms to make the FIRST request
+      just adds a quarter second of blank table on reload. */
+  const firstLoad = useRef(true);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await HrmService.getEmployees({
+        search: query || undefined,
+        status: filter === "All Employees" ? undefined : filter,
+        day: day ? toApiDay(day) : undefined,
+        page,
+        limit: pageSize,
+      });
+      setRows(res.data);
+      setTotal(res.total);
+      setNote(null);
+    } catch (e) {
+      setNote(HrmService.describeError(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [query, filter, day, page, pageSize]);
 
   useEffect(() => {
-    HrmService.getEmployees({ search: searchQuery }).then((res) => {
-      setEmployees(res.data);
-    });
-  }, [searchQuery]);
+    // Debounced: this used to fire a request per keystroke. The guard was
+    // already here, so the rows were never wrong — just five requests to type
+    // a name.
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      setLoading(true);
+      (async () => {
+        try {
+          const res = await HrmService.getEmployees({
+            search: query || undefined,
+            status: filter === "All Employees" ? undefined : filter,
+            day: day ? toApiDay(day) : undefined,
+            page,
+            limit: pageSize,
+          });
+          if (cancelled) return;
+          setRows(res.data);
+          setTotal(res.total);
+          setNote(null);
+        } catch (e) {
+          if (!cancelled) setNote(HrmService.describeError(e));
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      })();
+    }, firstLoad.current ? 0 : 250);
+    firstLoad.current = false;
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query, filter, day, page, pageSize]);
 
-  const handleCreateEmployee = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name || !designation) return;
+  useEffect(() => {
+    if (!filterOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (filterRef.current && !filterRef.current.contains(e.target as Node)) setFilterOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setFilterOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [filterOpen]);
 
-    const created = await HrmService.createEmployee({
-      name,
-      department,
-      designation,
-      status: "Present",
-    });
+  const act = async (fn: () => Promise<void>, done: string) => {
+    setSaving(true);
+    try {
+      await fn();
+      setNote(done);
+      setClockOf(null);
+      setDropOf(null);
+      await load();
+    } catch (e) {
+      setNote(HrmService.describeError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
 
-    setEmployees((prev) => [created, ...prev]);
-    setIsAddModalOpen(false);
-    setName("");
-    setDesignation("");
+  /** Open the clock dialog with whatever time is already on the row. */
+  const openClock = (row: EmployeeRecord, kind: "in" | "out") => {
+    setClockTime(toTimeInput(kind === "in" ? row.checkIn : row.checkOut) || nowTime());
+    setClockOf({ row, kind });
   };
 
   return (
-    <div className="w-full flex flex-col gap-5 pb-8 select-none">
-      {/* Top Page Header Section */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        {/* Title & Subtitle */}
-        <div>
-          <h2 className="text-xl sm:text-2xl font-extrabold text-gray-900 tracking-tight">
-            All Employees
-          </h2>
-          <p className="text-xs sm:text-sm text-gray-500 mt-0.5">
-            Manage employee records, attendance, check-in/out, and employee status from one place.
-          </p>
-        </div>
-
-        {/* Action Controls: Mini Payroll Button, Date Filter & Add New */}
-        <div className="flex items-center gap-2.5 sm:gap-3 flex-wrap sm:flex-nowrap">
-          {/* Mini Payroll Button (Requested) */}
-          <Link
-            href="/hrm/payroll"
-            className="flex items-center gap-2 px-3.5 py-2.5 bg-amber-50 hover:bg-amber-100/80 text-amber-700 border border-amber-200/80 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer shadow-2xs"
-            title="Manage Payroll"
-          >
-            <CreditCard className="w-4 h-4 text-amber-600" />
-            <span>Payroll</span>
-          </Link>
-
-          {/* Date Selector Pill */}
+    <div className="flex w-full flex-col gap-[14px] select-none">
+      {/* Headline — 59:17407. Same shape as the other list pages: search on the
+          left, the controls that narrow the list on the right. */}
+      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
+        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
+          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
+            <SearchIcon />
+            <input
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setPage(1);
+              }}
+              placeholder="Search by name, department or designation..."
+              aria-label="Search employees"
+              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
+            />
+          </div>
           <button
             type="button"
-            className="flex items-center gap-2.5 px-4 py-2.5 bg-white border border-gray-200 hover:border-gray-300 rounded-xl text-xs sm:text-sm font-semibold text-gray-700 shadow-2xs hover:bg-gray-50 transition-colors cursor-pointer"
+            aria-label="Filter"
+            onClick={() => setFilterOpen((v) => !v)}
+            className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e]"
           >
-            <span>{selectedDate}</span>
-            <Calendar className="w-4 h-4 text-gray-400" />
+            <FilterIcon />
           </button>
+        </div>
 
-          {/* Add New Button */}
+        <div className="flex flex-col items-stretch gap-[12px] sm:flex-row sm:items-center sm:gap-[16px]">
+          <div ref={filterRef} className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setFilterOpen((v) => !v)}
+              aria-haspopup="listbox"
+              aria-expanded={filterOpen}
+              className="flex h-[48px] w-full cursor-pointer items-center justify-between gap-[12px] rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] py-[12px] text-[16px] leading-[24px] font-medium whitespace-nowrap text-[#525252] transition-colors hover:bg-[#fafafa] sm:w-auto"
+            >
+              {filter}
+              <CaretIcon open={filterOpen} />
+            </button>
+
+            {filterOpen && (
+              <ul
+                role="listbox"
+                className="absolute right-0 z-30 mt-[6px] w-[168px] overflow-hidden rounded-[10px] border border-[#eaeaea] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)]"
+              >
+                {FILTERS.map((f) => (
+                  <li key={f}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={f === filter}
+                      onClick={() => {
+                        setFilter(f);
+                        setPage(1);
+                        setFilterOpen(false);
+                      }}
+                      className={`w-full cursor-pointer px-[14px] py-[9px] text-left text-[14px] transition-colors hover:bg-[#fdf7e6] ${
+                        f === filter ? "bg-[#fdf7e6] font-medium text-[#1e1e1e]" : "text-[#525252]"
+                      }`}
+                    >
+                      {f}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <DateField
+            value={day}
+            onChange={(d) => {
+              setDay(d);
+              // Page 1 of the new day, not page 5 of the old one.
+              setPage(1);
+            }}
+            ariaLabel="Filter attendance by date"
+          />
+
+          <Link
+            href="/hrm/payroll"
+            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] py-[12px] text-[16px] leading-[24px] font-medium whitespace-nowrap text-[#525252] transition-colors hover:bg-[#fafafa]"
+          >
+            <PayrollIcon />
+            Payroll
+          </Link>
+
           <Link
             href="/hrm/add"
-            className="flex items-center gap-2 px-5 py-2.5 bg-[#F4B41A] hover:bg-[#E5A612] text-white rounded-xl text-xs sm:text-sm font-bold shadow-xs transition-all cursor-pointer"
+            style={{
+              backgroundImage:
+                "linear-gradient(180deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0) 100%), linear-gradient(90deg, rgb(245,184,0) 0%, rgb(245,184,0) 100%)",
+            }}
+            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
           >
-            <Plus className="w-4 h-4 stroke-[3]" />
-            <span>Add New</span>
+            <AddIcon />
+            Add New
           </Link>
         </div>
       </div>
 
-      {/* Employee List Container Card */}
-      <div className="bg-white rounded-3xl border border-gray-100 shadow-[0_4px_25px_rgba(0,0,0,0.02)] overflow-hidden">
-        {/* Card Header: Product List Title + Search & Filter */}
-        <div className="p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-50">
-          <h3 className="text-base font-bold text-gray-900">
-            Employee List
-          </h3>
+      {/* Table card — 59:17439 */}
+      <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+        {note && (
+          <p role="status" className="mx-[16px] mt-[16px] rounded-[8px] bg-[#fdf7e6] px-[12px] py-[8px] text-[13px] text-[#6d5b46]">
+            {note}
+          </p>
+        )}
 
-          <div className="flex items-center gap-2.5">
-            {/* Search Input */}
-            <div className="relative w-full sm:w-[320px]">
-              <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search by name, ID, email, phone..."
-                className="w-full pl-10 pr-4 py-2 rounded-xl bg-white border border-gray-200 text-xs text-gray-800 placeholder:text-gray-400 focus:outline-none focus:border-amber-400 transition-colors"
-              />
-            </div>
+        {/* Table — 59:17443 */}
+        <div className="hidden px-[16px] pt-[16px] md:block">
+          <div className="overflow-x-auto">
+            <div className="min-w-[1050px]">
+              <div className={`grid ${GRID} items-start overflow-clip`}>
+                <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>#</span></div>
+                <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Employee</span></div>
+                <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Department</span></div>
+                <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Designation</span></div>
+                <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Check In</span></div>
+                <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Check Out</span></div>
+                <div className={`${CELL} h-[40px] justify-center border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Status</span></div>
+                <div className={`${CELL} h-[40px] justify-center border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Action</span></div>
 
-            {/* Filter Funnel Button */}
-            <button
-              type="button"
-              title="Filter employees"
-              className="p-2 border border-gray-200 hover:border-gray-300 rounded-xl text-gray-500 hover:text-gray-800 hover:bg-gray-50 transition-colors cursor-pointer shrink-0"
-            >
-              <Filter className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
+                {loading && (
+                  <div className="col-span-8 px-[12px] py-[28px] text-center text-[14px] text-[#525252]">
+                    Loading employees…
+                  </div>
+                )}
 
-        {/* Data Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-gray-100 text-xs font-semibold text-gray-500 bg-gray-50/50">
-                <th className="py-3.5 px-4 font-semibold w-10">#</th>
-                <th className="py-3.5 px-4 font-semibold">Employee</th>
-                <th className="py-3.5 px-4 font-semibold">Department</th>
-                <th className="py-3.5 px-4 font-semibold">Designation</th>
-                <th className="py-3.5 px-4 font-semibold">Check In</th>
-                <th className="py-3.5 px-4 font-semibold">Check Out</th>
-                <th className="py-3.5 px-4 font-semibold text-center">Status</th>
-                <th className="py-3.5 px-4 font-semibold text-center">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50 text-xs font-medium text-gray-700">
-              {employees.map((item, idx) => (
-                <tr
-                  key={`${item.id}-${idx}`}
-                  className="hover:bg-gray-50/80 transition-colors"
-                >
-                  {/* Index */}
-                  <td className="py-4 px-4 text-gray-500 font-medium">
-                    {item.index}
-                  </td>
+                {loading && rows.length === 0 && (
+                  <TableSkeleton columns={GRID} rows={pageSize} />
+                )}
+                {!loading && rows.length === 0 && (
+                  <div className="col-span-8 px-[12px] py-[28px] text-center text-[14px] text-[#525252]">
+                    No employees match this view.
+                  </div>
+                )}
 
-                  {/* Employee Avatar + Name */}
-                  <td className="py-4 px-4">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-6 h-6 rounded-md bg-amber-100 relative shrink-0 overflow-hidden border border-gray-200">
-                        <Image
-                          src={item.avatar || "/sidebar/nav-avatar.png"}
-                          alt={item.name}
-                          fill
-                          className="object-cover"
+                {!loading &&
+                  rows.map((e, i) => (
+                    <React.Fragment key={e.id || e.index}>
+                      <div className={`${CELL} h-[54px] ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                        <span className={BODY}>{e.index}</span>
+                      </div>
+                      <div className={`${CELL} h-[54px] gap-[8px] ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                        <Avatar radius={4} name={e.name} />
+                        <span className={`${BODY} truncate`}>{e.name}</span>
+                      </div>
+                      <div className={`${CELL} h-[54px] ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                        <span className={`${BODY} truncate`}>{e.department}</span>
+                      </div>
+                      <div className={`${CELL} h-[54px] ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                        <span className={`${BODY} truncate`}>{e.designation}</span>
+                      </div>
+                      <div className={`${CELL} h-[54px] ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                        <span className={BODY}>{e.checkIn}</span>
+                      </div>
+                      <div className={`${CELL} h-[54px] ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                        <span className={BODY}>{e.checkOut}</span>
+                      </div>
+                      <div className={`${CELL} h-[54px] justify-center ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                        <StatusPill label={e.status} tone={STATUS_TONE[e.status] ?? "slate"} />
+                      </div>
+                      <div className={`${CELL} h-[54px] justify-center ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                        <RowActionMenu
+                          label={`Actions for ${e.name}`}
+                          actions={[
+                            { label: "Check in", onSelect: () => openClock(e, "in") },
+                            { label: "Check out", onSelect: () => openClock(e, "out") },
+                            { label: "Deactivate", onSelect: () => setDropOf(e) },
+                          ]}
                         />
                       </div>
-                      <span className="font-semibold text-gray-900 truncate">
-                        {item.name}
-                      </span>
-                    </div>
-                  </td>
-
-                  {/* Department */}
-                  <td className="py-4 px-4 text-gray-600">
-                    {item.department}
-                  </td>
-
-                  {/* Designation */}
-                  <td className="py-4 px-4 text-gray-700 font-medium">
-                    {item.designation}
-                  </td>
-
-                  {/* Check In */}
-                  <td className="py-4 px-4 text-gray-500 font-mono text-[11px]">
-                    {item.checkIn}
-                  </td>
-
-                  {/* Check Out */}
-                  <td className="py-4 px-4 text-gray-500 font-mono text-[11px]">
-                    {item.checkOut}
-                  </td>
-
-                  {/* Status Badge */}
-                  <td className="py-4 px-4 text-center">
-                    {item.status === "Present" && (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-600 border border-emerald-100">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                        Present
-                      </span>
-                    )}
-                    {item.status === "On Leave" && (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-50 text-amber-600 border border-amber-200">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                        On Leave
-                      </span>
-                    )}
-                    {item.status === "Absent" && (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-50 text-rose-600 border border-rose-100">
-                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-                        Absent
-                      </span>
-                    )}
-                  </td>
-
-                  {/* Action 3 Dots */}
-                  <td className="py-4 px-4 text-center">
-                    <button
-                      type="button"
-                      title="More actions"
-                      className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors cursor-pointer inline-flex items-center justify-center"
-                    >
-                      <MoreVertical className="w-4 h-4" />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Footer / Pagination Controls */}
-        <div className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-t border-gray-100 text-xs text-gray-500">
-          {/* Entries summary */}
-          <div className="flex items-center gap-4">
-            <span>Showing 1 to {Math.min(pageSize, employees.length)} of 50 entries</span>
-
-            {/* Page Size Selector */}
-            <div className="relative inline-flex items-center">
-              <button
-                type="button"
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
-              >
-                <span>Show {pageSize}</span>
-                <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
-              </button>
+                    </React.Fragment>
+                  ))}
+              </div>
             </div>
           </div>
-
-          {/* Page Numbers & Nav */}
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              disabled={currentPage === 1}
-              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-              className="w-8 h-8 rounded-xl border border-gray-200 flex items-center justify-center text-gray-500 hover:text-gray-800 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setCurrentPage(1)}
-              className="w-8 h-8 rounded-xl border border-gray-200 flex items-center justify-center font-bold text-xs bg-gray-50 text-gray-900 transition-colors cursor-pointer"
-            >
-              1
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setCurrentPage(2)}
-              className="w-8 h-8 rounded-xl border border-transparent flex items-center justify-center font-semibold text-xs text-gray-500 hover:bg-gray-50 hover:text-gray-800 transition-colors cursor-pointer"
-            >
-              2
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setCurrentPage(3)}
-              className="w-8 h-8 rounded-xl border border-transparent flex items-center justify-center font-semibold text-xs text-gray-500 hover:bg-gray-50 hover:text-gray-800 transition-colors cursor-pointer"
-            >
-              3
-            </button>
-
-            <span className="px-1 text-gray-400 font-bold">...</span>
-
-            <button
-              type="button"
-              onClick={() => setCurrentPage(10)}
-              className="w-8 h-8 rounded-xl border border-transparent flex items-center justify-center font-semibold text-xs text-gray-500 hover:bg-gray-50 hover:text-gray-800 transition-colors cursor-pointer"
-            >
-              10
-            </button>
-
-            <button
-              type="button"
-              disabled={currentPage === 10}
-              onClick={() => setCurrentPage((p) => Math.min(10, p + 1))}
-              className="w-8 h-8 rounded-xl border border-gray-200 flex items-center justify-center text-gray-500 hover:text-gray-800 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
         </div>
+
+        {/* Below md the grid cannot hold eight columns; each row becomes a card. */}
+        <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
+          {rows.map((e) => (
+            <div key={e.id || e.index} className="rounded-[10px] border border-solid border-[#eaeaea] p-[12px]">
+              <div className="flex items-center justify-between gap-[8px]">
+                <div className="flex min-w-0 items-center gap-[8px]">
+                  <Avatar radius={4} name={e.name} />
+                  <span className={`${BODY} truncate`}>{e.name}</span>
+                </div>
+                <StatusPill label={e.status} tone={STATUS_TONE[e.status] ?? "slate"} />
+              </div>
+              <div className="mt-[8px] grid grid-cols-2 gap-x-[12px] gap-y-[4px] text-[13px] text-[#525252]">
+                <span>{e.department}</span>
+                <span className="text-right">{e.designation}</span>
+                <span>In {e.checkIn}</span>
+                <span className="text-right">Out {e.checkOut}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <TablePagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={setPage}
+          onPageSizeChange={(n) => {
+            setPageSize(n);
+            setPage(1);
+          }}
+        />
       </div>
 
-      {/* Add New Employee Modal */}
-      {isAddModalOpen && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl border border-gray-100 animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between border-b border-gray-100 pb-3 mb-4">
-              <h4 className="text-base font-bold text-gray-900">Add New Employee</h4>
-              <button
-                type="button"
-                onClick={() => setIsAddModalOpen(false)}
-                className="p-1 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
+      {/* Check in / check out — the time is editable before it is saved. */}
+      <Modal
+        open={clockOf !== null}
+        onClose={() => setClockOf(null)}
+        title={clockOf?.kind === "out" ? "Check out" : "Check in"}
+        width={420}
+        footer={
+          <>
+            <button type="button" className={MODAL_GHOST} onClick={() => setClockOf(null)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={saving || !clockTime}
+              style={{ backgroundImage: GOLD_GRADIENT }}
+              className={`${MODAL_PRIMARY} disabled:cursor-not-allowed disabled:opacity-60`}
+              onClick={() =>
+                clockOf &&
+                act(
+                  () => HrmService.clock(clockOf.row.id, clockOf.kind, clockTime),
+                  `${clockOf.row.name} checked ${clockOf.kind} at ${clockTime}.`
+                )
+              }
+            >
+              {saving ? "Saving..." : "Save"}
+            </button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-[16px]">
+          <div className="flex items-center gap-[12px]">
+            <Avatar radius={4} name={clockOf?.row.name ?? ""} />
+            <div className="min-w-0">
+              <p className="truncate text-[14px] font-medium text-[#1e1e1e]">{clockOf?.row.name}</p>
+              <p className="truncate text-[13px] text-[#525252]">
+                {clockOf?.row.designation} · {clockOf?.row.department}
+              </p>
             </div>
+          </div>
 
-            <form onSubmit={handleCreateEmployee} className="flex flex-col gap-3.5">
-              <div>
-                <label className="text-xs font-semibold text-gray-700 block mb-1">
-                  Employee Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Ahmed Rahman"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full px-3.5 py-2 text-xs rounded-xl border border-gray-200 focus:outline-none focus:border-amber-400"
-                />
-              </div>
+          <label className="flex flex-col gap-[6px]">
+            <span className="text-[13px] font-medium text-[#1e1e1e]">
+              {clockOf?.kind === "out" ? "Check out time" : "Check in time"}
+            </span>
+            <input
+              type="time"
+              value={clockTime}
+              onChange={(e) => setClockTime(e.target.value)}
+              className={FIELD}
+            />
+          </label>
 
-              <div>
-                <label className="text-xs font-semibold text-gray-700 block mb-1">
-                  Department
-                </label>
-                <select
-                  value={department}
-                  onChange={(e) => setDepartment(e.target.value as any)}
-                  className="w-full px-3 py-2 text-xs rounded-xl border border-gray-200 bg-white focus:outline-none focus:border-amber-400"
-                >
-                  <option value="Management">Management</option>
-                  <option value="HR">HR</option>
-                  <option value="Sales">Sales</option>
-                  <option value="Accounts">Accounts</option>
-                  <option value="IT">IT</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-gray-700 block mb-1">
-                  Designation
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. General Manager"
-                  value={designation}
-                  onChange={(e) => setDesignation(e.target.value)}
-                  className="w-full px-3.5 py-2 text-xs rounded-xl border border-gray-200 focus:outline-none focus:border-amber-400"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-gray-100 mt-2">
-                <button
-                  type="button"
-                  onClick={() => setIsAddModalOpen(false)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-gray-600 hover:bg-gray-100 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-[#F4B41A] hover:bg-[#E5A612] shadow-xs transition-colors"
-                >
-                  Save Employee
-                </button>
-              </div>
-            </form>
+          <div className="flex justify-between rounded-[10px] bg-[#fafafa] px-[12px] py-[10px] text-[13px] text-[#525252]">
+            <span>In {clockOf?.row.checkIn}</span>
+            <span>Out {clockOf?.row.checkOut}</span>
           </div>
         </div>
-      )}
+      </Modal>
+
+      {/* Deactivate asks first — it takes the person off the active roster. */}
+      <Modal
+        open={dropOf !== null}
+        onClose={() => setDropOf(null)}
+        title="Deactivate employee"
+        width={420}
+        footer={
+          <>
+            <button type="button" className={MODAL_GHOST} onClick={() => setDropOf(null)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={saving}
+              style={{ backgroundImage: RED_GRADIENT }}
+              className={`${MODAL_PRIMARY} disabled:cursor-not-allowed disabled:opacity-60`}
+              onClick={() =>
+                dropOf &&
+                act(() => HrmService.deactivate(dropOf.id), `${dropOf.name} deactivated.`)
+              }
+            >
+              {saving ? "Working..." : "Deactivate"}
+            </button>
+          </>
+        }
+      >
+        <p className="text-[14px] leading-[1.6] text-[#525252]">
+          <span className="font-medium text-[#1e1e1e]">{dropOf?.name}</span> will be removed from
+          the active employee list. Their records and attendance history are kept.
+        </p>
+      </Modal>
     </div>
   );
 }

@@ -1,16 +1,14 @@
 import React from "react";
 
 /**
- * The 80mm thermal receipt, in the shape a till actually prints: monospace,
- * dashed rules, everything centred except the meta block and the money column.
+ * An 80mm till receipt: monospace, dashed rules, centred except the details
+ * block and the money column.
  *
- * Deliberately generic — the POS prints a sale with it, Sales reprints an
- * invoice, Returns prints a refund slip and Purchases prints an order. Only the
- * props change; the paper does not.
+ * One component for all of them — a sale, a reprinted invoice, a refund slip,
+ * a purchase order. Only the props change.
  *
- * Monospace is the whole point. A thermal printer lays out in fixed cells, so
- * the money column only lines up if the digits do — hence the mono stack and
- * tabular figures rather than the app's Geist.
+ * Monospace matters: a thermal printer prints in fixed cells, so the money
+ * column only lines up if every digit is the same width.
  */
 
 const MONO = '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, "Courier New", monospace';
@@ -26,9 +24,9 @@ export interface ReceiptLine {
 export interface ReceiptTotal {
   label: string;
   value: string;
-  /** Renders bold — use for Total Amount and Net Payable. */
+  /** Prints bold. Use it for Total Amount and Net Payable. */
   strong?: boolean;
-  /** Draws a dashed rule above this row. */
+  /** Draws a dashed line above this row. */
   ruleAbove?: boolean;
 }
 
@@ -43,9 +41,9 @@ export interface ReceiptProps {
   title: string;
   /** Customer, Phone, Cashier, Terminal ID, Invoice No, Date. */
   meta: { label: string; value: string }[];
-  /** The centred message above the items, if the branch sets one. */
+  /** A centred message above the items, if the branch has one. */
   note?: string;
-  /** Column heading for the description, e.g. "Service Description" or "Item". */
+  /** Heading for the description column, e.g. "Item". */
   itemsHeading?: string;
   items: ReceiptLine[];
   totals: ReceiptTotal[];

@@ -5,19 +5,39 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { NotificationService } from "@/services";
 import { NotificationItem } from "@/types/notifications";
+import { setPosView, usePosView } from "./posView";
 import { useSession } from "@/services/useSession";
 
 /**
- * Figma: SORTPoint — POS environment head 247:13658.
+ * The till's top bar — Figma 247:13658.
  *
- * px-24 py-12 over a #eaeaea rule, a 40px semibold gold title on the left and
- * a 12px-gap pair of 40px controls on the right: a circular bell button at
- * radius 22 with a 0.5px hairline, then the avatar.
+ * A gold title on the left, a round bell button and the avatar on the right.
  *
- * Distinct from the dashboard Header, which runs a 42px title with a subtitle
- * underneath and carries the notification and profile menus. In the till the
- * chrome stays quiet — the page name and who is on the terminal, nothing else.
+ * Not the dashboard's Header: that one has a subtitle and carries the
+ * notification and profile menus. The till stays quiet — the page name and who
+ * is on the terminal, nothing else.
  */
+
+/** Two panes, side by side. */
+function TwoColumnIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden>
+      <rect x="1.5" y="2.5" width="6.5" height="13" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="10" y="2.5" width="6.5" height="13" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+/** Three panes: products, basket, money. */
+function ThreeColumnIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden>
+      <rect x="1.5" y="2.5" width="4" height="13" rx="1.3" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="7" y="2.5" width="4" height="13" rx="1.3" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="12.5" y="2.5" width="4" height="13" rx="1.3" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
 
 function BellIcon() {
   return (
@@ -52,6 +72,7 @@ export default function PosHead() {
   // The bell was a button with no handler. Same behaviour as the dashboard's:
   // opening it lists the notifications and marks them read.
   const [open, setOpen] = useState(false);
+  const view = usePosView();
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [unread, setUnread] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
@@ -100,6 +121,35 @@ export default function PosHead() {
       </h1>
 
       <div ref={ref} className="relative flex shrink-0 items-center gap-[12px]">
+        {/* Only the till has two layouts, so the switch lives here rather than
+            in the shared header. */}
+        {pathname === "/pos" && (
+          <div className="flex items-center gap-[2px] rounded-[10px] bg-[#f0ede6] p-[3px]">
+            {(
+              [
+                ["classic", "Two columns", TwoColumnIcon],
+                ["columns", "Three columns", ThreeColumnIcon],
+              ] as const
+            ).map(([mode, label, Icon]) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setPosView(mode)}
+                aria-label={label}
+                aria-pressed={view === mode}
+                title={label}
+                className={`flex size-[34px] cursor-pointer items-center justify-center rounded-[8px] transition-colors duration-200 ${
+                  view === mode
+                    ? "bg-white text-[#f5b800] shadow-[0_1px_2px_rgba(82,88,102,0.10)]"
+                    : "text-[#8f8d87] hover:text-[#1e1e1e]"
+                }`}
+              >
+                <Icon />
+              </button>
+            ))}
+          </div>
+        )}
+
         <button
           type="button"
           onClick={toggleBell}

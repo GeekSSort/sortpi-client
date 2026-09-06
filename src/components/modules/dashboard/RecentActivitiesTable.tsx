@@ -3,16 +3,18 @@
 import React, { useMemo, useState } from "react";
 import { ActivityStatus, RecentActivityItem } from "@/types/dashboard";
 import TablePagination from "@/components/shared/TablePagination";
+import RowActionMenu from "@/components/shared/RowActionMenu";
+import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
+import Link from "next/link";
 
 /**
- * Figma: SORTPoint — Recent Activities 30:16894.
+ * Recent Activities — Figma 30:16894.
  *
- * 1160x446: a 48px centred title, a 1128-wide table inset 16px (40px head with
- * its own 6px-radius outline, then 54px rows), and a 64px pagination bar.
- * Columns are three fluid (226 each at design width) then 150 / 170 / 130.
+ * A centred title over a table: 40px head, 54px rows, pager below. Three
+ * columns share the space; the last three are fixed at 150, 170 and 130.
  *
- * Below md the rows become stacked cards — a six-column table has nowhere to go
- * on a phone. No Figma frame for that; it's mine.
+ * Below md each row becomes a card, because six columns have nowhere to go on
+ * a phone. No Figma frame for that; it is our choice.
  */
 
 const STATUS: Record<ActivityStatus, { bg: string; fg: string }> = {
@@ -43,25 +45,6 @@ function StatusPill({ status }: { status: ActivityStatus }) {
 }
 
 /** vuesax/linear/more — node 30:17007, turned upright as in the design. */
-function MoreIcon() {
-  return (
-    <svg className="block size-[16px] -rotate-90" viewBox="0 0 16 16" fill="none" aria-hidden>
-      <path
-        d="M3.33333 6.66667C2.6 6.66667 2 7.26667 2 8C2 8.73333 2.6 9.33333 3.33333 9.33333C4.06667 9.33333 4.66667 8.73333 4.66667 8C4.66667 7.26667 4.06667 6.66667 3.33333 6.66667Z"
-        fill="currentColor"
-      />
-      <path
-        d="M12.6667 6.66667C11.9333 6.66667 11.3333 7.26667 11.3333 8C11.3333 8.73333 11.9333 9.33333 12.6667 9.33333C13.4 9.33333 14 8.73333 14 8C14 7.26667 13.4 6.66667 12.6667 6.66667Z"
-        fill="currentColor"
-      />
-      <path
-        d="M8 6.66667C7.26667 6.66667 6.66667 7.26667 6.66667 8C6.66667 8.73333 7.26667 9.33333 8 9.33333C8.73333 9.33333 9.33333 8.73333 9.33333 8C9.33333 7.26667 8.73333 6.66667 8 6.66667Z"
-        fill="currentColor"
-      />
-    </svg>
-  );
-}
-
 
 
 const CELL = "flex items-center p-[12px]";
@@ -76,7 +59,7 @@ interface RecentActivitiesTableProps {
 export default function RecentActivitiesTable({ activities }: RecentActivitiesTableProps) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
-  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [detailOf, setDetailOf] = useState<RecentActivityItem | null>(null);
 
   const totalPages = Math.max(1, Math.ceil(activities.length / pageSize));
   const current = Math.min(page, totalPages);
@@ -144,29 +127,11 @@ export default function RecentActivitiesTable({ activities }: RecentActivitiesTa
                   <div className={`${CELL} w-[170px] shrink-0`}>
                     <StatusPill status={a.status} />
                   </div>
-                  <div className={`${CELL} relative w-[130px] shrink-0 justify-center`}>
-                    <button
-                      type="button"
-                      aria-label={`Actions for ${a.reference}`}
-                      onClick={() => setMenuFor(menuFor === a.id ? null : a.id)}
-                      onBlur={() => window.setTimeout(() => setMenuFor(null), 120)}
-                      className="flex size-[40px] cursor-pointer items-center justify-center overflow-clip rounded-[10px] border border-solid border-[#eaeaea] bg-white text-[#1e1e1e] shadow-[0px_1px_2px_0px_rgba(82,88,102,0.06)] transition-colors hover:bg-[#fafafa]"
-                    >
-                      <MoreIcon />
-                    </button>
-                    {menuFor === a.id && (
-                      <div className="absolute top-[50px] right-[12px] z-30 w-[150px] overflow-hidden rounded-[10px] bg-white py-[4px] text-left shadow-[0_8px_30px_rgba(0,0,0,0.10)] ring-1 ring-[#eaeaea]">
-                        {["View details", "Download receipt"].map((label) => (
-                          <button
-                            key={label}
-                            type="button"
-                            className="block w-full cursor-pointer px-[14px] py-[8px] text-left text-[13px] text-[#525252] transition-colors hover:bg-[#fafafa]"
-                          >
-                            {label}
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                  <div className={`${CELL} w-[130px] shrink-0 justify-center`}>
+                    <RowActionMenu
+                      label={`Actions for ${a.reference}`}
+                      actions={[{ label: "View details", onSelect: () => setDetailOf(a) }]}
+                    />
                   </div>
                 </div>
               ))}
@@ -211,6 +176,45 @@ export default function RecentActivitiesTable({ activities }: RecentActivitiesTa
           }}
         />
       </div>
+      {/* What the row already knows, laid out to be read. */}
+      <Modal
+        open={detailOf !== null}
+        onClose={() => setDetailOf(null)}
+        title={detailOf?.reference ?? "Activity"}
+        width={420}
+        footer={
+          <>
+            <button type="button" className={MODAL_GHOST} onClick={() => setDetailOf(null)}>
+              Close
+            </button>
+            <Link
+              href="/sales-pos/sales"
+              style={{ backgroundImage: GOLD_GRADIENT }}
+              className={MODAL_PRIMARY}
+              onClick={() => setDetailOf(null)}
+            >
+              Open in Sales
+            </Link>
+          </>
+        }
+      >
+        <dl className="flex flex-col gap-[10px] text-[14px]">
+          {(
+            [
+              ["Activity", detailOf?.activity],
+              ["Reference", detailOf?.reference],
+              ["Date & time", detailOf?.dateTime],
+              ["Amount", detailOf?.amountFormatted],
+              ["Status", detailOf?.status],
+            ] as const
+          ).map(([label, value]) => (
+            <div key={label} className="flex items-center justify-between gap-[12px]">
+              <dt className="text-[#525252]">{label}</dt>
+              <dd className="truncate font-medium text-[#1e1e1e]">{value ?? "—"}</dd>
+            </div>
+          ))}
+        </dl>
+      </Modal>
     </div>
   );
 }

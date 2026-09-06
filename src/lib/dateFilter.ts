@@ -13,3 +13,14 @@ export function matchesDay(dateTime: string, day: Date | null): boolean {
     parsed.getDate() === day.getDate()
   );
 }
+
+/**
+ * A picked day as the API writes one: YYYY-MM-DD in the shop's own timezone.
+ *
+ * `toISOString()` is UTC, so a day picked in Dhaka (UTC+6) came out as the
+ * previous date for anything before 06:00 and the filter missed a day.
+ */
+export function toApiDay(day: Date): string {
+  const local = new Date(day.getTime() - day.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 10);
+}

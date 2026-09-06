@@ -1,24 +1,24 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { SaleRecord } from "@/types/sales";
 import { SalesService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import TablePagination from "@/components/shared/TablePagination";
+import TableSkeleton from "@/components/shared/TableSkeleton";
 import DateField from "@/components/shared/DateField";
-import { matchesDay } from "@/lib/dateFilter";
+import { toApiDay } from "@/lib/dateFilter";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
 
 /**
- * Figma: SORTPoint — Sales 45:3002.
+ * Sales — Figma 45:3002.
  *
- * 1160 page: a 54px headline with an outlined date field and a gold Export
- * button, then a 898px card — 68px head with the search field, a 1128-wide
- * table (40px head, 54px rows) and the 64px pagination bar.
+ * Search on the left of the headline, date and Export on the right, then the
+ * table: 40px head, 54px rows, pager below.
  *
- * Below md the rows become stacked cards; the table scrolls in its own
- * container between md and the design width. Mine, no Figma frame for either.
+ * Below md each row becomes a card, and in between the table scrolls
+ * sideways. No Figma frame for either; both are our choice.
  */
 
 const STATUS_TONE: Record<SaleRecord["status"], Tone> = {
@@ -67,6 +67,13 @@ export default function SalesPage() {
   const [date, setDate] = useState<Date | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
+  const [loading, setLoading] = useState(true);
+  /** The debounce is for typing. Waiting 250ms to make the FIRST
+      request just adds a quarter second of blank table on reload. */
+  const firstLoad = useRef(true);
+  /** The API's count of everything matching, not of what this page holds. */
+  const [total, setTotal] = useState(0);
+  const [failed, setFailed] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [invoiceOf, setInvoiceOf] = useState<SaleRecord | null>(null);
@@ -76,35 +83,77 @@ export default function SalesPage() {
   const undoing = refundOf?.status === "Refunded";
 
   useEffect(() => {
-    SalesService.getSales({ search: query })
-      .then((res) => setSales(res.data))
-      .catch(() => {});
-  }, [query]);
+    // A keystroke used to fire a request each, and the answers raced: a slow
+    // reply for "ah" could land after "ahmed" and repopulate the table with
+    // the wrong rows. Wait for a pause, then let only the newest reply win.
+    let live = true;
+    const day = date ? toApiDay(date) : undefined;
+    const id = setTimeout(() => {
+      setLoading(true);
+      // The day goes to the API and so does the page. Both used to be applied
+      // in the browser over one capped page, so filtering to an older day
+      // found nothing that had not already been fetched, and the pager called
+      // 200 the total.
+      SalesService.getSales({
+        search: query,
+        startDate: day,
+        endDate: day,
+        page,
+        limit: pageSize,
+      })
+        .then((res) => {
+          if (!live) return;
+          setSales(res.data);
+          setTotal(res.total);
+          setFailed(false);
+        })
+        .catch(() => live && setFailed(true))
+        .finally(() => live && setLoading(false));
+    }, firstLoad.current ? 0 : 250);
+    firstLoad.current = false;
+    return () => {
+      live = false;
+      clearTimeout(id);
+    };
+  }, [query, date, page, pageSize]);
 
-  const visible = useMemo(() => sales.filter((s) => matchesDay(s.dateTime, date)), [sales, date]);
-  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const current = Math.min(page, totalPages);
-  const rows = useMemo(
-    () => visible.slice((current - 1) * pageSize, current * pageSize),
-    [visible, current, pageSize]
-  );
+  // The server already filtered and sliced. `rows` is the page.
+  const rows = sales;
+
+  /** A field is safe in a CSV only once quotes are doubled and it is wrapped:
+      a customer called "Rahman, Md." split one row into two columns. */
+  const csvCell = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
 
   const exportCsv = async () => {
     setExporting(true);
     setNote(null);
     try {
-      await SalesService.exportSales("csv");
+      // Exports what the filters actually left on screen. This also used to
+      // call SalesService.exportSales(), which downloaded a SECOND file built
+      // from the bundled sample rows -- two files a click, one of them fake.
       const head = ["Invoice No.", "Date & Time", "Customer", "Total Amount", "Payment Method", "Status"];
-      const csv = [head, ...sales.map((s) => [s.invoiceNo, s.dateTime, s.customerName, s.totalAmount, s.paymentMethod, s.status])]
-        .map((r) => r.join(","))
+      const csv = [
+        head,
+        ...sales.map((s) => [
+          s.invoiceNo,
+          s.dateTime,
+          s.customerName,
+          s.totalAmount,
+          s.paymentMethod,
+          s.status,
+        ]),
+      ]
+        .map((r) => r.map(csvCell).join(","))
         .join("\n");
-      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
       const a = document.createElement("a");
       a.href = url;
       a.download = "sales.csv";
       a.click();
       URL.revokeObjectURL(url);
-      setNote(`Exported ${sales.length} sales`);
+      setNote(`Exported ${sales.length} sale${sales.length === 1 ? "" : "s"} on this page`);
     } catch {
       setNote("Export failed");
     } finally {
@@ -141,7 +190,11 @@ export default function SalesPage() {
         </div>
 
         <div className="flex shrink-0 items-center gap-[16px]">
-          <DateField value={date} onChange={setDate} ariaLabel="Filter sales by date" />
+          <DateField value={date} onChange={(d) => {
+              setDate(d);
+              // Page 1 of the new filter, not page 5 of the old one.
+              setPage(1);
+            }} ariaLabel="Filter sales by date" />
 
           <button
             type="button"
@@ -164,7 +217,7 @@ export default function SalesPage() {
         {/* Table — 45:3102 */}
         <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="overflow-x-auto">
-            <div className="min-w-[980px]">
+            <div className="min-w-[1128px]">
               <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Invoice No.</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Date &amp; Time</span></div>
@@ -176,8 +229,17 @@ export default function SalesPage() {
               </div>
 
               <div className="mt-[6px]">
-                {rows.length === 0 && (
-                  <p className="py-[40px] text-center text-[14px] text-[#525252]">No sales match that search or date.</p>
+                {rows.length === 0 && loading && (
+                  <TableSkeleton columns={GRID} rows={pageSize} />
+                )}
+                {rows.length === 0 && !loading && (
+                  <p className="py-[40px] text-center text-[14px] text-[#525252]">
+                    {loading
+                      ? "Loading sales…"
+                      : failed
+                        ? "Sales could not be loaded. Refresh to try again."
+                        : "No sales match that search or date."}
+                  </p>
                 )}
                 {rows.map((s, i) => (
                   <div
@@ -239,7 +301,7 @@ export default function SalesPage() {
           <TablePagination
             page={current}
             pageSize={pageSize}
-            total={visible.length}
+            total={total}
             onPageChange={setPage}
             onPageSizeChange={(n) => {
               setPageSize(n);
@@ -357,7 +419,7 @@ export default function SalesPage() {
               onClick={() => {
                 if (!refundOf) return;
                 setRefunding(true);
-                // Optimistic: the mock backend has no refund endpoint yet.
+                // Changed on screen only: there is no refund endpoint yet.
                 const next: SaleRecord["status"] = undoing ? "Paid" : "Refunded";
                 setSales((list) => list.map((x) => (x.id === refundOf.id ? { ...x, status: next } : x)));
                 setNote(

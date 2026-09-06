@@ -8,15 +8,13 @@ import { GOLD_GRADIENT } from "@/components/shared/Modal";
 import UploadIcon from "@/components/shared/UploadIcon";
 
 /**
- * Figma: SORTPoint — Add Suppliers 73:3279.
+ * Add Supplier — Figma 73:3279.
  *
- * A 565-wide centred column: the bordered card (48px "Add Supplier" head over a
- * 533-wide field stack — three 56px inputs and the 88px upload dropzone) with
- * the gold submit 24px below it, outside the card.
+ * A 565 column down the middle: a card with the title, three 56px fields and
+ * the 88px upload box, then the gold submit below it.
  *
- * The design's headline (title + subtitle) lives in the navbar here, like every
- * other page, and its Buttons group is drawn at opacity 0 — nothing to render.
- * Below sm the column simply goes full width; that part is mine.
+ * The design's own heading lives in the navbar here, as on every page, and its
+ * button group is hidden in the frame. Below sm the column goes full width.
  */
 
 const LABEL = "w-full text-[18px] leading-[24px] font-medium text-[#525252]";

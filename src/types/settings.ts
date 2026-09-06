@@ -3,6 +3,7 @@ export interface CompanyProfile {
   businessType: string;
   companyEmail: string;
   phoneNumber: string;
+  address: string;
   website: string;
   taxId: string;
   tradeLicenseBin: string;

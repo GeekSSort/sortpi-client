@@ -4,16 +4,13 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import TablePagination from "@/components/shared/TablePagination";
 
 /**
- * The shell every KPI card's panel sits in.
+ * The panel that opens when you click a dashboard card.
  *
- * The four panels used to be three hand-rolled scaffolds with lucide icons,
- * gray-* utilities and their own pagination; this pulls them onto the same
- * chrome as the rest of the app — 12px radius over a #eaeaea inset ring, the
- * 40px head / 54px rows table metrics, the shared pagination bar — and gives
- * them a real entrance (the old `animate-in` classes did nothing, since
- * tailwindcss-animate isn't a dependency).
+ * One shell for all four, using the same look as the rest of the app: 12px
+ * radius, #eaeaea border, 40px head over 54px rows, and the shared pager.
  *
- * It docks over the lower dashboard on desktop and goes full-width below lg.
+ * It sits over the lower dashboard on a wide screen and goes full width below
+ * lg.
  */
 
 function SearchIcon() {
@@ -49,18 +46,18 @@ export interface OverviewPanelProps<T> {
   open: boolean;
   onClose: () => void;
   title: string;
-  /** Shown under the title — what this panel is for. */
+  /** A line under the title saying what this panel is for. */
   subtitle?: string;
   searchPlaceholder: string;
   rows: T[];
-  /** Free-text haystack for one row. */
+  /** The text a row is searched on. */
   searchable: (row: T) => string;
-  /** Filter chips; the first must be the "everything" option. */
+  /** Filter chips. The first one must mean "everything". */
   filters?: readonly string[];
   matchesFilter?: (row: T, filter: string) => boolean;
-  /** Small figures shown above the table. */
+  /** Small totals shown above the table. */
   stats?: { label: string; value: string }[];
-  /** Grid template shared by the head and every row. */
+  /** The column widths, shared by the head and every row. */
   grid: string;
   head: React.ReactNode;
   renderRow: (row: T) => React.ReactNode;
@@ -69,8 +66,8 @@ export interface OverviewPanelProps<T> {
 }
 
 /**
- * Mounted only while the panel is open, so every opening starts with a clean
- * search box, filter and page without an effect resetting them.
+ * Only exists while the panel is open, so each opening starts with an empty
+ * search box and page 1 without anything having to reset them.
  */
 function PanelBody<T extends { id: string }>({
   onClose,
@@ -96,8 +93,8 @@ function PanelBody<T extends { id: string }>({
   const filterRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // Escape closes the panel; the filter popover gets first refusal so one press
-  // doesn't dismiss both.
+  // Escape closes the panel, but the filter popover gets it first, so one
+  // press does not close both.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
@@ -117,8 +114,8 @@ function PanelBody<T extends { id: string }>({
     return () => document.removeEventListener("mousedown", onDown);
   }, [filterOpen]);
 
-  // preventScroll matters: without it, focusing the panel scrolls the whole
-  // dashboard down to meet it, so the page appears to jump on every KPI click.
+  // preventScroll matters: without it the dashboard scrolls down to meet the
+  // panel, and the page jumps on every click.
   useEffect(() => {
     panelRef.current?.focus({ preventScroll: true });
   }, []);

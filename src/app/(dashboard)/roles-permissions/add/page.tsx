@@ -1,234 +1,317 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronDown, CheckCircle2 } from "lucide-react";
-import { RoleService } from "@/services";
+import { RoleService, RoleOption } from "@/services/roleService";
+import { HrmService } from "@/services/hrmService";
+import { BranchService } from "@/services/branchService";
+import { tokenStore } from "@/services/apiClient";
+import { EmployeeRecord } from "@/types/hrm";
+import { Branch } from "@/types/branch";
+import { GOLD_GRADIENT } from "@/components/shared/Modal";
 
-export default function AddUserPage() {
-  const router = useRouter();
+/**
+ * Add User — Figma 76:8029.
+ *
+ * A 565px card centred on the page: a title strip, then 56px fields at 12px
+ * apart, and a full-width gold submit below the card. Picking an employee
+ * fills the contact details, because the person already exists in HRM.
+ *
+ * Branch is asked for, and it is not cosmetic: it decides whose staff list
+ * this person appears in. Left as "whole company" they are org-wide and show
+ * up in every branch, which is right for an owner or an accountant and wrong
+ * for a cashier. The picker only offers branches the server says this
+ * administrator may act in — naming another one is a 404, by design.
+ */
 
-  // Form State
-  const [selectedEmployee, setSelectedEmployee] = useState("");
-  const [isEmployeeOpen, setIsEmployeeOpen] = useState(false);
-  const [phoneNumber, setPhoneNumber] = useState("");
-  const [emailAddress, setEmailAddress] = useState("");
-  const [role, setRole] = useState("");
-  const [isRoleOpen, setIsRoleOpen] = useState(false);
-  const [department, setDepartment] = useState("");
+const LABEL = "w-full text-[18px] leading-[24px] font-medium text-[#525252]";
+const INPUT =
+  "flex h-[56px] w-full items-center rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] py-[8px] text-[16px] leading-[24px] text-[#525252] outline-none placeholder:text-[#525252] focus:border-[#f5b800]";
 
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [successMessage, setSuccessMessage] = useState(false);
+function CaretIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden
+      className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
+    >
+      <path d="m7 10 5 5 5-5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
-  const employeeList = [
-    { name: "Ahmed Rahman", phone: "+880 1712-456 890", email: "info@abctraders.com", dept: "Management" },
-    { name: "Hasan Mahmud", phone: "+880 1712-456 890", email: "info@abctraders.com", dept: "HR" },
-    { name: "Imran Hossain", phone: "+880 1712-456 890", email: "info@abctraders.com", dept: "Sales" },
-  ];
+/** A 56px box that opens a list; typing filters it. */
+function PickerField({
+  label,
+  value,
+  onChange,
+  onPick,
+  placeholder,
+  options,
+  caret,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  onPick?: (name: string) => void;
+  placeholder: string;
+  options: string[];
+  caret?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
 
-  const roleList = [
-    "CEO",
-    "GM",
-    "Manager",
-    "Branch Manager",
-    "Cashier",
-    "HR",
-    "Technical",
-  ];
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
 
-  const handleSelectEmployee = (emp: { name: string; phone: string; email: string; dept: string }) => {
-    setSelectedEmployee(emp.name);
-    setPhoneNumber(emp.phone);
-    setEmailAddress(emp.email);
-    setDepartment(emp.dept);
-    setIsEmployeeOpen(false);
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedEmployee && !emailAddress) return;
-
-    setIsSubmitting(true);
-    try {
-      await RoleService.createUser({
-        name: selectedEmployee || "New User",
-        phone: phoneNumber || "+880 1712-456 890",
-        mail: emailAddress || "info@abctraders.com",
-        role: role || "Cashier",
-        status: "Active",
-      });
-
-      setSuccessMessage(true);
-      setTimeout(() => {
-        router.push("/roles-permissions");
-      }, 1400);
-    } catch (err) {
-      console.error("Failed to add user:", err);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
+  const matches = options.filter((o) => o.toLowerCase().includes(value.trim().toLowerCase()));
 
   return (
-    <div className="w-full flex flex-col gap-6 pb-12 select-none">
-      {/* Top Title & Subtitle */}
-      <div>
-        <h2 className="text-xl sm:text-2xl font-extrabold text-gray-900 tracking-tight">
-          Add User
-        </h2>
-        <p className="text-xs sm:text-sm text-gray-500 mt-0.5">
-          Create a new user account and assign their role, branch, and system access.
-        </p>
-      </div>
-
-      {/* Centered Form Container */}
-      <div className="mx-auto w-full max-w-[560px] flex flex-col gap-5 pt-2">
-        <form onSubmit={handleSubmit} className="flex flex-col gap-5">
-          {/* Card Form Box */}
-          <div className="bg-white rounded-2xl border border-gray-200/90 shadow-[0_2px_12px_rgba(0,0,0,0.03)] overflow-hidden">
-            {/* Header */}
-            <div className="py-3 px-4 text-center border-b border-gray-100 bg-white">
-              <h3 className="text-xs sm:text-sm font-semibold text-gray-800">
-                Add User
-              </h3>
-            </div>
-
-            {/* Form Fields with Exact Spacing */}
-            <div className="p-6 flex flex-col gap-4">
-              {/* 1. Select Employee */}
-              <div className="relative">
-                <label className="text-xs font-bold text-gray-800 block mb-1.5">
-                  Select Employee
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setIsEmployeeOpen(!isEmployeeOpen)}
-                  className="w-full border border-gray-200 hover:border-gray-300 rounded-xl px-4 py-2.5 text-xs bg-white flex items-center justify-between transition-colors cursor-pointer"
-                >
-                  <span className={selectedEmployee ? "text-gray-800 font-medium" : "text-gray-400"}>
-                    {selectedEmployee || "Select Employee"}
-                  </span>
-                  <ChevronDown className="w-4 h-4 text-gray-400" />
-                </button>
-
-                {isEmployeeOpen && (
-                  <div className="absolute top-full mt-1 left-0 right-0 bg-white border border-gray-100 rounded-xl shadow-lg py-1 z-30">
-                    {employeeList.map((emp) => (
-                      <button
-                        key={emp.name}
-                        type="button"
-                        onClick={() => handleSelectEmployee(emp)}
-                        className={`w-full text-left px-4 py-2 text-xs hover:bg-amber-50 hover:text-[#F4B41A] ${
-                          selectedEmployee === emp.name ? "font-bold text-[#F4B41A]" : "text-gray-700"
-                        }`}
-                      >
-                        {emp.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* 2. Phone Number */}
-              <div>
-                <label className="text-xs font-bold text-gray-800 block mb-1.5">
-                  Phone Number
-                </label>
-                <input
-                  type="text"
-                  value={phoneNumber}
-                  onChange={(e) => setPhoneNumber(e.target.value)}
-                  placeholder="Enter supplier phone number"
-                  className="w-full border border-gray-200 focus:border-amber-400 rounded-xl px-4 py-2.5 text-xs text-gray-800 placeholder:text-gray-400 bg-white focus:outline-none transition-colors"
-                />
-              </div>
-
-              {/* 3. Email Address */}
-              <div>
-                <label className="text-xs font-bold text-gray-800 block mb-1.5">
-                  Email Address
-                </label>
-                <input
-                  type="email"
-                  value={emailAddress}
-                  onChange={(e) => setEmailAddress(e.target.value)}
-                  placeholder="Enter email address"
-                  className="w-full border border-gray-200 focus:border-amber-400 rounded-xl px-4 py-2.5 text-xs text-gray-800 placeholder:text-gray-400 bg-white focus:outline-none transition-colors"
-                />
-              </div>
-
-              {/* 4. Role */}
-              <div className="relative">
-                <label className="text-xs font-bold text-gray-800 block mb-1.5">
-                  Role
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setIsRoleOpen(!isRoleOpen)}
-                  className="w-full border border-gray-200 hover:border-gray-300 rounded-xl px-4 py-2.5 text-xs bg-white flex items-center justify-between transition-colors cursor-pointer"
-                >
-                  <span className={role ? "text-gray-800 font-medium" : "text-gray-400"}>
-                    {role || "Select Role"}
-                  </span>
-                  <ChevronDown className="w-4 h-4 text-gray-400" />
-                </button>
-
-                {isRoleOpen && (
-                  <div className="absolute top-full mt-1 left-0 right-0 bg-white border border-gray-100 rounded-xl shadow-lg py-1 z-30">
-                    {roleList.map((r) => (
-                      <button
-                        key={r}
-                        type="button"
-                        onClick={() => {
-                          setRole(r);
-                          setIsRoleOpen(false);
-                        }}
-                        className={`w-full text-left px-4 py-2 text-xs hover:bg-amber-50 hover:text-[#F4B41A] ${
-                          role === r ? "font-bold text-[#F4B41A]" : "text-gray-700"
-                        }`}
-                      >
-                        {r}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* 5. Department */}
-              <div>
-                <label className="text-xs font-bold text-gray-800 block mb-1.5">
-                  Department
-                </label>
-                <input
-                  type="text"
-                  value={department}
-                  onChange={(e) => setDepartment(e.target.value)}
-                  placeholder="Select department"
-                  className="w-full border border-gray-200 focus:border-amber-400 rounded-xl px-4 py-2.5 text-xs text-gray-800 placeholder:text-gray-400 bg-white focus:outline-none transition-colors"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Success Alert */}
-          {successMessage && (
-            <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs font-semibold text-emerald-700 flex items-center justify-center gap-2 animate-in fade-in">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              <span>User added successfully! Redirecting to user list...</span>
-            </div>
+    <div className="flex w-full flex-col gap-[8px]">
+      <label className={LABEL} htmlFor={label}>
+        {label}
+      </label>
+      <div ref={ref} className="relative w-full">
+        <div className={`${INPUT} gap-[12px] focus-within:border-[#f5b800]`}>
+          <input
+            id={label}
+            value={value}
+            onChange={(e) => {
+              onChange(e.target.value);
+              setOpen(true);
+            }}
+            onFocus={() => setOpen(true)}
+            placeholder={placeholder}
+            className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-[#525252]"
+          />
+          {caret && (
+            <button
+              type="button"
+              aria-label={`Choose ${label.toLowerCase()}`}
+              onClick={() => setOpen((v) => !v)}
+              className="shrink-0 cursor-pointer text-[#525252]"
+            >
+              <CaretIcon open={open} />
+            </button>
           )}
+        </div>
 
-          {/* Action Button */}
-          <button
-            type="submit"
-            disabled={isSubmitting}
-            className="w-full py-3.5 bg-[#F4B41A] hover:bg-[#E5A612] text-white font-bold rounded-xl text-xs sm:text-sm transition-all shadow-xs text-center cursor-pointer disabled:opacity-60"
+        {open && matches.length > 0 && (
+          <ul
+            role="listbox"
+            className="absolute top-[60px] right-0 left-0 z-30 max-h-[220px] overflow-y-auto rounded-[12px] border border-[#eaeaea] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)]"
           >
-            {isSubmitting ? "Adding User..." : "Add User"}
-          </button>
-        </form>
+            {matches.map((o) => (
+              <li key={o}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={o === value}
+                  onClick={() => {
+                    onChange(o);
+                    onPick?.(o);
+                    setOpen(false);
+                  }}
+                  className="w-full cursor-pointer px-[16px] py-[10px] text-left text-[15px] text-[#525252] transition-colors hover:bg-[#fdf7e6]"
+                >
+                  {o}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   );
 }
 
+export default function AddUserPage() {
+  const router = useRouter();
+  const [employee, setEmployee] = useState("");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("");
+  const [department, setDepartment] = useState("");
+  const [branchId, setBranchId] = useState("");
+  const [employees, setEmployees] = useState<EmployeeRecord[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [roles, setRoles] = useState<RoleOption[]>([]);
+  const [departments, setDepartments] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [people, roleList, lookups, branchList] = await Promise.all([
+        HrmService.getEmployees({ limit: 500 }).catch(() => ({ data: [] as EmployeeRecord[] })),
+        RoleService.getRoles().catch(() => [] as RoleOption[]),
+        HrmService.getLookups().catch(() => ({ departments: [], designations: [] })),
+        BranchService.list().catch(() => [] as Branch[]),
+      ]);
+      if (cancelled) return;
+      setEmployees(people.data);
+      setRoles(roleList);
+      setDepartments(lookups.departments.map((d) => d.name));
+      setBranches(branchList);
+      // Default to the branch this administrator is standing in — the branch
+      // whose list they were looking at when they pressed Add New.
+      const active = tokenStore.branch();
+      if (active && branchList.some((b) => b.id === active)) setBranchId(active);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /** Picking somebody from HRM fills in what HRM already knows about them. */
+  const fillFromEmployee = (name: string) => {
+    const match = employees.find((e) => e.name === name);
+    if (!match) return;
+    setDepartment(match.department);
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSaving(true);
+    try {
+      await RoleService.createUser({
+        name: employee,
+        phone,
+        mail: email,
+        role,
+        branchId: branchId || undefined,
+      });
+      router.push("/roles-permissions");
+    } catch (err) {
+      setError(RoleService.describeError(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="flex w-full flex-col items-center select-none">
+      <div className="flex w-full max-w-[565px] flex-col gap-[24px]">
+        {/* Card — 76:8564 */}
+        <div className="flex w-full flex-col items-center gap-[9px] overflow-hidden rounded-[10px] border border-solid border-[#eaeaea] bg-white pb-[16px]">
+          <div className="flex w-full items-center justify-center border-b border-solid border-[#eaeaea] px-[16px] pt-[16px] pb-[8px]">
+            <p className="text-[16px] leading-[1.5] tracking-[-0.32px] whitespace-nowrap text-[#1e1e1e]">
+              Add User
+            </p>
+          </div>
+
+          <div className="flex w-full flex-col gap-[12px] px-[16px]">
+            {error && (
+              <p role="alert" className="rounded-[8px] bg-[#ffdfe2] px-[12px] py-[8px] text-[13px] text-[#e63946]">
+                {error}
+              </p>
+            )}
+
+            <PickerField
+              label="Select Employee"
+              value={employee}
+              onChange={setEmployee}
+              onPick={fillFromEmployee}
+              placeholder="Select Employee"
+              options={employees.map((e) => e.name)}
+              caret
+            />
+
+            <div className="flex w-full flex-col gap-[8px]">
+              <label className={LABEL} htmlFor="user-phone">
+                Phone Number
+              </label>
+              <input
+                id="user-phone"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="Enter supplier phone number"
+                className={INPUT}
+              />
+            </div>
+
+            <div className="flex w-full flex-col gap-[8px]">
+              <label className={LABEL} htmlFor="user-email">
+                Email Address
+              </label>
+              <input
+                id="user-email"
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Enter email address"
+                className={INPUT}
+              />
+            </div>
+
+            <PickerField
+              label="Role"
+              value={role}
+              onChange={setRole}
+              placeholder="Select Role"
+              options={roles.map((r) => r.name)}
+              caret
+            />
+
+            <div className="flex w-full flex-col gap-[8px]">
+              <label className={LABEL} htmlFor="user-branch">
+                Branch
+              </label>
+              <select
+                id="user-branch"
+                value={branchId}
+                onChange={(e) => setBranchId(e.target.value)}
+                className={`${INPUT} cursor-pointer`}
+              >
+                <option value="">Whole company (no branch)</option>
+                {branches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.code} · {b.name}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[13px] leading-[1.5] text-[#525252]">
+                They appear in this branch&apos;s user list. &ldquo;Whole company&rdquo; is for
+                head-office accounts, who appear in every branch.
+              </p>
+            </div>
+
+            <PickerField
+              label="Department"
+              value={department}
+              onChange={setDepartment}
+              placeholder="Select department"
+              options={departments}
+            />
+          </div>
+        </div>
+
+        {/* Submit — 76:8596 */}
+        <button
+          type="submit"
+          disabled={saving}
+          style={{ backgroundImage: GOLD_GRADIENT }}
+          className="flex w-full cursor-pointer items-center justify-center rounded-[12px] px-[16px] py-[12px] text-[16px] leading-[24px] font-semibold text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {saving ? "Adding..." : "Add User"}
+        </button>
+
+        <p className="text-center text-[13px] text-[#525252]">
+          The new user gets an email with a link to set their own password.
+        </p>
+      </div>
+    </form>
+  );
+}

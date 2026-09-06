@@ -5,11 +5,11 @@ import { formatMoney } from "@/lib/format";
 /**
  * A catalogue product -> a tile on the till.
  *
- * PRICE is the branch's selling price, falling back to the org-wide one.
- * `cost_price` is what the shop PAID and is never shown as a till price.
+ * Price is the branch's selling price, or the company-wide one if the branch
+ * has none. `cost_price` is what the shop paid and is never shown here.
  *
- * STOCK lives per warehouse in `/inventory/stock/`, so the caller joins the
- * two on SKU and passes what it found.
+ * Stock is per warehouse in `/inventory/stock/`, so the caller looks it up by
+ * SKU and passes in what it found.
  */
 
 export function toProductItem(
@@ -47,7 +47,7 @@ export function toProductItem(
   };
 }
 
-/** Cost price, for screens that legitimately show what was paid. */
+/** What the shop paid, for the screens allowed to show it. */
 export function costOf(row: any): string {
   const variants: any[] = Array.isArray(row?.variants) ? row.variants : [];
   const variant = variants.find((v) => v?.isDefault) || variants[0] || {};

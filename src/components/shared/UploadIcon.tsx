@@ -1,9 +1,9 @@
 import React from "react";
 
 /**
- * The upload cloud used by every "Upload Image" dropzone — Figma 57:13809 on
- * Add Product and 73:3910 on Add Supplier, the same 32.984 x 24 glyph.
- * Kept at its designed aspect so it never squares off.
+ * The cloud on every "Upload Image" box — Figma 57:13809 on Add Product and
+ * 73:3910 on Add Supplier, the same 32.984 x 24 icon. Kept at its designed
+ * shape so it never turns square.
  */
 export default function UploadIcon() {
   return (

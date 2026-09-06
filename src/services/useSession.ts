@@ -4,9 +4,9 @@ import { useEffect, useState } from "react";
 import { AuthService, UserSession } from "./authService";
 
 /**
- * The signed-in user, shared by the header, sidebar and till chrome — one
- * cached request rather than four calls to `/auth/me`. Cleared on sign-out so
- * the next person does not inherit the last one's name.
+ * The signed-in user, shared by the header, sidebar and till bar: one cached
+ * request instead of four calls to `/auth/me`. Cleared on sign-out, so the
+ * next person does not see the last one's name.
  */
 
 let inFlight: Promise<UserSession | null> | null = null;

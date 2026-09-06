@@ -208,10 +208,6 @@ export class CustomerService {
       list = list.filter((c) => c.status.toLowerCase() === params.status?.toLowerCase());
     }
 
-    if (params?.type) {
-      list = list.filter((c) => c.type.toLowerCase() === params.type?.toLowerCase());
-    }
-
     return Promise.resolve({
       data: list,
       total: 50,

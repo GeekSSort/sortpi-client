@@ -1,5 +1,9 @@
 export interface StockItem {
   id: string;
+  /** The product variant this balance is for — what an adjustment names. */
+  variantId?: string;
+  /** The warehouse id, as opposed to `warehouse`, which is its readable code. */
+  warehouseId?: string;
   name: string;
   image: string;
   sku: string;

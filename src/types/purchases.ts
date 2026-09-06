@@ -18,6 +18,8 @@ export interface PurchaseQueryFilter {
   status?: string;
   paymentStatus?: string;
   supplier?: string;
+  startDate?: string;
+  endDate?: string;
   page?: number;
   limit?: number;
 }

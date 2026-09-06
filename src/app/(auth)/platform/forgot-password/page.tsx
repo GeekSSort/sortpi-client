@@ -7,18 +7,16 @@ import AuthShell, { AuthAlert, AuthButton, AuthField } from "@/components/auth/A
 import { RegistrationService } from "@/services/registrationService";
 
 /**
- * Forgotten password, for OUR OWN staff — the platform console.
+ * Forgotten password for our own staff, on the platform console.
  *
- * A separate page from the company one, and that separation is the point.
+ * Kept separate from the company page on purpose. Platform staff belong to no
+ * company, so if this shared the company route, a customer's address could be
+ * used to start a reset on one of our admin accounts — and the email would
+ * look genuine.
  *
- * Platform staff belong to no company. If this ran through the same route as a
- * company's reset, then a customer's own address could be used to start a
- * password reset on one of our admin accounts — and the email would arrive
- * looking entirely genuine. So it is its own page, its own server route, and
- * it does not care which address it is opened on.
- *
- * Opening it on a customer's address is a mistake, not a shortcut. The banner
- * below says so, and the server refuses it regardless.
+ * It has its own page and its own server route, and the address it is opened
+ * on makes no difference. The banner below says so, and the server refuses it
+ * either way.
  */
 export default function PlatformForgotPasswordPage() {
   const router = useRouter();

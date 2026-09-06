@@ -136,18 +136,27 @@ export default function AddStockPage() {
     setError(null);
     setSaving(true);
     try {
-      await StockService.addStock({
-        productName: product,
-        sku: picked?.sku ?? "",
-        warehouse,
-        currentStock,
-        addQuantity: qty,
-        date: (date ?? new Date()).toISOString(),
+      if (!picked?.variantId || !picked?.warehouseId) {
+        throw new Error("That line is missing its variant or warehouse.");
+      }
+      // A stock adjustment takes the COUNT, not the amount added: the service
+      // works out the movement against the balance at the moment it applies.
+      await StockService.adjustStock({
+        warehouseId: picked.warehouseId,
+        variantId: picked.variantId,
+        newQuantity: currentStock + qty,
+        referenceNo: `ADJ-${Date.now()}`,
+        reason: "STOCK_IN",
+        note: `Added ${qty} on ${(date ?? new Date()).toISOString().slice(0, 10)}`,
       });
       setNote(`${qty} added to ${product}`);
       window.setTimeout(() => router.push("/inventory/stock"), 700);
-    } catch {
-      setError("Could not add the stock. Try again.");
+    } catch (err) {
+      // The server names the real problem — an out-of-scope warehouse, a
+      // missing permission — and that is more use than "try again".
+      setError(
+        err instanceof Error && err.message ? err.message : "Could not add the stock. Try again."
+      );
     } finally {
       setSaving(false);
     }

@@ -2,8 +2,9 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
-import { CartItem, CheckoutPayload, Customer } from "@/types/pos";
-import { CustomerService, PosService } from "@/services";
+import { CartItem, CheckoutPayload, Customer, HeldCart, ProductItem } from "@/types/pos";
+import { CustomerService, PosService, SettingsService } from "@/services";
+import { useSession } from "@/services/useSession";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
 import Receipt from "@/components/shared/Receipt";
 
@@ -138,6 +139,8 @@ interface CartPanelProps {
   onUpdateQuantity: (productId: string, delta: number) => void;
   onRemoveItem: (productId: string) => void;
   onClearCart: () => void;
+  /** False in the three-column view, where the middle column lists the items. */
+  showItems?: boolean;
   /** Puts a whole cart back, which Hold/Start needs. */
   onRestoreCart: (items: CartItem[]) => void;
 }
@@ -147,8 +150,10 @@ export default function CartPanel({
   onUpdateQuantity,
   onRemoveItem,
   onClearCart,
+  showItems = true,
   onRestoreCart,
 }: CartPanelProps) {
+  const session = useSession();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [customerQuery, setCustomerQuery] = useState("");
@@ -157,7 +162,22 @@ export default function CartPanel({
   const [discount, setDiscount] = useState("");
   const [discountMode, setDiscountMode] = useState<"percent" | "flat">("percent");
   const [coupon, setCoupon] = useState("");
-  const [held, setHeld] = useState<CartItem[] | null>(null);
+  const [held, setHeld] = useState<HeldCart[]>([]);
+  const [heldOpen, setHeldOpen] = useState(false);
+  // How this shop charges VAT, and how much may come off a bill. Both are set
+  // once in Settings; the till only reads them.
+  const [shop, setShop] = useState({ vatRate: 0.15, vatIncluded: true, maxDiscount: 1 });
+  // Empty means "the shop's usual rate". A figure here is this sale only.
+  const [vat, setVat] = useState("");
+  // Whose shop this is. The receipt is headed by the customer's company, not
+  // by the software that printed it.
+  const [shopProfile, setShopProfile] = useState({
+    name: "",
+    tagline: "",
+    address: "",
+    bin: "",
+    phone: "",
+  });
   const [addOpen, setAddOpen] = useState(false);
   const [draft, setDraft] = useState<{ name: string; phone: string; type: "Regular" | "VIP" | "Premium" }>({
     name: "",
@@ -169,6 +189,39 @@ export default function CartPanel({
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const selectRef = useRef<HTMLDivElement>(null);
+
+  /** What is parked at this branch right now. */
+  const refreshHeld = () => {
+    PosService.heldCarts()
+      .then(setHeld)
+      .catch(() => setHeld([]));
+  };
+
+  useEffect(() => {
+    SettingsService.getValues()
+      .then((v) => {
+        const rate = Number(v["tax.default_rate"]);
+        const cap = Number(v["pos.max_discount_percent"]);
+        setShop({
+          vatRate: Number.isFinite(rate) ? rate : 0.15,
+          vatIncluded: String(v["tax.inclusive_by_default"] ?? "true") !== "false",
+          maxDiscount: Number.isFinite(cap) && cap > 0 ? cap : 1,
+        });
+      })
+      .catch(() => {});
+    SettingsService.getCompanyProfile()
+      .then((p) =>
+        setShopProfile({
+          name: p.companyName || "",
+          tagline: p.businessType || "",
+          address: p.address || "",
+          bin: p.taxId || p.tradeLicenseBin || "",
+          phone: p.phoneNumber || "",
+        })
+      )
+      .catch(() => {});
+    refreshHeld();
+  }, []);
 
   useEffect(() => {
     PosService.getCustomers()
@@ -228,18 +281,98 @@ export default function CartPanel({
     }
   };
 
+  /** Park the current cart on the server, then clear the till. */
+  const parkCart = async () => {
+    if (!cart.length || busy) return;
+    setBusy(true);
+    try {
+      await PosService.holdCart(
+        cart.map((i) => ({
+          productId: i.product.id,
+          name: i.product.name,
+          sku: i.product.sku,
+          price: i.product.price,
+          stock: i.product.stock,
+          quantity: i.quantity,
+        })),
+        customer?.id || undefined
+      );
+      onClearCart();
+      refreshHeld();
+      setStatus("Cart parked. Take it back with Start.");
+    } catch {
+      setStatus("Could not park this cart.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Take a parked cart back to the till. The server hands it over once. */
+  const resumeCart = async (row: HeldCart) => {
+    setBusy(true);
+    try {
+      const items = await PosService.resumeCart(row.id);
+      onRestoreCart(
+        items.map((i) => ({
+          product: {
+            id: i.productId,
+            name: i.name,
+            sku: i.sku,
+            price: i.price,
+            priceFormatted: money(i.price),
+            stock: i.stock ?? i.quantity,
+            category: "Groceries",
+            image: "",
+          } as ProductItem,
+          quantity: i.quantity,
+        }))
+      );
+      setHeldOpen(false);
+      refreshHeld();
+      setStatus(`${row.reference} resumed`);
+    } catch {
+      setStatus("Could not take that cart back.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Changing what a customer is taxed is its own permission, the same as it
+  // is on the server: a cashier sees the rate, a supervisor can change it.
+  const mayChangeVat = (session.user?.permissions ?? []).includes("pos.price_override");
+
+  /** The rate this sale is taxed at: what was typed, or the shop's own. */
+  const vatRate = vat.trim() === "" ? shop.vatRate : Math.max(0, Number(vat) || 0) / 100;
+
   const totals = useMemo(() => {
     const subtotal = cart.reduce((s, i) => s + i.product.price * i.quantity, 0);
-    const shipping = cart.length ? 60 : 0;
+    // No delivery charge on a till sale. It used to add a flat 60 the server
+    // has no field for, so the tender came to more than the bill and the sale
+    // was refused with PAYMENT_EXCEEDS_TOTAL.
+    const shipping = 0;
     const entered = Math.max(0, Number(discount) || 0);
     // Percentage caps at 100; a flat amount can never exceed the subtotal.
     const manualOff =
       discountMode === "percent" ? (subtotal * Math.min(100, entered)) / 100 : Math.min(subtotal, entered);
     // "SAVE10" is the only code the mock backend honours.
     const couponOff = coupon.trim().toUpperCase() === "SAVE10" ? subtotal * 0.1 : 0;
-    const off = Math.round(Math.min(subtotal, manualOff + couponOff));
-    return { subtotal, shipping, discount: off, total: Math.max(0, subtotal + shipping - off) };
-  }, [cart, discount, discountMode, coupon]);
+    // The shop's ceiling on what a till may give away, from Settings. Applied
+    // here as well as at the till roll, so the figure on screen is the figure
+    // the server will accept.
+    const ceiling = subtotal * shop.maxDiscount;
+    const off = Math.round(Math.min(subtotal, ceiling, manualOff + couponOff));
+    const taxable = Math.max(0, subtotal - off);
+
+    // Two ways to charge VAT, and they are not interchangeable. Bangladeshi
+    // shelf prices normally include it, so it is taken OUT of the price rather
+    // than added: the customer pays the same either way and the books differ.
+    const tax = shop.vatIncluded
+      ? taxable - taxable / (1 + vatRate)
+      : taxable * vatRate;
+    const total = shop.vatIncluded ? taxable : taxable + tax;
+
+    return { subtotal, shipping, discount: off, tax, total, capped: manualOff + couponOff > ceiling };
+  }, [cart, discount, discountMode, coupon, shop, vatRate]);
 
   const matches = customers.filter((c) =>
     c.name.toLowerCase().includes(customerQuery.trim().toLowerCase())
@@ -255,6 +388,7 @@ export default function CartPanel({
     subtotal: number;
     shipping: number;
     discount: number;
+    tax: number;
     total: number;
     customer: string;
     at: string;
@@ -277,6 +411,11 @@ export default function CartPanel({
         paymentMethod: method,
         discountCode: coupon.trim() || undefined,
         discountAmount: totals.discount,
+        // Only when it was changed here. The shop's own rate needs no saying,
+        // and sending it would need a permission a cashier does not hold.
+        ...(vat.trim() !== "" ? { taxRate: vatRate } : {}),
+        // What the shopper hands over: the bill after the discount, which is
+        // what the server will have priced it at.
         totalAmount: totals.total,
       });
       setReceipt({
@@ -287,6 +426,7 @@ export default function CartPanel({
         subtotal: totals.subtotal,
         shipping: totals.shipping,
         discount: totals.discount,
+        tax: Math.round(totals.tax),
         total: totals.total,
         lines: cart.map((i) => ({
           name: i.product.name,
@@ -304,6 +444,7 @@ export default function CartPanel({
       onClearCart();
       setDiscount("");
       setCoupon("");
+      setVat("");
     } catch {
       setStatus("Payment failed. Try again.");
     } finally {
@@ -323,11 +464,9 @@ export default function CartPanel({
             <div className="flex items-center gap-[12px]">
               <button
                 type="button"
-                onClick={() => {
-                  setHeld(cart);
-                  onClearCart();
-                  setStatus(cart.length ? "Invoice held" : "Nothing to hold");
-                }}
+                disabled={!cart.length || busy}
+                onClick={parkCart}
+                title="Park this cart and clear the till"
                 className={GHOST_BTN}
               >
                 Hold
@@ -335,17 +474,18 @@ export default function CartPanel({
               <button
                 type="button"
                 onClick={() => {
-                  if (held) {
-                    onRestoreCart(held);
-                    setHeld(null);
-                    setStatus("Held invoice resumed");
-                  } else {
-                    setStatus("New invoice started");
-                  }
+                  refreshHeld();
+                  setHeldOpen(true);
                 }}
+                title="Take back a parked cart"
                 className={GHOST_BTN}
               >
                 Start
+                {held.length > 0 && (
+                  <span className="ml-[6px] flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[#fdf7e6] px-[5px] text-[11px] font-semibold text-[#f5b800] tabular-nums">
+                    {held.length}
+                  </span>
+                )}
               </button>
               <button
                 type="button"
@@ -353,9 +493,10 @@ export default function CartPanel({
                   onClearCart();
                   setDiscount("");
                   setCoupon("");
-                  setHeld(null);
+                  setVat("");
                   setStatus("Invoice reset");
                 }}
+                title="Empty the till and start again"
                 className={GHOST_BTN}
               >
                 Reset
@@ -363,7 +504,9 @@ export default function CartPanel({
             </div>
           </div>
 
-          {/* Cart table — 45:2346 */}
+          {/* Cart table — 45:2346. Hidden in the three-column view, where the
+              middle column holds it instead. */}
+          {showItems && (
           <div className="w-full overflow-hidden rounded-[10px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
             <div className="flex items-center justify-between px-[16px] pt-[16px] pb-[8px]">
               <p className="text-[16px] leading-[1.5] tracking-[-0.32px] whitespace-nowrap text-[#1e1e1e]">
@@ -451,6 +594,7 @@ export default function CartPanel({
               </div>
             </div>
           </div>
+          )}
         </div>
 
         {/* Customer summary — 45:2450 */}
@@ -504,7 +648,8 @@ export default function CartPanel({
                       }}
                       className="block w-full cursor-pointer px-[14px] py-[8px] text-left text-[13px] text-[#525252] transition-colors hover:bg-[#fafafa]"
                     >
-                      {c.name} <span className="text-[#a3a3a3]">· {c.type}</span>
+                      {c.name}
+                      <span className="text-[#a3a3a3]"> · {c.phone || "no phone"}</span>
                     </button>
                   ))}
                 </div>
@@ -518,8 +663,13 @@ export default function CartPanel({
                 aria-expanded={selectOpen}
                 className={`${FIELD} w-full cursor-pointer justify-between`}
               >
-                <span className="truncate text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252]">
-                  {customer?.name ?? "Walk-in Customer"}
+                <span className="flex min-w-0 flex-col items-start">
+                  <span className="truncate text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252]">
+                    {customer?.name ?? "Walk-in Customer"}
+                  </span>
+                  <span className="truncate text-[12px] leading-[1.4] text-[#8f8d87]">
+                    {customer ? customer.phone || "no phone on file" : "no customer chosen"}
+                  </span>
                 </span>
                 <span className="text-[#525252]">
                   <CaretDown />
@@ -540,6 +690,7 @@ export default function CartPanel({
                       }`}
                     >
                       {c.name}
+                      <span className="text-[#a3a3a3]"> · {c.phone || "no phone"}</span>
                     </button>
                   ))}
                 </div>
@@ -614,6 +765,49 @@ export default function CartPanel({
                 <span>Discount{discount ? (discountMode === "percent" ? ` (${discount}%)` : " (flat)") : ""}</span>
                 <span>-{money(totals.discount)}</span>
               </p>
+              {/* The rate is the shop's until somebody changes it here, and a
+                  change applies to this sale only. Included VAT comes out of
+                  the price, so the customer pays the same and only the split
+                  moves. */}
+              <p className="flex items-center justify-between gap-[12px]">
+                <span className="flex items-center gap-[6px]">
+                  VAT
+                  {mayChangeVat ? (
+                    <span className="flex h-[26px] items-center gap-[2px] rounded-[7px] bg-[#f5f5f5] px-[6px]">
+                      <input
+                        value={vat === "" ? String(+(shop.vatRate * 100).toFixed(2)) : vat}
+                        onChange={(e) => setVat(e.target.value.replace(/[^\d.]/g, ""))}
+                        inputMode="decimal"
+                        aria-label="VAT rate for this sale"
+                        className="w-[34px] bg-transparent text-center text-[13px] font-medium text-[#1e1e1e] outline-none tabular-nums"
+                      />
+                      <span className="text-[12px] text-[#8f8d87]">%</span>
+                    </span>
+                  ) : (
+                    <span className="text-[13px] tabular-nums">
+                      {+(vatRate * 100).toFixed(2)}%
+                    </span>
+                  )}
+                  <span className="text-[12px] text-[#a3a3a3]">
+                    {shop.vatIncluded ? "in price" : "added"}
+                  </span>
+                </span>
+                <span>{shop.vatIncluded ? "" : "+"}{money(Math.round(totals.tax))}</span>
+              </p>
+              {vat.trim() !== "" && (
+                <button
+                  type="button"
+                  onClick={() => setVat("")}
+                  className="cursor-pointer self-start text-[12px] text-[#f5b800] underline-offset-2 hover:underline"
+                >
+                  Back to the shop rate
+                </button>
+              )}
+              {totals.capped && (
+                <span className="text-[12px] text-[#e63946]">
+                  Capped at {+(shop.maxDiscount * 100).toFixed(2)}% &mdash; the most this shop allows.
+                </span>
+              )}
             </div>
             <div className="h-px w-full bg-[#eaeaea]" />
             <p className="flex w-full justify-between gap-[12px] text-[16px] leading-[24px] font-semibold text-[#1e1e1e]">
@@ -725,6 +919,68 @@ export default function CartPanel({
         )}
       </Modal>
 
+      {/* Parked carts. Server-side, so a cart parked at one till can be taken
+          back at another. */}
+      <Modal
+        open={heldOpen}
+        onClose={() => setHeldOpen(false)}
+        title="Parked carts"
+        width={420}
+        footer={
+          <button type="button" className={MODAL_GHOST} onClick={() => setHeldOpen(false)}>
+            Close
+          </button>
+        }
+      >
+        {held.length === 0 ? (
+          <p className="py-[24px] text-center text-[14px] text-[#8f8d87]">
+            Nothing is parked. Hold puts the current cart here.
+          </p>
+        ) : (
+          <div className="flex flex-col gap-[8px]">
+            {held.map((row) => (
+              <div
+                key={row.id}
+                className="flex items-center justify-between gap-[12px] rounded-[10px] px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea]"
+              >
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate text-[14px] font-medium text-[#1e1e1e]">
+                    {row.reference}
+                  </span>
+                  <span className="truncate text-[12px] text-[#8f8d87]">
+                    {row.customerName} &middot; {row.items.length} item
+                    {row.items.length === 1 ? "" : "s"}
+                    {row.cashierName ? ` · ${row.cashierName}` : ""}
+                  </span>
+                </span>
+                <span className="flex shrink-0 items-center gap-[8px]">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => resumeCart(row)}
+                    className="cursor-pointer rounded-[8px] bg-[#1e1e1e] px-[12px] py-[6px] text-[13px] font-medium text-white transition-opacity hover:opacity-85 disabled:opacity-50"
+                  >
+                    Resume
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Discard ${row.reference}`}
+                    onClick={() =>
+                      PosService.dropHeldCart(row.id)
+                        .then(refreshHeld)
+                        .catch(() => setStatus("Could not discard that cart."))
+                    }
+                    className="cursor-pointer rounded-[8px] px-[10px] py-[6px] text-[13px] text-[#a3a3a3] transition-colors hover:bg-[#ffdfe2] hover:text-[#e63946]"
+                  >
+                    Discard
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Modal>
+
       {/* The printed receipt. Same component Sales, Returns and Purchases use —
           only the props differ. */}
       <Modal
@@ -752,15 +1008,15 @@ export default function CartPanel({
           <div className="print-area">
             <Receipt
               business={{
-                name: "SORTPoint",
-                tagline: "Smart POS • Simple Business",
-                address: "Road-15, Block-D, House-50, Banani, Dhaka-1213",
-                bin: "000123456-0101",
+                name: shopProfile.name,
+                tagline: shopProfile.tagline,
+                address: shopProfile.address,
+                bin: shopProfile.bin,
               }}
               title="SALES INVOICE"
               meta={[
                 { label: "Customer", value: receipt.customer },
-                { label: "Cashier", value: "Zayn Malik (Admin)" },
+                { label: "Cashier", value: session.user?.name || "—" },
                 { label: "Terminal ID", value: "POS" },
                 { label: "Invoice No", value: receipt.invoiceNo },
                 { label: "Date", value: receipt.at },
@@ -776,7 +1032,10 @@ export default function CartPanel({
               totals={[
                 { label: "Sub Total:", value: receipt.subtotal.toLocaleString("en-IN") },
                 { label: "(-)Discount:", value: receipt.discount.toLocaleString("en-IN") },
-                { label: "Shipping:", value: receipt.shipping.toLocaleString("en-IN") },
+                {
+                  label: shop.vatIncluded ? "VAT (in price):" : "(+)VAT:",
+                  value: receipt.tax.toLocaleString("en-IN"),
+                },
                 {
                   label: "Total Amount:",
                   value: receipt.total.toLocaleString("en-IN"),
@@ -788,10 +1047,10 @@ export default function CartPanel({
                 { label: "Status:", value: "Paid" },
               ]}
               footerNotes={[
-                "Thank you for shopping with SORTPoint",
-                "Any queries or complaints, please call 01772814907",
+                `Thank you for shopping with ${shopProfile.name}`,
+                ...(shopProfile.phone ? [`Any queries or complaints, please call ${shopProfile.phone}`] : []),
               ]}
-              system={{ name: "GeekSSort", url: "www.geekssort.com" }}
+              system={{ name: "SORTPoint", url: "www.sortpoint.com" }}
             />
           </div>
         )}

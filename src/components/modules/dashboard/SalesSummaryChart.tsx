@@ -4,16 +4,13 @@ import React, { useMemo, useRef, useState } from "react";
 import { SalesDataPoint } from "@/types/dashboard";
 
 /**
- * Figma: SORTPoint — Sales Summary 30:15467.
+ * Sales Summary — Figma 30:15467.
  *
- * 757x332 card, 33.5/16 padding, a 40px headline row and a 690x244 plot.
- * The plot's geometry is the design's: seven axis rows 32.5px apart with the
- * 1k baseline at y=213 and the 7k row at y=8, grid from x=44, curve from
- * x=40.37, footer at y=227.
+ * A 757x332 card with a 690x244 plot. The measurements are the design's:
+ * seven axis rows 32.5px apart, the bottom line at y=213 and the top at y=8.
  *
- * The dotted emphasis bands are clipped to the area under the curve, so the
- * fill can never sit above the line the way the flat-topped blocks do in the
- * Figma frame.
+ * The dotted bands are clipped to the area under the curve, so the shading
+ * can never rise above the line.
  */
 
 const W = 690;
@@ -28,7 +25,7 @@ const ROWS = 7;
 
 const GOLD = "#f5b800";
 
-/** Catmull-Rom through the points, emitted as cubic beziers. */
+/** A smooth curve through the points, drawn as bezier segments. */
 function smoothPath(pts: { x: number; y: number }[]): string {
   if (pts.length < 2) return "";
   let d = `M ${pts[0].x} ${pts[0].y}`;
@@ -81,7 +78,7 @@ const RANGES = ["Today", "This Week", "This Month", "This Year"] as const;
 
 interface SalesSummaryChartProps {
   data?: SalesDataPoint[];
-  /** Index ranges to emphasise with the dotted band, as in the design. */
+  /** Which stretches of the line get the dotted shading, as in the design. */
   highlights?: [number, number][];
 }
 
@@ -100,8 +97,8 @@ export default function SalesSummaryChart({
   const chart = useMemo(() => {
     const points = data.length ? data : [];
     const max = Math.max(1, ...points.map((p) => p.sales));
-    // Six gaps above the 1k baseline, snapped to a round step — 5,800 lands on
-    // the design's own 1k..7k axis.
+    // Six steps above the bottom line, rounded up, so the axis reads in whole
+    // numbers.
     const step = Math.max(1000, Math.ceil(max / 6000) * 1000);
     const base = step;
     const valueToY = (v: number) => AXIS_BOTTOM - ((v - base) / step) * ROW_GAP;
@@ -116,7 +113,7 @@ export default function SalesSummaryChart({
       pts,
       xs,
       line: smoothPath(pts),
-      // Curve closed down to the baseline — the clip that keeps fill under the line.
+      // The curve closed down to the bottom line: this is what keeps the shading under it.
       area: pts.length ? `${smoothPath(pts)} L ${xs[xs.length - 1]} ${AXIS_BOTTOM} L ${xs[0]} ${AXIS_BOTTOM} Z` : "",
       ticks: Array.from({ length: ROWS }, (_, i) => ({
         y: AXIS_TOP + i * ROW_GAP,
@@ -149,8 +146,8 @@ export default function SalesSummaryChart({
     setHover(best);
   };
 
-  // Where the hover card sits, in % of the plot box, so it can float over the
-  // chart instead of taking up flow space under it.
+  // Where the hover card sits, as a percentage of the plot, so it floats over
+  // the chart instead of pushing it down.
   const tip = useMemo(() => {
     if (hover === null || !data[hover] || !chart.pts[hover]) return null;
     const xPct = (chart.pts[hover].x / W) * 100;
@@ -159,9 +156,9 @@ export default function SalesSummaryChart({
       row: data[hover],
       xPct,
       yPct,
-      // Flip below the point when there's no room above it.
+      // Below the point when there is no room above it.
       below: yPct < 26,
-      // Pin the near corner rather than overflow the card at the edges.
+      // Hold it to the nearest corner so it does not run off the edge.
       anchorX: xPct < 16 ? "0%" : xPct > 84 ? "-100%" : "-50%",
     };
   }, [hover, data, chart]);

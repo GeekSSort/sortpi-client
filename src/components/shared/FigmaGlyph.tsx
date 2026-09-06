@@ -1,10 +1,10 @@
 import React from "react";
 
 /**
- * A Figma icon's two-box geometry: a fixed outer frame with the artwork inset
- * by the exact percentages Figma reports, so the leaf keeps its aspect ratio
- * instead of stretching to the frame. Flat fills in the generated paths are
- * currentColor, so the caller sets the tone.
+ * An icon in two boxes, the way Figma draws them: a fixed outer size with the
+ * artwork inset by the exact percentages Figma gives, so the picture keeps its
+ * shape instead of stretching. The fills use currentColor, so whoever uses the
+ * icon picks the colour.
  */
 export default function Glyph({
   w,

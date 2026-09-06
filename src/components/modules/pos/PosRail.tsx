@@ -18,15 +18,12 @@ import {
 } from "@/components/shared/SidebarIcons";
 
 /**
- * Figma: SORTPoint — POS environment 247:13583.
+ * The till's side menu — Figma 247:13583.
  *
- * 240 wide (16px padding over a 208 column) on #eaeaea, a 208x54 logo, then the
- * menu 32px below it with 8px between rows. A row is px-10 py-8 at radius 6,
- * a 20px glyph 14px from 14/21 text at -0.28. The active row is 41 tall on
- * #f5b800 with white semibold text.
+ * 240 wide on #eaeaea: a 208x54 logo, then the menu 32px below with 8px
+ * between rows. The selected row is 41 tall, gold, white semibold text.
  *
- * Six destinations, not the main app's nine: the till only needs what a cashier
- * touches. "Sales & POS" carries a caret because it holds the selling screens.
+ * Six entries, not the main app's nine: a cashier only needs what they touch.
  */
 
 type SubItem = { name: string; href: string; match: (p: string) => boolean };
@@ -89,21 +86,19 @@ export default function PosRail() {
   const { user: session } = useSession();
   const router = useRouter();
 
-  // Which group the current page lives in, if any.
+  // The group the current page belongs to, if any.
   const routeSection = NAV.find((i) => i.children && i.match(pathname))?.name ?? null;
 
-  // The group the user last had open. Seeded from the route, then kept.
+  // The group the user last opened. Starts from the route, then stays put.
   const [openSection, setOpenSection] = useState<string | null>(routeSection);
   const [lastRoute, setLastRoute] = useState<string | null>(routeSection);
 
-  // Adjust during render rather than in an effect — React's own recommendation
-  // for state that has to follow a prop, and it avoids a second paint.
+  // Set during render, not in an effect: this is React's own advice for state
+  // that follows a prop, and it avoids a second paint.
   //
-  // The bug this fixes: `openSection` was read from the pathname ONCE, at
-  // mount. The rail lives in the layout and does not remount, so stepping from
-  // Sell to Products left the group shut with no way back except a reload.
-  // Now entering a group opens it, and leaving for a page outside every group
-  // leaves it as the user had it.
+  // It fixes a real bug. The menu read the route once, when it mounted, and
+  // the menu never remounts — so moving from Sell to Products closed the
+  // group with no way to reopen it short of a reload.
   if (routeSection !== lastRoute) {
     setLastRoute(routeSection);
     if (routeSection) setOpenSection(routeSection);
@@ -233,7 +228,7 @@ export default function PosRail() {
           <button
             type="button"
             onClick={async () => {
-              // Was a link to /dashboard — it said Log Out and did not log out.
+              // This used to be a link to /dashboard: it said Log Out and did not.
               await AuthService.logout();
               clearSessionCache();
               router.replace("/login");

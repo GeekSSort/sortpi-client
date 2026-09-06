@@ -13,6 +13,7 @@ export default function EditProfilePage() {
     businessType: "Private Limited",
     companyEmail: "info@abcretail.com",
     phoneNumber: "+880 1712-345678",
+    address: "Road-15, Block-D, House-50, Banani, Dhaka-1213",
     website: "www.abcretail.com",
     taxId: "123456789",
     tradeLicenseBin: "123456789",

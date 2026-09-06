@@ -1,245 +1,494 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import Image from "next/image";
-import {
-  Plus,
-  Search,
-  Filter,
-  ChevronLeft,
-  ChevronRight,
-  ChevronDown,
-} from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
 import { PayrollRecord } from "@/types/payroll";
-import { PayrollService } from "@/services";
+import { PayrollService } from "@/services/payrollService";
+import StatusPill, { Tone } from "@/components/shared/StatusPill";
+import { formatMoney } from "@/lib/format";
+import TablePagination from "@/components/shared/TablePagination";
+import TableSkeleton from "@/components/shared/TableSkeleton";
+import Avatar from "@/components/shared/Avatar";
+import RowActionMenu from "@/components/shared/RowActionMenu";
+import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
+
+/**
+ * Payroll — Figma 75:5509.
+ *
+ * Seven columns fixed at both ends: # 80, Employee 230, four equal money
+ * columns, Status 140, then the 83px action column. Rows 54 tall with 12px
+ * cells. Search and the filter sit
+ * in the headline row, as they do on the other list pages.
+ */
+
+const GRID = "grid-cols-[80px_230px_1fr_1fr_1fr_1fr_140px_83px]";
+const CELL = "flex items-center px-[12px]";
+const HEAD =
+  "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e] whitespace-nowrap";
+const BODY =
+  "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252] whitespace-nowrap";
+
+const MONEY_FIELD =
+  "h-[44px] w-full rounded-[10px] bg-white px-[12px] text-[14px] text-[#1e1e1e] shadow-[inset_0_0_0_1px_#eaeaea] outline-none focus:shadow-[inset_0_0_0_1.5px_#f5b800]";
+
+const STATUS_TONE: Record<PayrollRecord["status"], Tone> = { Paid: "green", Pending: "gold" };
+const FILTERS = ["Payroll", "Paid", "Pending"] as const;
+
+function SearchIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden className="shrink-0">
+      <circle cx="11" cy="11" r="7.5" stroke="currentColor" strokeWidth="1.5" />
+      <path d="m20 20-3.2-3.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function FilterIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden className="shrink-0">
+      <path d="M2.25 4.5h13.5M4.5 9h9m-6.75 4.5h4.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CaretIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 20 20"
+      fill="none"
+      aria-hidden
+      className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
+    >
+      <path d="m5.5 7.75 4.5 4.5 4.5-4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function AddIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden className="shrink-0">
+      <path d="M10 4.375v11.25M4.375 10h11.25" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
 
 export default function PayrollPage() {
-  const [payroll, setPayroll] = useState<PayrollRecord[]>([]);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [rows, setRows] = useState<PayrollRecord[]>([]);
+  const [total, setTotal] = useState(0);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<(typeof FILTERS)[number]>("Payroll");
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
-  const [currentPage, setCurrentPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [note, setNote] = useState<string | null>(null);
+  const [runOpen, setRunOpen] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [period, setPeriod] = useState(() => PayrollService.monthBounds());
+  const [reloadKey, setReloadKey] = useState(0);
+  const [editOf, setEditOf] = useState<PayrollRecord | null>(null);
+  const [form, setForm] = useState({ basicSalary: "", allowances: "", deductions: "" });
+  const [saving, setSaving] = useState(false);
+  const filterRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    PayrollService.getPayroll({ search: searchQuery }).then((res) => {
-      setPayroll(res.data);
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await PayrollService.getPayroll({
+          search: query || undefined,
+          status: filter === "Payroll" ? undefined : filter,
+          page,
+          limit: pageSize,
+        });
+        if (cancelled) return;
+        setRows(res.data);
+        setTotal(res.total);
+      } catch (e) {
+        if (!cancelled) setNote(PayrollService.describeError(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [query, filter, page, pageSize, reloadKey]);
+
+  useEffect(() => {
+    if (!filterOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (filterRef.current && !filterRef.current.contains(e.target as Node)) setFilterOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setFilterOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [filterOpen]);
+
+  /** Open the edit dialog with the row's own figures. */
+  const openEdit = (row: PayrollRecord) => {
+    setForm({
+      basicSalary: String(row.basicSalary),
+      allowances: String(row.allowances),
+      deductions: String(row.deductions),
     });
-  }, [searchQuery]);
+    setEditOf(row);
+  };
+
+  const saveEdit = async () => {
+    if (!editOf) return;
+    setSaving(true);
+    try {
+      await PayrollService.updatePayslip(editOf.id, {
+        basicSalary: Number(form.basicSalary) || 0,
+        allowances: Number(form.allowances) || 0,
+        deductions: Number(form.deductions) || 0,
+      });
+      setNote(`${editOf.employee.name}'s payroll updated.`);
+      setEditOf(null);
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setNote(PayrollService.describeError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const runPayroll = async () => {
+    setRunning(true);
+    try {
+      await PayrollService.runPayroll(period.start, period.end);
+      setNote(`Payroll run for ${period.start} to ${period.end}.`);
+      setRunOpen(false);
+      setPage(1);
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setNote(PayrollService.describeError(e));
+    } finally {
+      setRunning(false);
+    }
+  };
 
   return (
-    <div className="w-full flex flex-col gap-5 pb-8 select-none">
-      {/* Top Page Header Section */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        {/* Title & Subtitle */}
-        <div>
-          <h2 className="text-xl sm:text-2xl font-extrabold text-gray-900 tracking-tight">
-            Payroll
-          </h2>
-          <p className="text-xs sm:text-sm text-gray-500 mt-0.5">
-            Manage employee salaries, allowances, deductions, attendance, overtime, and payment status from one place.
-          </p>
-        </div>
-
-        {/* Add New Button */}
-        <div className="flex items-center gap-3">
+    <div className="flex w-full flex-col gap-[14px] select-none">
+      {/* Headline — 75:5511 */}
+      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
+        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
+          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
+            <SearchIcon />
+            <input
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setPage(1);
+              }}
+              placeholder="Search by name, ID, email, phone..."
+              aria-label="Search payroll"
+              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
+            />
+          </div>
           <button
             type="button"
-            className="flex items-center gap-2 px-5 py-2.5 bg-[#F4B41A] hover:bg-[#E5A612] text-white rounded-xl text-xs sm:text-sm font-bold shadow-xs transition-all cursor-pointer"
+            aria-label="Filter"
+            onClick={() => setFilterOpen((v) => !v)}
+            className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e]"
           >
-            <Plus className="w-4 h-4 stroke-[3]" />
-            <span>Add New</span>
+            <FilterIcon />
+          </button>
+        </div>
+
+        <div className="flex flex-col items-stretch gap-[12px] sm:flex-row sm:items-center sm:gap-[16px]">
+          <div ref={filterRef} className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setFilterOpen((v) => !v)}
+              aria-haspopup="listbox"
+              aria-expanded={filterOpen}
+              className="flex h-[48px] w-full cursor-pointer items-center justify-between gap-[12px] rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] py-[12px] text-[16px] leading-[24px] font-medium whitespace-nowrap text-[#525252] transition-colors hover:bg-[#fafafa] sm:w-auto"
+            >
+              {filter}
+              <CaretIcon open={filterOpen} />
+            </button>
+
+            {filterOpen && (
+              <ul
+                role="listbox"
+                className="absolute right-0 z-30 mt-[6px] w-[168px] overflow-hidden rounded-[10px] border border-[#eaeaea] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)]"
+              >
+                {FILTERS.map((f) => (
+                  <li key={f}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={f === filter}
+                      onClick={() => {
+                        setFilter(f);
+                        setPage(1);
+                        setFilterOpen(false);
+                      }}
+                      className={`w-full cursor-pointer px-[14px] py-[9px] text-left text-[14px] transition-colors hover:bg-[#fdf7e6] ${
+                        f === filter ? "bg-[#fdf7e6] font-medium text-[#1e1e1e]" : "text-[#525252]"
+                      }`}
+                    >
+                      {f === "Payroll" ? "All payslips" : f}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setPeriod(PayrollService.monthBounds());
+              setRunOpen(true);
+            }}
+            style={{ backgroundImage: GOLD_GRADIENT }}
+            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
+          >
+            <AddIcon />
+            Add New
           </button>
         </div>
       </div>
 
-      {/* Payroll List Container Card */}
-      <div className="bg-white rounded-3xl border border-gray-100 shadow-[0_4px_25px_rgba(0,0,0,0.02)] overflow-hidden">
-        {/* Card Header: Product List Title + Search & Filter */}
-        <div className="p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-50">
-          <h3 className="text-base font-bold text-gray-900">
-            Product List
-          </h3>
+      {/* Table card — 75:5543 */}
+      <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+        {note && (
+          <p role="status" className="mx-[16px] mt-[16px] rounded-[8px] bg-[#fdf7e6] px-[12px] py-[8px] text-[13px] text-[#6d5b46]">
+            {note}
+          </p>
+        )}
 
-          <div className="flex items-center gap-2.5">
-            {/* Search Input */}
-            <div className="relative w-full sm:w-[320px]">
-              <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search by name, ID, email, phone.."
-                className="w-full pl-10 pr-4 py-2 rounded-xl bg-white border border-gray-200 text-xs text-gray-800 placeholder:text-gray-400 focus:outline-none focus:border-amber-400 transition-colors"
-              />
-            </div>
+        {/* Table — 75:5560 */}
+        <div className="hidden px-[16px] pt-[16px] md:block">
+          <div className="overflow-x-auto">
+            <div className="min-w-[1050px]">
+              <div className={`grid ${GRID} items-start overflow-clip`}>
+                <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>#</span></div>
+                <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Employee</span></div>
+                <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Basic Salary</span></div>
+                <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Allowances</span></div>
+                <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Deductions</span></div>
+                <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Net Salary</span></div>
+                <div className={`${CELL} h-[40px] justify-center border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Status</span></div>
+                <div className={`${CELL} h-[40px] justify-center border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Action</span></div>
 
-            {/* Filter Funnel Button */}
-            <button
-              type="button"
-              title="Filter payroll"
-              className="p-2 border border-gray-200 hover:border-gray-300 rounded-xl text-gray-500 hover:text-gray-800 hover:bg-gray-50 transition-colors cursor-pointer shrink-0"
-            >
-              <Filter className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
+                {loading && (
+                  <div className="col-span-8 px-[12px] py-[28px] text-center text-[14px] text-[#525252]">
+                    Loading payroll...
+                  </div>
+                )}
 
-        {/* Data Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-gray-100 text-xs font-semibold text-gray-500 bg-gray-50/50">
-                <th className="py-3.5 px-6 font-semibold w-10">#</th>
-                <th className="py-3.5 px-6 font-semibold">Employee</th>
-                <th className="py-3.5 px-6 font-semibold">Basic Salary</th>
-                <th className="py-3.5 px-6 font-semibold">Allowances</th>
-                <th className="py-3.5 px-6 font-semibold">Deductions</th>
-                <th className="py-3.5 px-6 font-semibold">Net Salary</th>
-                <th className="py-3.5 px-6 font-semibold text-center">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50 text-xs font-medium text-gray-700">
-              {payroll.map((item, idx) => (
-                <tr
-                  key={`${item.id}-${idx}`}
-                  className="hover:bg-gray-50/80 transition-colors"
-                >
-                  {/* Index */}
-                  <td className="py-4 px-6 text-gray-500 font-medium">
-                    {item.index}
-                  </td>
+                {loading && rows.length === 0 && (
+                  <TableSkeleton columns={GRID} rows={pageSize} />
+                )}
+                {!loading && rows.length === 0 && (
+                  <div className="col-span-8 px-[12px] py-[28px] text-center text-[14px] text-[#525252]">
+                    No payslips yet. Use Add New to run payroll for this month.
+                  </div>
+                )}
 
-                  {/* Employee Avatar + Name */}
-                  <td className="py-4 px-6">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-6 h-6 rounded-md bg-amber-100 relative shrink-0 overflow-hidden border border-gray-200">
-                        <Image
-                          src={item.employee.avatar || "/sidebar/nav-avatar.png"}
-                          alt={item.employee.name}
-                          fill
-                          className="object-cover"
+                {!loading &&
+                  rows.map((r) => (
+                    <React.Fragment key={r.id}>
+                      <div className={`${CELL} h-[54px] border-b border-solid border-[#eaeaea]`}>
+                        <span className={BODY}>{r.index}</span>
+                      </div>
+                      <div className={`${CELL} h-[54px] gap-[8px] border-b border-solid border-[#eaeaea]`}>
+                        <Avatar radius={4} name={r.employee.name} />
+                        <span className={`${BODY} truncate`}>{r.employee.name}</span>
+                      </div>
+                      <div className={`${CELL} h-[54px] border-b border-solid border-[#eaeaea]`}>
+                        <span className={BODY}>{r.basicSalaryFormatted}</span>
+                      </div>
+                      <div className={`${CELL} h-[54px] border-b border-solid border-[#eaeaea]`}>
+                        <span className={BODY}>{r.allowancesFormatted}</span>
+                      </div>
+                      <div className={`${CELL} h-[54px] border-b border-solid border-[#eaeaea]`}>
+                        <span className={BODY}>{r.deductionsFormatted}</span>
+                      </div>
+                      <div className={`${CELL} h-[54px] border-b border-solid border-[#eaeaea]`}>
+                        <span className={BODY}>{r.netSalaryFormatted}</span>
+                      </div>
+                      <div className={`${CELL} h-[54px] justify-center border-b border-solid border-[#eaeaea]`}>
+                        <StatusPill label={r.status} tone={STATUS_TONE[r.status]} />
+                      </div>
+                      <div className={`${CELL} h-[54px] justify-center border-b border-solid border-[#eaeaea]`}>
+                        <RowActionMenu
+                          label={`Actions for ${r.employee.name}`}
+                          actions={[
+                            { label: "Edit payroll", onSelect: () => openEdit(r) },
+                          ]}
                         />
                       </div>
-                      <span className="font-semibold text-gray-900 truncate">
-                        {item.employee.name}
-                      </span>
-                    </div>
-                  </td>
-
-                  {/* Basic Salary */}
-                  <td className="py-4 px-6 font-bold text-gray-900">
-                    {item.basicSalaryFormatted}
-                  </td>
-
-                  {/* Allowances */}
-                  <td className="py-4 px-6 font-bold text-gray-900">
-                    {item.allowancesFormatted}
-                  </td>
-
-                  {/* Deductions */}
-                  <td className="py-4 px-6 font-bold text-gray-900">
-                    {item.deductionsFormatted}
-                  </td>
-
-                  {/* Net Salary */}
-                  <td className="py-4 px-6 font-bold text-gray-900">
-                    {item.netSalaryFormatted}
-                  </td>
-
-                  {/* Status Badge */}
-                  <td className="py-4 px-6 text-center">
-                    {item.status === "Paid" ? (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-600 border border-emerald-100">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                        Paid
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-50 text-amber-600 border border-amber-200">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                        Pending
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    </React.Fragment>
+                  ))}
+              </div>
+            </div>
+          </div>
         </div>
 
-        {/* Footer / Pagination Controls */}
-        <div className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-t border-gray-100 text-xs text-gray-500">
-          {/* Entries summary */}
-          <div className="flex items-center gap-4">
-            <span>Showing 1 to {Math.min(pageSize, payroll.length)} of 50 entries</span>
+        {/* Below md the grid cannot hold seven columns; each row becomes a card. */}
+        <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
+          {rows.map((r) => (
+            <div key={r.id} className="rounded-[10px] p-[12px] shadow-[inset_0_0_0_1px_#eaeaea]">
+              <div className="flex items-center justify-between gap-[10px]">
+                <div className="flex min-w-0 items-center gap-[8px]">
+                  <Avatar radius={4} name={r.employee.name} />
+                  <span className="truncate text-[14px] font-medium text-[#1e1e1e]">
+                    {r.employee.name}
+                  </span>
+                </div>
+                <StatusPill label={r.status} tone={STATUS_TONE[r.status]} />
+              </div>
+              <div className="mt-[8px] grid grid-cols-2 gap-x-[12px] gap-y-[4px] text-[13px] text-[#525252]">
+                <span>Basic {r.basicSalaryFormatted}</span>
+                <span className="text-right">Allow {r.allowancesFormatted}</span>
+                <span>Deduct {r.deductionsFormatted}</span>
+                <span className="text-right">Net {r.netSalaryFormatted}</span>
+              </div>
+            </div>
+          ))}
+        </div>
 
-            {/* Page Size Selector */}
-            <div className="relative inline-flex items-center">
-              <button
-                type="button"
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
-              >
-                <span>Show {pageSize}</span>
-                <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
-              </button>
+        <TablePagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={setPage}
+          onPageSizeChange={(n) => {
+            setPageSize(n);
+            setPage(1);
+          }}
+        />
+      </div>
+
+      {/* Add New runs payroll: the server writes one payslip per employee. */}
+      <Modal
+        open={runOpen}
+        onClose={() => setRunOpen(false)}
+        title="Run payroll"
+        width={420}
+        footer={
+          <>
+            <button type="button" className={MODAL_GHOST} onClick={() => setRunOpen(false)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={running}
+              style={{ backgroundImage: GOLD_GRADIENT }}
+              className={`${MODAL_PRIMARY} disabled:cursor-not-allowed disabled:opacity-60`}
+              onClick={runPayroll}
+            >
+              {running ? "Running..." : "Run payroll"}
+            </button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-[16px]">
+          <p className="text-[14px] leading-[1.6] text-[#525252]">
+            A payslip is created for every active employee in this period.
+          </p>
+          <div className="grid grid-cols-2 gap-[12px]">
+            <label className="flex flex-col gap-[6px]">
+              <span className="text-[13px] font-medium text-[#1e1e1e]">Period start</span>
+              <input
+                type="date"
+                value={period.start}
+                onChange={(e) => setPeriod({ ...period, start: e.target.value })}
+                className="h-[44px] rounded-[10px] bg-white px-[12px] text-[14px] text-[#1e1e1e] shadow-[inset_0_0_0_1px_#eaeaea] outline-none focus:shadow-[inset_0_0_0_1.5px_#f5b800]"
+              />
+            </label>
+            <label className="flex flex-col gap-[6px]">
+              <span className="text-[13px] font-medium text-[#1e1e1e]">Period end</span>
+              <input
+                type="date"
+                value={period.end}
+                onChange={(e) => setPeriod({ ...period, end: e.target.value })}
+                className="h-[44px] rounded-[10px] bg-white px-[12px] text-[14px] text-[#1e1e1e] shadow-[inset_0_0_0_1px_#eaeaea] outline-none focus:shadow-[inset_0_0_0_1.5px_#f5b800]"
+              />
+            </label>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Correcting a payslip — draft runs only; a posted run is in the ledger. */}
+      <Modal
+        open={editOf !== null}
+        onClose={() => setEditOf(null)}
+        title="Edit payroll"
+        width={440}
+        footer={
+          <>
+            <button type="button" className={MODAL_GHOST} onClick={() => setEditOf(null)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={saving || !editOf?.editable}
+              style={{ backgroundImage: GOLD_GRADIENT }}
+              className={`${MODAL_PRIMARY} disabled:cursor-not-allowed disabled:opacity-60`}
+              onClick={saveEdit}
+            >
+              {saving ? "Saving..." : "Save changes"}
+            </button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-[16px]">
+          <div className="flex items-center gap-[12px]">
+            <Avatar radius={4} name={editOf?.employee.name ?? ""} />
+            <div className="min-w-0">
+              <p className="truncate text-[14px] font-medium text-[#1e1e1e]">
+                {editOf?.employee.name}
+              </p>
+              <p className="text-[13px] text-[#525252]">Payslip {editOf?.index}</p>
             </div>
           </div>
 
-          {/* Page Numbers & Nav */}
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              disabled={currentPage === 1}
-              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-              className="w-8 h-8 rounded-xl border border-gray-200 flex items-center justify-center text-gray-500 hover:text-gray-800 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
+          {!editOf?.editable && (
+            <p role="alert" className="rounded-[8px] bg-[#fffbee] px-[12px] py-[8px] text-[13px] text-[#6d5b46]">
+              This payroll run is already paid out, so its figures are locked.
+            </p>
+          )}
 
-            <button
-              type="button"
-              onClick={() => setCurrentPage(1)}
-              className="w-8 h-8 rounded-xl border border-gray-200 flex items-center justify-center font-bold text-xs bg-gray-50 text-gray-900 transition-colors cursor-pointer"
-            >
-              1
-            </button>
+          {(
+            [
+              ["Basic salary", "basicSalary"],
+              ["Allowances", "allowances"],
+              ["Deductions", "deductions"],
+            ] as const
+          ).map(([label, key]) => (
+            <label key={key} className="flex flex-col gap-[6px]">
+              <span className="text-[13px] font-medium text-[#1e1e1e]">{label}</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                disabled={!editOf?.editable}
+                value={form[key]}
+                onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+                className={MONEY_FIELD}
+              />
+            </label>
+          ))}
 
-            <button
-              type="button"
-              onClick={() => setCurrentPage(2)}
-              className="w-8 h-8 rounded-xl border border-transparent flex items-center justify-center font-semibold text-xs text-gray-500 hover:bg-gray-50 hover:text-gray-800 transition-colors cursor-pointer"
-            >
-              2
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setCurrentPage(3)}
-              className="w-8 h-8 rounded-xl border border-transparent flex items-center justify-center font-semibold text-xs text-gray-500 hover:bg-gray-50 hover:text-gray-800 transition-colors cursor-pointer"
-            >
-              3
-            </button>
-
-            <span className="px-1 text-gray-400 font-bold">...</span>
-
-            <button
-              type="button"
-              onClick={() => setCurrentPage(10)}
-              className="w-8 h-8 rounded-xl border border-transparent flex items-center justify-center font-semibold text-xs text-gray-500 hover:bg-gray-50 hover:text-gray-800 transition-colors cursor-pointer"
-            >
-              10
-            </button>
-
-            <button
-              type="button"
-              disabled={currentPage === 10}
-              onClick={() => setCurrentPage((p) => Math.min(10, p + 1))}
-              className="w-8 h-8 rounded-xl border border-gray-200 flex items-center justify-center text-gray-500 hover:text-gray-800 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
+          <div className="flex items-center justify-between rounded-[10px] bg-[#fafafa] px-[12px] py-[10px]">
+            <span className="text-[13px] text-[#525252]">Net salary</span>
+            <span className="text-[14px] font-medium text-[#1e1e1e]">
+              {formatMoney((Number(form.basicSalary) || 0) + (Number(form.allowances) || 0) - (Number(form.deductions) || 0))}
+            </span>
           </div>
         </div>
-      </div>
+      </Modal>
     </div>
   );
 }
-

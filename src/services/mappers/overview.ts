@@ -4,9 +4,9 @@ import { formatMoney } from "@/lib/format";
 import { toSaleRecord } from "./sale";
 
 /**
- * The dashboard's pop-out panels, mapped from the ordinary resource lists:
- * sales from /sales/, orders from /purchases/, customers from /customers/.
- * The `/ceo-overview/...` endpoints they used to call never existed.
+ * The dashboard's pop-out panels, built from the ordinary lists: sales from
+ * /sales/, orders from /purchases/, customers from /customers/. The
+ * `/ceo-overview/...` endpoints they used to call never existed.
  */
 
 export function toSalesOverviewItem(row: any): SalesOverviewItem {

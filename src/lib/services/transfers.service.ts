@@ -9,7 +9,7 @@ export const initialTransfersData: TransferRecord[] = [
     productsSummary: "5 Products",
     quantity: 45,
     dateTime: "25 May 2024, 10:30 AM",
-    status: "In Stock",
+    status: "Received",
   },
   {
     id: "trf-2",
@@ -19,7 +19,7 @@ export const initialTransfersData: TransferRecord[] = [
     productsSummary: "5 Products",
     quantity: 18,
     dateTime: "25 May 2024, 10:30 AM",
-    status: "Low Stock",
+    status: "Dispatched",
   },
   {
     id: "trf-3",
@@ -29,7 +29,7 @@ export const initialTransfersData: TransferRecord[] = [
     productsSummary: "5 Products",
     quantity: 32,
     dateTime: "25 May 2024, 10:30 AM",
-    status: "In Stock",
+    status: "Received",
   },
   {
     id: "trf-4",
@@ -39,7 +39,7 @@ export const initialTransfersData: TransferRecord[] = [
     productsSummary: "5 Products",
     quantity: 56,
     dateTime: "25 May 2024, 10:30 AM",
-    status: "In Stock",
+    status: "Received",
   },
   {
     id: "trf-5",
@@ -49,7 +49,7 @@ export const initialTransfersData: TransferRecord[] = [
     productsSummary: "5 Products",
     quantity: 21,
     dateTime: "25 May 2024, 10:30 AM",
-    status: "Out of Stock",
+    status: "Cancelled",
   },
   {
     id: "trf-6",
@@ -59,7 +59,7 @@ export const initialTransfersData: TransferRecord[] = [
     productsSummary: "5 Products",
     quantity: 7,
     dateTime: "25 May 2024, 10:30 AM",
-    status: "Low Stock",
+    status: "Dispatched",
   },
   {
     id: "trf-7",
@@ -69,7 +69,7 @@ export const initialTransfersData: TransferRecord[] = [
     productsSummary: "5 Products",
     quantity: 78,
     dateTime: "25 May 2024, 10:30 AM",
-    status: "Out of Stock",
+    status: "Cancelled",
   },
   {
     id: "trf-8",
@@ -79,7 +79,7 @@ export const initialTransfersData: TransferRecord[] = [
     productsSummary: "5 Products",
     quantity: 57,
     dateTime: "25 May 2024, 10:30 AM",
-    status: "In Stock",
+    status: "Received",
   },
   {
     id: "trf-9",
@@ -89,7 +89,7 @@ export const initialTransfersData: TransferRecord[] = [
     productsSummary: "5 Products",
     quantity: 190,
     dateTime: "25 May 2024, 10:30 AM",
-    status: "In Stock",
+    status: "Received",
   },
   {
     id: "trf-10",
@@ -99,7 +99,7 @@ export const initialTransfersData: TransferRecord[] = [
     productsSummary: "5 Products",
     quantity: 100,
     dateTime: "25 May 2024, 10:30 AM",
-    status: "In Stock",
+    status: "Received",
   },
   {
     id: "trf-11",
@@ -109,7 +109,7 @@ export const initialTransfersData: TransferRecord[] = [
     productsSummary: "5 Products",
     quantity: 45,
     dateTime: "25 May 2024, 10:30 AM",
-    status: "In Stock",
+    status: "Received",
   },
   {
     id: "trf-12",
@@ -119,7 +119,7 @@ export const initialTransfersData: TransferRecord[] = [
     productsSummary: "5 Products",
     quantity: 34,
     dateTime: "25 May 2024, 10:30 AM",
-    status: "In Stock",
+    status: "Received",
   },
   {
     id: "trf-13",
@@ -129,7 +129,7 @@ export const initialTransfersData: TransferRecord[] = [
     productsSummary: "5 Products",
     quantity: 23,
     dateTime: "25 May 2024, 10:30 AM",
-    status: "In Stock",
+    status: "Received",
   },
 ];
 

@@ -1,16 +1,11 @@
 import { ProductItem, Customer, CheckoutPayload, OrderResponse } from "@/types/pos";
 import { initialProductCatalog } from "@/lib/mock-pos-data";
 
-/**
- * Enterprise Service Layer for POS & Cart Operations
- * Easily switchable between mock datasets and real REST / GraphQL backend endpoints.
- */
+/** Sample POS data, used when there is no API to call. */
 export class PosService {
   private static baseUrl = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
 
-  /**
-   * Fetch product catalog with optional search and category filters
-   */
+  /** Products, with optional search and category filter. */
   static async getProducts(params?: {
     category?: string;
     search?: string;
@@ -26,9 +21,7 @@ export class PosService {
     });
   }
 
-  /**
-   * Search customers by name or phone
-   */
+  /** Find customers by name or phone. */
   static async searchCustomers(query: string): Promise<Customer[]> {
     const mockCustomers: Customer[] = [
       { id: "cus-1", name: "Walk-in Customer", type: "Walk-in" },
@@ -47,9 +40,7 @@ export class PosService {
     );
   }
 
-  /**
-   * Submit an order / invoice checkout to backend DB
-   */
+  /** Send a finished sale to the server. */
   static async createOrder(payload: CheckoutPayload): Promise<OrderResponse> {
     // In production:
     // const res = await fetch(`${this.baseUrl}/pos/orders`, {
@@ -68,9 +59,7 @@ export class PosService {
     });
   }
 
-  /**
-   * Hold an active cart order for later retrieval
-   */
+  /** Park a cart to come back to later. */
   static async holdOrder(payload: CheckoutPayload): Promise<{ success: boolean; holdId: string }> {
     return Promise.resolve({
       success: true,

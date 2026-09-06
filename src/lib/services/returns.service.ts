@@ -1,4 +1,4 @@
-import { ReturnRecord, ReturnQueryFilter, CreateReturnPayload } from "@/types/returns";
+import { ReturnRecord, ReturnQueryFilter } from "@/types/returns";
 
 export const initialReturnsData: ReturnRecord[] = [
   {
@@ -201,24 +201,5 @@ export class ReturnsService {
     });
   }
 
-  /**
-   * Create a new return record
-   */
-  static async createReturn(payload: CreateReturnPayload): Promise<ReturnRecord> {
-    const newReturn: ReturnRecord = {
-      id: `ret-${Date.now()}`,
-      returnNo: `RET-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
-      invoiceNo: payload.invoiceNo,
-      dateTime: "Just now",
-      customerName: payload.customerName,
-      totalAmount: payload.refundAmount,
-      totalAmountFormatted: `৳ ${payload.refundAmount.toLocaleString()}`,
-      refundAmount: payload.refundAmount,
-      refundAmountFormatted: `৳ ${payload.refundAmount.toLocaleString()}`,
-      paymentMethod: payload.paymentMethod as any,
-      status: "Paid",
-    };
-    return Promise.resolve(newReturn);
-  }
 }
 

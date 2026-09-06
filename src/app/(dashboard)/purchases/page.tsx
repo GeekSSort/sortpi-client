@@ -1,15 +1,16 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import Image from "next/image";
+import React, { useEffect, useRef, useState } from "react";
 import { PurchaseRecord } from "@/types/purchases";
 import { PurchaseService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import TablePagination from "@/components/shared/TablePagination";
+import TableSkeleton from "@/components/shared/TableSkeleton";
+import Avatar from "@/components/shared/Avatar";
 import DateField from "@/components/shared/DateField";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
-import { matchesDay } from "@/lib/dateFilter";
+import { toApiDay } from "@/lib/dateFilter";
 
 /**
  * Figma: SORTPoint — Purchase History 59:15218.
@@ -66,23 +67,128 @@ export default function PurchasesPage() {
   const [detailOf, setDetailOf] = useState<PurchaseRecord | null>(null);
   const [receiptOf, setReceiptOf] = useState<PurchaseRecord | null>(null);
   const [markOf, setMarkOf] = useState<{ row: PurchaseRecord; kind: "received" | "paid" } | null>(null);
+  const [payAmount, setPayAmount] = useState("");
+  const [markError, setMarkError] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  /** The debounce is for typing. Waiting 250ms to make the FIRST request
+      just adds a quarter second of blank table on reload. */
+  const firstLoad = useRef(true);
+  /** The API's count of everything matching, not of what this page holds. */
+  const [total, setTotal] = useState(0);
+  const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
-    PurchaseService.getPurchases({ search: query })
-      .then((res) => setPurchases(res.data))
-      .catch(() => {});
-  }, [query]);
+    // Debounced and guarded: a request per keystroke let a slow answer for
+    // "PO" land after "PO-12" and repopulate the table with the wrong rows.
+    // The day and the page go to the API too — both used to be applied in the
+    // browser over one capped page, so an older day found nothing that had not
+    // already been fetched and the pager called 200 the total.
+    let live = true;
+    const day = date ? toApiDay(date) : undefined;
+    const id = setTimeout(() => {
+      setLoading(true);
+      PurchaseService.getPurchases({
+        search: query,
+        startDate: day,
+        endDate: day,
+        page,
+        limit: pageSize,
+      })
+        .then((res) => {
+          if (!live) return;
+          setPurchases(res.data);
+          setTotal(res.total);
+          setFailed(false);
+        })
+        .catch(() => live && setFailed(true))
+        .finally(() => live && setLoading(false));
+    }, firstLoad.current ? 0 : 250);
+    firstLoad.current = false;
+    return () => {
+      live = false;
+      clearTimeout(id);
+    };
+  }, [query, date, refresh, page, pageSize]);
 
-  const visible = useMemo(
-    () => purchases.filter((p) => matchesDay(p.purchaseDate, date)),
-    [purchases, date]
-  );
-  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const current = Math.min(page, totalPages);
-  const rows = useMemo(
-    () => visible.slice((current - 1) * pageSize, current * pageSize),
-    [visible, current, pageSize]
-  );
+  // The server already filtered and sliced. `rows` is the page.
+  const rows = purchases;
+
+  /** DRAFT -> CONFIRMED. The order is placed; nothing has arrived yet. */
+  const confirmOrder = async (row: PurchaseRecord) => {
+    if (working) return;
+    setWorking(true);
+    try {
+      await PurchaseService.confirm(row.id);
+      setNote(`${row.purchaseId} confirmed`);
+      setRefresh((n) => n + 1);
+    } catch (err) {
+      setNote(
+        err instanceof Error && err.message
+          ? `${row.purchaseId}: ${err.message}`
+          : `${row.purchaseId} could not be confirmed.`
+      );
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const cancelOrder = async (row: PurchaseRecord) => {
+    if (working) return;
+    setWorking(true);
+    try {
+      await PurchaseService.cancel(row.id);
+      setNote(`${row.purchaseId} cancelled`);
+      setRefresh((n) => n + 1);
+    } catch (err) {
+      setNote(
+        err instanceof Error && err.message
+          ? `${row.purchaseId}: ${err.message}`
+          : `${row.purchaseId} could not be cancelled.`
+      );
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  /**
+   * Receiving books the goods in and moves stock; paying posts to the supplier
+   * ledger. Both are real endpoints — this screen used to change the row and
+   * nothing else, so an order could read Received with no stock behind it.
+   */
+  const applyMark = async () => {
+    if (!markOf || working) return;
+    setWorking(true);
+    setMarkError(null);
+    try {
+      if (markOf.kind === "received") {
+        // No lines: everything still outstanding arrives.
+        await PurchaseService.receive(markOf.row.id);
+        setNote(`${markOf.row.purchaseId} received — stock booked in`);
+      } else {
+        const amount = Number(payAmount);
+        if (!payAmount.trim() || Number.isNaN(amount) || amount <= 0) {
+          setWorking(false);
+          return setMarkError("Enter an amount greater than zero.");
+        }
+        await PurchaseService.recordPayment(markOf.row.id, amount);
+        setNote(`৳ ${amount.toLocaleString("en-IN")} paid on ${markOf.row.purchaseId}`);
+      }
+      setMarkOf(null);
+      setPayAmount("");
+      // Refetch rather than patch: the ledger owns these numbers.
+      setRefresh((n) => n + 1);
+    } catch (err) {
+      setMarkError(
+        err instanceof Error && err.message ? err.message : "That could not be recorded."
+      );
+    } finally {
+      setWorking(false);
+    }
+  };
 
   return (
     <div className="flex w-full flex-col gap-[14px] select-none">
@@ -119,7 +225,7 @@ export default function PurchasesPage() {
       <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
         <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="overflow-x-auto">
-            <div className="min-w-[1050px]">
+            <div className="min-w-[1128px]">
               <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Purchase ID</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Supplier</span></div>
@@ -132,9 +238,14 @@ export default function PurchasesPage() {
               </div>
 
               <div className="mt-[6px]">
-                {rows.length === 0 && (
+                {rows.length === 0 && loading && (
+                  <TableSkeleton columns={GRID} rows={pageSize} />
+                )}
+                {rows.length === 0 && !loading && (
                   <p className="py-[40px] text-center text-[14px] text-[#525252]">
-                    No purchases match that search or date.
+                    {failed
+                      ? "Purchases could not be loaded. Refresh to try again."
+                      : "No purchases match that search or date."}
                   </p>
                 )}
                 {rows.map((r, i) => (
@@ -156,9 +267,7 @@ export default function PurchasesPage() {
                     <div className={CELL}><span className={`${TEXT} truncate`}>{r.purchaseId}</span></div>
                     {/* 28px avatar, 8px from the name — 59:15334 */}
                     <div className={`${CELL} gap-[8px]`}>
-                      <span className="relative size-[28px] shrink-0 overflow-hidden rounded-[6px]">
-                        <Image src={r.supplier.avatar} alt="" fill sizes="28px" className="object-cover" />
-                      </span>
+                      <Avatar name={r.supplier.name} src={r.supplier.avatar} />
                       <span className={`${TEXT} truncate`}>{r.supplier.name}</span>
                     </div>
                     <div className={CELL}><span className={`${TEXT} truncate`}>{r.purchaseDate}</span></div>
@@ -181,12 +290,29 @@ export default function PurchasesPage() {
                         actions={[
                           { label: "View purchase", onSelect: () => setDetailOf(r) },
                           { label: "Print order", onSelect: () => setReceiptOf(r) },
-                          ...(r.status === "Received"
+                          // An order is placed before it arrives. Confirming is
+                          // its own step on the API and had no way in here.
+                          ...(r.status === "Pending"
+                            ? [{ label: "Confirm order", onSelect: () => confirmOrder(r) }]
+                            : []),
+                          ...(r.status === "Received" || r.status === "Cancelled"
                             ? []
-                            : [{ label: "Mark received", onSelect: () => setMarkOf({ row: r, kind: "received" as const }) }]),
-                          ...(r.paymentStatus === "Paid"
+                            : [{ label: "Receive goods", onSelect: () => setMarkOf({ row: r, kind: "received" as const }) }]),
+                          ...(r.paymentStatus === "Paid" || r.status === "Cancelled"
                             ? []
-                            : [{ label: "Mark paid", onSelect: () => setMarkOf({ row: r, kind: "paid" as const }) }]),
+                            : [
+                                {
+                                  label: "Record payment",
+                                  onSelect: () => {
+                                    setPayAmount("");
+                                    setMarkError(null);
+                                    setMarkOf({ row: r, kind: "paid" as const });
+                                  },
+                                },
+                              ]),
+                          ...(r.status === "Received" || r.status === "Cancelled"
+                            ? []
+                            : [{ label: "Cancel order", onSelect: () => cancelOrder(r) }]),
                         ]}
                       />
                     </div>
@@ -209,9 +335,7 @@ export default function PurchasesPage() {
             >
               <div className="flex items-start justify-between gap-[10px]">
                 <div className="flex min-w-0 items-center gap-[8px]">
-                  <span className="relative size-[28px] shrink-0 overflow-hidden rounded-[6px]">
-                    <Image src={r.supplier.avatar} alt="" fill sizes="28px" className="object-cover" />
-                  </span>
+                  <Avatar name={r.supplier.name} src={r.supplier.avatar} />
                   <div className="min-w-0">
                     <p className={`${TEXT} truncate !text-[#1e1e1e]`}>{r.supplier.name}</p>
                     <p className="mt-[2px] truncate text-[12px] tracking-[-0.24px] text-[#525252]">
@@ -241,7 +365,7 @@ export default function PurchasesPage() {
           <TablePagination
             page={current}
             pageSize={pageSize}
-            total={visible.length}
+            total={total}
             onPageChange={setPage}
             onPageSizeChange={(n) => {
               setPageSize(n);
@@ -278,9 +402,7 @@ export default function PurchasesPage() {
         {detailOf && (
           <div className="flex flex-col gap-[16px]">
             <div className="flex items-center gap-[12px]">
-              <span className="relative size-[48px] shrink-0 overflow-hidden rounded-[10px] border border-solid border-[#eaeaea]">
-                <Image src={detailOf.supplier.avatar} alt="" fill sizes="48px" className="object-cover" />
-              </span>
+              <Avatar name={detailOf.supplier.name} src={detailOf.supplier.avatar} size={48} radius={10} />
               <div className="min-w-0">
                 <p className="truncate text-[16px] font-medium text-[#1e1e1e]">{detailOf.supplier.name}</p>
                 <p className="truncate text-[13px] text-[#525252]">{detailOf.purchaseId}</p>
@@ -372,47 +494,59 @@ export default function PurchasesPage() {
               type="button"
               style={{ backgroundImage: GOLD_GRADIENT }}
               className={MODAL_PRIMARY}
-              onClick={() => {
-                if (!markOf) return;
-                // Optimistic: the mock backend has no update endpoint yet.
-                setPurchases((list) =>
-                  list.map((x) =>
-                    x.id === markOf.row.id
-                      ? markOf.kind === "paid"
-                        ? { ...x, paymentStatus: "Paid" as const }
-                        : { ...x, status: "Received" as const }
-                      : x
-                  )
-                );
-                setNote(
-                  markOf.kind === "paid"
-                    ? `${markOf.row.purchaseId} marked as paid`
-                    : `${markOf.row.purchaseId} marked as received`
-                );
-                setMarkOf(null);
-              }}
+              disabled={working}
+              onClick={applyMark}
             >
-              {markOf?.kind === "paid" ? "Confirm payment" : "Confirm receipt"}
+              {working
+                ? "Working…"
+                : markOf?.kind === "paid"
+                  ? "Confirm payment"
+                  : "Confirm receipt"}
             </button>
           </>
         }
       >
         {markOf && (
-          <p className="text-[14px] leading-[1.6] text-[#525252]">
-            {markOf.kind === "paid" ? (
-              <>
-                Record <span className="font-medium text-[#1e1e1e]">{markOf.row.totalAmountFormatted}</span>{" "}
-                as paid to <span className="font-medium text-[#1e1e1e]">{markOf.row.supplier.name}</span> for{" "}
-                <span className="font-medium text-[#1e1e1e]">{markOf.row.purchaseId}</span>?
-              </>
-            ) : (
-              <>
-                Mark <span className="font-medium text-[#1e1e1e]">{markOf.row.purchaseId}</span> (
-                {markOf.row.itemsCount} items from{" "}
-                <span className="font-medium text-[#1e1e1e]">{markOf.row.supplier.name}</span>) as received?
-              </>
+          <div className="flex flex-col gap-[12px]">
+            <p className="text-[14px] leading-[1.6] text-[#525252]">
+              {markOf.kind === "paid" ? (
+                <>
+                  Pay <span className="font-medium text-[#1e1e1e]">{markOf.row.supplier.name}</span> against{" "}
+                  <span className="font-medium text-[#1e1e1e]">{markOf.row.purchaseId}</span>, total{" "}
+                  <span className="font-medium text-[#1e1e1e]">{markOf.row.totalAmountFormatted}</span>.
+                </>
+              ) : (
+                <>
+                  Receive <span className="font-medium text-[#1e1e1e]">{markOf.row.purchaseId}</span> (
+                  {markOf.row.itemsCount} items from{" "}
+                  <span className="font-medium text-[#1e1e1e]">{markOf.row.supplier.name}</span>)? This books
+                  the goods into stock and posts to the supplier ledger.
+                </>
+              )}
+            </p>
+
+            {/* A supplier is often paid in instalments, so the amount is asked
+                for rather than assumed to be the whole invoice. */}
+            {markOf.kind === "paid" && (
+              <label className="flex flex-col gap-[6px]">
+                <span className="text-[14px] font-medium tracking-[-0.28px] text-[#525252]">Amount</span>
+                <input
+                  autoFocus
+                  value={payAmount}
+                  onChange={(e) => {
+                    setPayAmount(e.target.value.replace(/[^\d.]/g, ""));
+                    setMarkError(null);
+                  }}
+                  inputMode="decimal"
+                  placeholder="0"
+                  aria-label="Payment amount"
+                  className="flex h-[44px] items-center rounded-[10px] bg-white px-[12px] text-[14px] tracking-[-0.28px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] outline-none placeholder:text-[rgba(82,82,82,0.6)]"
+                />
+              </label>
             )}
-          </p>
+
+            {markError && <p className="text-[13px] text-[#ef4444]">{markError}</p>}
+          </div>
         )}
       </Modal>
     </div>

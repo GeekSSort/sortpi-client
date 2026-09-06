@@ -1,12 +1,11 @@
 /**
- * API client. Absorbs three backend conventions so no screen has to know them:
+ * Talks to the API so no screen has to.
  *
- * 1. Responses are enveloped — `{success, data, ...}`, plus `meta` for a list.
- * 2. Money arrives as a decimal STRING; `toAmount` converts at the boundary.
- * 3. Paths are used exactly as written — see `normalizeEndpoint`.
+ * It unwraps the `{success, data}` envelope, turns money strings into
+ * numbers, and sends every path exactly as written.
  */
 
-/** Set when the API answered with an error envelope. Carries the code a screen branches on. */
+/** An error the API sent back. `code` says which one. */
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -30,9 +29,9 @@ export class ApiError extends Error {
 }
 
 /**
- * Where the API lives. Read from the page's own address, because one bundle
- * serves every tenant and a token is refused on another tenant's host.
- * `NEXT_PUBLIC_API_URL` overrides it when the API lives elsewhere.
+ * Where the API lives. Taken from the page address: one build serves every
+ * company, and a token only works on its own address.
+ * `NEXT_PUBLIC_API_URL` points it somewhere else.
  */
 export function resolveBaseUrl(): string {
   const configured = process.env.NEXT_PUBLIC_API_URL;
@@ -47,12 +46,9 @@ export function resolveBaseUrl(): string {
 }
 
 /**
- * Which front door this page is — the same rule the server uses.
- *
- *   base domain, or a listed platform host  → platform
- *   <label>.<base domain>                   → that tenant
- *
- * Decides which login endpoint the page uses.
+ * Platform login or company login? Same rule the server uses: the base
+ * domain is the platform, anything.<base domain> is that company.
+ * It decides which login endpoint the page calls.
  */
 export function resolveRealm(): "tenant" | "platform" {
   if (typeof window === "undefined") return "platform";
@@ -71,7 +67,7 @@ export function resolveRealm(): "tenant" | "platform" {
   return "platform";
 }
 
-/** The tenant label in the address, when there is one. */
+/** The company name in the address, if there is one. */
 export function currentSubdomain(): string | null {
   if (resolveRealm() !== "tenant" || typeof window === "undefined") return null;
   const base = (process.env.NEXT_PUBLIC_PLATFORM_BASE_DOMAIN || "").trim().toLowerCase();
@@ -79,7 +75,7 @@ export function currentSubdomain(): string | null {
   return host.slice(0, -(base.length + 1)) || null;
 }
 
-/** True when we have somewhere to send requests. */
+/** True when there is an API to call. */
 export function apiConfigured(): boolean {
   return Boolean(resolveBaseUrl());
 }
@@ -99,8 +95,8 @@ export function snakeToCamelCase<T = any>(obj: any): T {
 }
 
 /**
- * Decimal string -> number. Call it on fields you know are money: an invoice
- * number and a barcode are digits too, and neither is a quantity.
+ * Money string -> number. Only use it on money: invoice numbers and barcodes
+ * are digits too, and neither is an amount.
  */
 export function toAmount(value: unknown): number {
   if (typeof value === "number") return value;
@@ -116,13 +112,12 @@ const REFRESH_KEY = "refresh_token";
 const BRANCH_KEY = "active_branch";
 
 /**
- * Markers the route guard can see — it runs before the page and cannot read
- * localStorage. They hold no token: forging one gets an empty page shell,
- * because the API still checks the bearer token.
+ * Small markers the route guard can read; it runs before the page and cannot
+ * see localStorage. They hold no token, so faking one shows an empty page.
  */
 const SESSION_COOKIE = "sp_session";
 
-/** Which part of the app this person may see: "pos" or "full". */
+/** How much of the app this person sees: "pos" or "full". */
 const SCOPE_COOKIE = "sp_scope";
 
 function writeCookie(name: string, value: string | null) {
@@ -140,8 +135,8 @@ export const tokenStore = {
   set(access: string, refresh?: string) {
     if (typeof window === "undefined") return;
     localStorage.setItem(TOKEN_KEY, access);
-    // Kept because older code reads "token"; both are written so a half-updated
-    // bundle cannot log somebody out.
+    // Older code reads "token". Write both, so a half-updated build cannot
+    // log somebody out.
     localStorage.setItem("token", access);
     if (refresh) localStorage.setItem(REFRESH_KEY, refresh);
     writeCookie(SESSION_COOKIE, "1");
@@ -163,11 +158,10 @@ export const tokenStore = {
 };
 
 /**
- * The path is used EXACTLY as written — do not add a trailing slash.
+ * Use the path exactly as written. Never add a trailing slash.
  *
- * The API mixes both forms on purpose: `/auth/login` has none, `/products/`
- * does. Appending one turns every sign-in into a 404, because APPEND_SLASH
- * adds a missing slash but never removes a spare one.
+ * The API mixes both on purpose: `/auth/login` has none, `/products/` does.
+ * Adding one turns every sign-in into a 404.
  */
 function normalizeEndpoint(endpoint: string): string {
   return endpoint;
@@ -175,9 +169,9 @@ function normalizeEndpoint(endpoint: string): string {
 
 export interface ApiFetchOptions extends RequestInit {
   mapSnakeCase?: boolean;
-  /** Sent as `Idempotency-Key`. Required by POST /sales and partner payments. */
+  /** Sent as `Idempotency-Key`. POST /sales and partner payments need it. */
   idempotencyKey?: string;
-  /** Act in one branch for this request only, without moving the user's cursor. */
+  /** Use one branch for this request only, without switching the user to it. */
   branchId?: string;
   /** Skip the Authorization header (login, refresh, accept-invitation). */
   anonymous?: boolean;
@@ -201,6 +195,47 @@ export interface PagedResult<T> {
   totalPages: number;
 }
 
+/**
+ * The session is over: clear it and go to the sign-in page.
+ *
+ * The route guard in `proxy.ts` already sends a signed-out visitor to
+ * `/login?next=...`, but it only runs on a NAVIGATION. A token that expires
+ * while somebody is sitting on a page produces 401s and nothing else — the
+ * screen fills with "Your session has ended" and stays there, still showing
+ * the last data it loaded. So the one place that knows the session is
+ * finished navigates, and the guard's own contract is reused rather than
+ * duplicated: same URL, same `next`, so signing in returns them to the page
+ * they were on.
+ *
+ * `location.replace`, not `assign`: the dead page should not be a back-button
+ * away. `redirecting` guards the case where ten in-flight requests all fail at
+ * once — one navigation, not ten.
+ */
+let redirecting = false;
+
+function endSession() {
+  tokenStore.clear();
+  if (typeof window === "undefined" || redirecting) return;
+
+  const { pathname, search } = window.location;
+  // Already there, or on the way. Redirecting from /login would loop.
+  if (pathname === "/login" || pathname.startsWith("/login/")) return;
+
+  redirecting = true;
+  const next = `${pathname}${search}`;
+  window.location.replace(pathname === "/" ? "/login" : `/login?next=${encodeURIComponent(next)}`);
+}
+
+/**
+ * Codes that mean "this token is finished", as opposed to "this request was
+ * refused". A 401 on an authenticated request is the first kind by default:
+ * the endpoint let us try, and the credential is what failed.
+ *
+ * TENANT_MISMATCH is a 403 and belongs here anyway — the token is valid but
+ * for a different company's address, and no retry from this page can fix it.
+ */
+const DEAD_SESSION_CODES = new Set(["TENANT_MISMATCH", "REALM_MISMATCH"]);
+
 async function request<T>(
   endpoint: string,
   options: ApiFetchOptions,
@@ -222,18 +257,16 @@ async function request<T>(
   }
   if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
 
-  // Only when a caller explicitly acts in another branch. The active branch is
-  // already server-side state, and `X-Branch` is not in the API's allowed CORS
-  // headers — sending it always would break every call.
+  // Only when the caller asks for another branch. `X-Branch` is not in the
+  // API's allowed CORS headers, so sending it every time breaks every call.
   if (branchId) headers["X-Branch"] = branchId;
 
   let response: Response;
   try {
     response = await fetch(url, { ...fetchOptions, headers });
   } catch (cause) {
-    // The server is unreachable — refused, DNS, CORS preflight, offline. This
-    // is not an answer from the API, so it gets its own code: callers can tell
-    // "the backend said no" from "there was no backend".
+    // No answer at all: offline, DNS, refused, CORS. Its own code, so callers
+    // can tell "the server said no" from "there was no server".
     throw new ApiError(0, "NETWORK_ERROR", `Could not reach the API at ${base}.`, {
       cause: String(cause),
     });
@@ -249,10 +282,17 @@ async function request<T>(
 
   if (response.ok) return body as Envelope<T>;
 
-  // An expired access token is the one failure worth retrying by itself.
+  // An expired token is the one failure worth one retry.
   if (response.status === 401 && allowRefresh && !anonymous && body?.code === "TOKEN_EXPIRED") {
     const refreshed = await tryRefresh();
     if (refreshed) return request<T>(endpoint, options, false);
+  }
+
+  // Nothing left to try with. An anonymous call is exempt on purpose: a wrong
+  // password on the sign-in form is a 401 too, and bouncing the person off the
+  // page they are typing into would be absurd.
+  if (!anonymous && (response.status === 401 || DEAD_SESSION_CODES.has(body?.code))) {
+    endSession();
   }
 
   throw new ApiError(
@@ -266,7 +306,7 @@ async function request<T>(
 
 let refreshInFlight: Promise<boolean> | null = null;
 
-/** Rotate the refresh token. Shared so ten parallel 401s cause one refresh, not ten. */
+/** Refresh the token. Shared, so ten 401s cause one refresh instead of ten. */
 async function tryRefresh(): Promise<boolean> {
   if (refreshInFlight) return refreshInFlight;
 
@@ -285,9 +325,10 @@ async function tryRefresh(): Promise<boolean> {
       tokenStore.set(access, body?.data?.refresh);
       return true;
     } catch {
-      // Reuse detection kills the whole family server-side, so there is nothing
-      // left to retry with — drop the tokens rather than loop.
-      tokenStore.clear();
+      // The server killed the whole token family — a reused refresh token does
+      // exactly this — so there is nothing left to retry with. End the session
+      // rather than looping, and say so by going to the sign-in page.
+      endSession();
       return false;
     } finally {
       refreshInFlight = null;
@@ -298,9 +339,9 @@ async function tryRefresh(): Promise<boolean> {
 }
 
 /**
- * One request, envelope removed. `fallbackData` applies only when no API is
- * configured — never to paper over a failure, because a till showing invented
- * prices is worse than one saying it is offline.
+ * One request, envelope removed. `fallbackData` is used only when no API is
+ * set up — never to hide a failure. A till showing made-up prices is worse
+ * than one that says it is offline.
  */
 export async function apiFetch<T>(
   endpoint: string,
@@ -321,8 +362,8 @@ export async function apiFetch<T>(
 }
 
 /**
- * Sample data is allowed only when the server could not be reached at all, and
- * never in production. A 4xx or 5xx is the server talking.
+ * Sample data only when the server could not be reached at all, and never in
+ * production. A 4xx or 5xx means the server answered.
  */
 function shouldFallBack(error: unknown, fallbackData: unknown): boolean {
   if (fallbackData === undefined) return false;
@@ -333,8 +374,8 @@ function shouldFallBack(error: unknown, fallbackData: unknown): boolean {
 }
 
 /**
- * A paginated collection, flattened for a table. `total` lives in `meta`;
- * reading it from the top level yields undefined and kills the pager.
+ * A list flattened for a table. `total` comes from `meta` — read from the top
+ * level it is undefined, and the pager stops working.
  */
 export type PagedFallback<T> = { data: T[]; total: number } & Partial<PagedResult<T>>;
 
@@ -345,7 +386,7 @@ export async function apiList<T>(
   mapItem?: (row: any) => T
 ): Promise<PagedResult<T>> {
   if (!apiConfigured()) {
-    // Mock fallbacks predate pagination and supply only rows and a total.
+    // Old sample data has rows and a total, but no page numbers.
     const fb = await resolveFallback(fallbackData);
     return {
       data: fb?.data ?? [],
@@ -388,4 +429,32 @@ function resolveFallback<T>(fallbackData?: T | (() => Promise<T> | T)): Promise<
     return Promise.resolve((fallbackData as () => Promise<T> | T)());
   }
   return Promise.resolve(fallbackData as T);
+}
+
+
+/**
+ * Every page of a list, up to a limit.
+ *
+ * The API returns 200 rows at most, so one call cannot cover a table that
+ * joins a whole collection: ask for 500 stock rows and the SKUs you do not
+ * get quietly read as zero stock.
+ */
+export async function apiListAll<T>(
+  endpoint: string,
+  mapItem?: (row: any) => T,
+  maxPages = 6
+): Promise<T[]> {
+  const joiner = endpoint.includes("?") ? "&" : "?";
+  const out: T[] = [];
+  for (let page = 1; page <= maxPages; page += 1) {
+    const res = await apiList<T>(
+      `${endpoint}${joiner}limit=200&page=${page}`,
+      { method: "GET" },
+      { data: [], total: 0 },
+      mapItem
+    );
+    out.push(...res.data);
+    if (out.length >= res.total || res.data.length === 0) break;
+  }
+  return out;
 }

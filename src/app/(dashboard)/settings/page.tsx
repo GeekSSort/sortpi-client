@@ -13,18 +13,32 @@ export default function SettingsPage() {
     businessType: "Private Limited",
     companyEmail: "info@abcretail.com",
     phoneNumber: "+880 1712-345678",
+    address: "Road-15, Block-D, House-50, Banani, Dhaka-1213",
     website: "www.abcretail.com",
     taxId: "123456789",
     tradeLicenseBin: "123456789",
     currency: "BDT — Bangladeshi Taka",
     logoUrl: "/image1.png",
   });
+  // Percentages here, fractions on the wire: the server stores 0.15 for 15%.
+  const [till, setTill] = useState({ vat: "15", vatIncluded: true, maxDiscount: "20" });
   const [isSaving, setIsSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
 
   React.useEffect(() => {
     SettingsService.getCompanyProfile().then((data) => {
       if (data) setProfile(data);
+    });
+    SettingsService.getValues().then((v) => {
+      const pct = (raw: string, fallback: string) => {
+        const n = Number(raw);
+        return Number.isFinite(n) ? String(+(n * 100).toFixed(2)) : fallback;
+      };
+      setTill({
+        vat: pct(v["tax.default_rate"], "15"),
+        vatIncluded: String(v["tax.inclusive_by_default"] ?? "true") !== "false",
+        maxDiscount: pct(v["pos.max_discount_percent"], "20"),
+      });
     });
   }, []);
 
@@ -37,6 +51,17 @@ export default function SettingsPage() {
     setIsSaving(true);
     try {
       await SettingsService.updateCompanyProfile(profile);
+      // Percent in the box, fraction in the setting.
+      const asFraction = (value: string) => (Math.max(0, Number(value) || 0) / 100).toFixed(4);
+      await Promise.all([
+        SettingsService.setValue("tax.default_rate", asFraction(till.vat)),
+        SettingsService.setValue("pos.max_discount_percent", asFraction(till.maxDiscount)),
+        SettingsService.setValue(
+          "tax.inclusive_by_default",
+          till.vatIncluded ? "true" : "false",
+          "BOOL"
+        ),
+      ]);
       setSavedSuccess(true);
       setTimeout(() => setSavedSuccess(false), 2500);
     } catch (err) {
@@ -134,7 +159,21 @@ export default function SettingsPage() {
             />
           </div>
 
-          {/* 5. Website */}
+          {/* 5. Address — printed at the top of every till receipt. */}
+          <div>
+            <label className="text-xs font-bold text-gray-800 block mb-1.5">
+              Address
+            </label>
+            <input
+              type="text"
+              value={profile.address}
+              onChange={(e) => handleFieldChange("address", e.target.value)}
+              placeholder="Shown on receipts"
+              className="w-full border border-gray-200 focus:border-amber-400 rounded-xl px-4 py-2.5 text-xs text-gray-800 bg-white focus:outline-none transition-colors"
+            />
+          </div>
+
+          {/* 6. Website */}
           <div>
             <label className="text-xs font-bold text-gray-800 block mb-1.5">
               Website
@@ -160,10 +199,10 @@ export default function SettingsPage() {
             />
           </div>
 
-          {/* 7. Tax ID / BIN */}
+          {/* 7. Trade Licence */}
           <div>
             <label className="text-xs font-bold text-gray-800 block mb-1.5">
-              Tax ID / BIN
+              Trade Licence No.
             </label>
             <input
               type="text"
@@ -184,6 +223,61 @@ export default function SettingsPage() {
               onChange={(e) => handleFieldChange("currency", e.target.value)}
               className="w-full border border-gray-200 focus:border-amber-400 rounded-xl px-4 py-2.5 text-xs text-gray-800 bg-white focus:outline-none transition-colors"
             />
+          </div>
+
+          {/* Till & tax — what the POS starts every sale with. */}
+          <div className="sm:col-span-2 pt-2">
+            <p className="text-sm font-bold text-gray-900">Till &amp; tax</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              The POS uses these on every sale. A supervisor can change the VAT on one
+              sale at the till; this is what it goes back to.
+            </p>
+          </div>
+
+          <div>
+            <label className="text-xs font-bold text-gray-800 block mb-1.5">
+              Default VAT rate (%)
+            </label>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={till.vat}
+              onChange={(e) => setTill((t) => ({ ...t, vat: e.target.value.replace(/[^\d.]/g, "") }))}
+              className="w-full border border-gray-200 focus:border-amber-400 rounded-xl px-4 py-2.5 text-xs text-gray-800 bg-white focus:outline-none transition-colors"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-bold text-gray-800 block mb-1.5">
+              Maximum discount at the till (%)
+            </label>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={till.maxDiscount}
+              onChange={(e) =>
+                setTill((t) => ({ ...t, maxDiscount: e.target.value.replace(/[^\d.]/g, "") }))
+              }
+              className="w-full border border-gray-200 focus:border-amber-400 rounded-xl px-4 py-2.5 text-xs text-gray-800 bg-white focus:outline-none transition-colors"
+            />
+          </div>
+
+          <div className="sm:col-span-2">
+            <label className="flex items-center gap-2.5 cursor-pointer w-fit">
+              <input
+                type="checkbox"
+                checked={till.vatIncluded}
+                onChange={(e) => setTill((t) => ({ ...t, vatIncluded: e.target.checked }))}
+                className="size-4 accent-[#F4B41A] cursor-pointer"
+              />
+              <span className="text-xs font-bold text-gray-800">
+                Shelf prices already include VAT
+              </span>
+            </label>
+            <p className="text-xs text-gray-500 mt-1">
+              On: the price on the label is what the customer pays, and the VAT is taken
+              out of it. Off: VAT is added at the till.
+            </p>
           </div>
 
           {/* Success Message */}

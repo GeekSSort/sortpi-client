@@ -2,21 +2,21 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 /**
- * Route guard. Named `proxy.ts` because `middleware.ts` is deprecated in
- * Next 16 — same behaviour, different filename.
+ * Route guard. Called `proxy.ts` because Next 16 dropped `middleware.ts` —
+ * same job, new filename.
  *
- * Runs before the page, so it reads cookies rather than localStorage. It is a
- * signpost, not the security boundary: the API rejects the requests anyway.
- * It stops someone simply typing /dashboard and landing in the app.
+ * It runs before the page, so it reads cookies, not localStorage. It is a
+ * signpost, not the lock: the API refuses the requests anyway. It stops
+ * someone typing /dashboard and landing inside the app.
  */
 
 const SESSION_COOKIE = "sp_session";
 const SCOPE_COOKIE = "sp_scope";
 
 /**
- * Back-office areas. A till-only account is sent to /pos instead. Decided by
- * `dashboard.view` at sign-in and written to a cookie, since this cannot read
- * permissions itself.
+ * Back-office areas. A till-only account goes to /pos instead. Sign-in checks
+ * `dashboard.view` and writes the answer to a cookie, because this file
+ * cannot read permissions.
  */
 const BACK_OFFICE = [
   "/dashboard",
@@ -42,8 +42,8 @@ const PUBLIC_PATHS = [
 ];
 
 /**
- * Outside the guard altogether: not an auth page, so a signed-in visitor must
- * not be bounced away from it either. It renders components against no data.
+ * Outside the guard: not a sign-in page, so a signed-in visitor should not be
+ * pushed away from it either. It draws components with no data.
  */
 const UNGUARDED = ["/ds-preview"];
 
@@ -59,7 +59,7 @@ export function proxy(request: NextRequest) {
   }
   const signedIn = request.cookies.get(SESSION_COOKIE)?.value === "1";
 
-  // Signed in and heading for the login page — send them where they meant to go.
+  // Signed in and heading for the login page: send them where they meant to go.
   if (signedIn && isPublic(pathname)) {
     const next = request.nextUrl.searchParams.get("next");
     const home = request.cookies.get(SCOPE_COOKIE)?.value === "pos" ? "/pos" : "/dashboard";
@@ -80,8 +80,8 @@ export function proxy(request: NextRequest) {
 
   if (isPublic(pathname)) return NextResponse.next();
 
-  // Remember where they were headed, so signing in returns them there rather
-  // than dumping everyone on the dashboard.
+  // Remember where they were going, so signing in takes them there instead of
+  // to the dashboard.
   const login = new URL("/login", request.url);
   if (pathname !== "/") login.searchParams.set("next", `${pathname}${search}`);
   return NextResponse.redirect(login);
@@ -89,9 +89,9 @@ export function proxy(request: NextRequest) {
 
 export const config = {
   /**
-   * Everything except Next's own assets and files with an extension. Without a
-   * matcher this runs on every request including CSS and images, and the
-   * redirect above would stop them loading.
+   * Everything except Next's own files and anything with an extension.
+   * Without this it also runs on CSS and images, and the redirect above stops
+   * them loading.
    */
   matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\..*).*)"],
 };

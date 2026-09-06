@@ -1,10 +1,9 @@
 /**
- * Sidebar glyphs exported from Figma (SORTPoint nodes 20:7588 / 31:17154).
+ * The sidebar icons, exported from Figma (nodes 20:7588 and 31:17154).
  *
- * Each icon keeps its designed two-box geometry: a fixed outer frame with the
- * artwork inset by the exact percentages Figma reports, so the leaf never
- * stretches. Flat fills became currentColor, which is how a row paints its
- * icon #525252, #F5B800 or white without a second copy of the path data.
+ * Each keeps its designed outer size with the artwork inset by the exact
+ * percentages Figma gives, so nothing stretches. The fills use currentColor,
+ * so one copy of each icon can be grey, gold or white.
  */
 
 import Glyph from "./FigmaGlyph";
@@ -33,7 +32,7 @@ export function SalesPosIcon() {
 
 /**
  * POS — a till: a drawer with a screen above it. Drawn rather than exported,
- * because the Figma set has no glyph for the new top-level POS destination.
+ * because the Figma set has no icon for POS as a top-level entry.
  * Stroked at 1.5 on a 20x20 box so it sits with the exported ones.
  */
 export function PosIcon() {

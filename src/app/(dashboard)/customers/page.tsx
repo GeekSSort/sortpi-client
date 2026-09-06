@@ -1,23 +1,23 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { CustomerRecord } from "@/types/customer";
 import { CustomerService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import TablePagination from "@/components/shared/TablePagination";
+import TableSkeleton from "@/components/shared/TableSkeleton";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
 
 /**
- * Figma: SORTPoint — Customer 51:9099.
+ * Customers — Figma 51:9099.
  *
- * 1160 page: 54px headline (title left, date field + Add New right), then an
- * 898px card — 68px head with the title and search, a 1128-wide nine-column
- * table (40px head, 54px rows) and the 64px pagination bar.
+ * Search and Add New in the headline, then a nine-column table: 40px head,
+ * 54px rows, pager below.
  *
- * Below md the rows become stacked cards; between md and the design width the
- * table scrolls in its own container. Mine, no Figma frame for either.
+ * Below md each row becomes a card, and in between the table scrolls
+ * sideways. No Figma frame for either; both are our choice.
  */
 
 const STATUS_TONE: Record<CustomerRecord["status"], Tone> = {
@@ -61,24 +61,52 @@ export default function CustomersPage() {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
+  const [loading, setLoading] = useState(true);
+  /** The debounce is for typing. Waiting 250ms to make the FIRST
+      request just adds a quarter second of blank table on reload. */
+  const firstLoad = useRef(true);
+  const [failed, setFailed] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [profileOf, setProfileOf] = useState<CustomerRecord | null>(null);
   const [payFor, setPayFor] = useState<CustomerRecord | null>(null);
   const [payAmount, setPayAmount] = useState("");
   const [payError, setPayError] = useState<string | null>(null);
+  const [paying, setPaying] = useState(false);
+  /** Bumped to refetch after a payment, so the balance shown is the server's. */
+  const [refresh, setRefresh] = useState(0);
+  /** The API's count of everything matching, not of what this page holds. */
+  const [total, setTotal] = useState(0);
 
   useEffect(() => {
-    CustomerService.getCustomers({ search: query })
-      .then((res) => setCustomers(res.data))
-      .catch(() => {});
-  }, [query]);
+    // Debounced and guarded: a request per keystroke let a slow answer for
+    // "ra" land after "rahman" and repopulate the table with the wrong rows.
+    let live = true;
+    const id = setTimeout(() => {
+      setLoading(true);
+      // One page at a time. The whole list used to be requested and sliced in
+      // the browser, but the API caps a page at 200 — so a directory past 200
+      // customers was silently truncated and the pager called 200 the total.
+      CustomerService.getCustomers({ search: query, page, limit: pageSize })
+        .then((res) => {
+          if (!live) return;
+          setCustomers(res.data);
+          setTotal(res.total);
+          setFailed(false);
+        })
+        .catch(() => live && setFailed(true))
+        .finally(() => live && setLoading(false));
+    }, firstLoad.current ? 0 : 250);
+    firstLoad.current = false;
+    return () => {
+      live = false;
+      clearTimeout(id);
+    };
+  }, [query, refresh, page, pageSize]);
 
-  const totalPages = Math.max(1, Math.ceil(customers.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const current = Math.min(page, totalPages);
-  const rows = useMemo(
-    () => customers.slice((current - 1) * pageSize, current * pageSize),
-    [customers, current, pageSize]
-  );
+  // The server already sliced. `rows` is the page.
+  const rows = customers;
 
   return (
     <div className="flex w-full flex-col gap-[14px] select-none">
@@ -93,7 +121,7 @@ export default function CustomersPage() {
                 setQuery(e.target.value);
                 setPage(1);
               }}
-              placeholder="Search by return ID, Invoice No. or Customer..."
+              placeholder="Search by name, customer ID or exact phone..."
               aria-label="Search customers"
               className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
             />
@@ -129,7 +157,7 @@ export default function CustomersPage() {
         {/* Table — 51:9149 */}
         <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="overflow-x-auto">
-            <div className="min-w-[1050px]">
+            <div className="min-w-[1128px]">
               <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Customer ID</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Customer</span></div>
@@ -143,8 +171,17 @@ export default function CustomersPage() {
               </div>
 
               <div className="mt-[6px]">
-                {rows.length === 0 && (
-                  <p className="py-[40px] text-center text-[14px] text-[#525252]">No customers match that search.</p>
+                {rows.length === 0 && loading && (
+                  <TableSkeleton columns={GRID} rows={pageSize} />
+                )}
+                {rows.length === 0 && !loading && (
+                  <p className="py-[40px] text-center text-[14px] text-[#525252]">
+                    {loading
+                      ? "Loading customers…"
+                      : failed
+                        ? "Customers could not be loaded. Refresh to try again."
+                        : "No customers match that search."}
+                  </p>
                 )}
                 {rows.map((c, i) => (
                   <div
@@ -219,7 +256,7 @@ export default function CustomersPage() {
           <TablePagination
             page={current}
             pageSize={pageSize}
-            total={customers.length}
+            total={total}
             onPageChange={setPage}
             onPageSizeChange={(n) => {
               setPageSize(n);
@@ -293,10 +330,11 @@ export default function CustomersPage() {
             </button>
             <button
               type="button"
+              disabled={paying}
               style={{ backgroundImage: GOLD_GRADIENT }}
               className={MODAL_PRIMARY}
-              onClick={() => {
-                if (!payFor) return;
+              onClick={async () => {
+                if (!payFor || paying) return;
                 const amount = Number(payAmount);
                 if (!payAmount.trim() || Number.isNaN(amount) || amount <= 0) {
                   return setPayError("Enter an amount greater than zero.");
@@ -304,20 +342,33 @@ export default function CustomersPage() {
                 if (amount > payFor.dueAmount) {
                   return setPayError(`Amount can't exceed the ${payFor.dueAmountFormatted} due.`);
                 }
-                const left = payFor.dueAmount - amount;
-                // Optimistic: the mock backend has no payments endpoint yet.
-                setCustomers((list) =>
-                  list.map((x) =>
-                    x.id === payFor.id
-                      ? { ...x, dueAmount: left, dueAmountFormatted: `৳ ${left.toLocaleString("en-IN")}` }
-                      : x
-                  )
-                );
-                setNote(`৳ ${amount.toLocaleString("en-IN")} recorded for ${payFor.name}`);
-                setPayFor(null);
+                // Posted to the ledger, not edited on screen. This used to
+                // change the row and nothing else — the endpoint had been
+                // there all along.
+                setPaying(true);
+                setPayError(null);
+                try {
+                  await CustomerService.recordPayment(
+                    payFor.id,
+                    amount,
+                    `Payment from ${payFor.name}`
+                  );
+                  setNote(`৳ ${amount.toLocaleString("en-IN")} recorded for ${payFor.name}`);
+                  setPayFor(null);
+                  // Refetch rather than patch: the ledger owns the balance.
+                  setRefresh((n) => n + 1);
+                } catch (error) {
+                  setPayError(
+                    error instanceof Error && error.message
+                      ? error.message
+                      : "The payment could not be recorded."
+                  );
+                } finally {
+                  setPaying(false);
+                }
               }}
             >
-              Save payment
+              {paying ? "Saving…" : "Save payment"}
             </button>
           </>
         }

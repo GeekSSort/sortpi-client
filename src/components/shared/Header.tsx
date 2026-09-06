@@ -6,22 +6,22 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
 import { AuthService, NotificationService } from "@/services";
-import { useSession } from "@/services/useSession";
+import { useSession, clearSessionCache } from "@/services/useSession";
+import BranchSwitcher from "./BranchSwitcher";
 import { NotificationItem } from "@/types/notifications";
 import { useSidebar } from "./SidebarContext";
 
 /**
- * Figma: SORTPoint — Head 30:15360.
+ * The top bar — Figma 30:15360.
  *
- * Reusable top bar: px-24 py-12, a 36px gold title on the left and a 12px-gap
- * pair of 40px controls on the right (notifications, avatar). The 67px height
- * comes from the title's line box, not a fixed value.
+ * A gold title on the left, notifications and the avatar on the right. Its
+ * 67px height comes from the title's line height, not a fixed number.
  *
- * Below lg it gains a hamburger for the off-canvas rail and the title steps
- * down in size — my own responsive behaviour, no Figma frame for it.
+ * Below lg it gains a menu button for the slide-out sidebar and the title gets
+ * smaller. There is no Figma frame for that; it is our choice.
  */
 
-/** Bell with its badge, node 30:15365. Both paths are flat #F5B800 in the file. */
+/** Bell and its badge, node 30:15365. */
 function BellIcon() {
   return (
     <svg
@@ -62,7 +62,7 @@ function MenuIcon() {
   );
 }
 
-/** Route -> the line that sits under the title. */
+/** Which line sits under the title, for each page. */
 function subtitleForPath(pathname: string): string | null {
   if (pathname.startsWith("/sales-pos/sales")) return "View & manage all sales, invoice or order";
   if (pathname.startsWith("/sales-pos/return")) return "View & manage all returns and refunds";
@@ -80,12 +80,26 @@ function subtitleForPath(pathname: string): string | null {
     return "Add a new supplier and manage their business, contact, and payment information.";
   if (pathname.startsWith("/purchases/suppliers"))
     return "Manage suppliers, purchase history, outstanding balances, and contact information from one place.";
+  if (pathname.startsWith("/roles-permissions/add"))
+    return "Create a new user account and assign their role, branch, and system access.";
+  if (pathname.startsWith("/roles-permissions"))
+    return "Manage system users, roles, branch access, and account status.";
+  if (pathname.startsWith("/hrm/payroll"))
+    return "Manage employee salaries, allowances, deductions, attendance, overtime, and payment status from one place.";
+  if (pathname.startsWith("/hrm/add"))
+    return "Add a new employee with their department, designation, and contact information.";
+  if (pathname.startsWith("/hrm"))
+    return "Manage employee records, attendance, check-in/out, and employee status from one place.";
+  if (pathname.startsWith("/hrm/add"))
+    return "Add a new employee with their department, designation, and contact information.";
+  if (pathname.startsWith("/hrm"))
+    return "Manage employee records, attendance, check-in/out, and employee status from one place.";
   if (pathname === "/inventory")
     return "Manage, organize, and monitor all products across your inventory.";
   return null;
 }
 
-/** Route -> title, matching the section names used in the sidebar. */
+/** The title for each page, using the sidebar's own names. */
 function titleForPath(pathname: string): string {
   if (pathname.startsWith("/pos")) return "POS";
   if (pathname.startsWith("/sales-pos/sales")) return "Sales";
@@ -100,8 +114,11 @@ function titleForPath(pathname: string): string {
   if (pathname.startsWith("/purchases/suppliers/add")) return "Add Supplier";
   if (pathname.startsWith("/purchases/suppliers")) return "Suppliers";
   if (pathname.startsWith("/purchases")) return "Purchase History";
-  if (pathname.startsWith("/hrm")) return "HRM";
-  if (pathname.startsWith("/roles-permissions")) return "Roles & Permissions";
+  if (pathname.startsWith("/hrm/payroll")) return "Payroll";
+  if (pathname.startsWith("/hrm/add")) return "Add Employees";
+  if (pathname.startsWith("/hrm")) return "All Employees";
+  if (pathname.startsWith("/roles-permissions/add")) return "Add User";
+  if (pathname.startsWith("/roles-permissions")) return "User List";
   if (pathname.startsWith("/settings")) return "Settings";
   if (pathname.startsWith("/ceo-overview")) return "CEO Overview";
   return "Dashboard";
@@ -117,9 +134,9 @@ function relativeTime(iso: string): string {
 }
 
 export interface HeaderProps {
-  /** Overrides the route-derived title. */
+  /** Use this title instead of the page's own. */
   title?: string;
-  /** Overrides the route-derived subtitle; null hides it. */
+  /** Use this line instead of the page's own. null hides it. */
   subtitle?: string | null;
   /** Shown in the profile menu. */
   user?: { name: string; email: string; avatar?: string };
@@ -138,7 +155,7 @@ export default function Header({ title, subtitle, user }: HeaderProps) {
 
   const heading = title ?? titleForPath(pathname);
   const sub = subtitle !== undefined ? subtitle : subtitleForPath(pathname);
-  // The signed-in account, unless a caller passed one explicitly.
+  // The signed-in account, unless the caller passed one in.
   const profile = user ?? {
     name: session?.name ?? "",
     email: session?.email ?? "",
@@ -188,6 +205,20 @@ export default function Header({ title, subtitle, user }: HeaderProps) {
     router.push("/login");
   };
 
+  /**
+   * A branch switch changes the answer to every request on the page.
+   *
+   * The token is new, the permission set in it is new, and every list on
+   * screen was fetched under the old one — so the page is reloaded rather
+   * than patched. `router.refresh()` would not do it: these are client pages
+   * that fetch in effects, and nothing would re-run. Leaving half the screen
+   * showing the previous branch's rows is the failure worth avoiding here.
+   */
+  const onBranchSwitched = useCallback(() => {
+    clearSessionCache();
+    window.location.reload();
+  }, []);
+
   return (
     <>
     <header className="flex w-full items-center justify-between px-[16px] py-[16px] select-none sm:px-[24px]">
@@ -204,6 +235,14 @@ export default function Header({ title, subtitle, user }: HeaderProps) {
 
       {/* Menu — 30:15362 */}
       <div ref={menuRef} className="relative flex shrink-0 items-center gap-[12px]">
+        {/* The branch cursor lives here rather than on one page because it is
+            not a filter on one screen: it is server-side state, and every
+            branch-scoped list in the app answers differently once it moves.
+            Reachable from wherever you notice you are in the wrong branch. */}
+        <div className="hidden sm:block">
+          <BranchSwitcher onChange={onBranchSwitched} />
+        </div>
+
         <button
           type="button"
           onClick={toggleSidebar}

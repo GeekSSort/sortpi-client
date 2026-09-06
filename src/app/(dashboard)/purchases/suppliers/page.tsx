@@ -1,22 +1,23 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import Image from "next/image";
 import Link from "next/link";
 import { SupplierRecord } from "@/types/suppliers";
 import { SupplierService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import TablePagination from "@/components/shared/TablePagination";
+import TableSkeleton from "@/components/shared/TableSkeleton";
+import Avatar from "@/components/shared/Avatar";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
 
 /**
- * Suppliers — no Figma node exists for this screen, so the layout is my own:
- * it reuses the Purchase History frame exactly (search left / Add New right,
- * 40px head over 54px rows, the shared pagination bar) so the two pages in the
- * Purchases section read as one set.
+ * Suppliers. There is no Figma frame for this screen, so it borrows the
+ * Purchase History one exactly — search left, Add New right, 40px head over
+ * 54px rows — and the two pages read as a pair.
  *
- * Rows are clickable and open the supplier; the row menu carries the writes.
+ * Clicking a row opens the supplier; everything that changes data is in the
+ * row menu.
  */
 
 const STATUS_TONE: Record<SupplierRecord["status"], Tone> = {
@@ -86,12 +87,43 @@ export default function SuppliersPage() {
   const [deleteOf, setDeleteOf] = useState<SupplierRecord | null>(null);
 
   const filterRef = useRef<HTMLDivElement>(null);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  /** The debounce is for typing. Waiting 250ms to make the FIRST request
+      just adds a quarter second of blank table on reload. */
+  const firstLoad = useRef(true);
+  /** The API's count of everything matching, not of what this page holds. */
+  const [total, setTotal] = useState(0);
+  const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
-    SupplierService.getSuppliers({ search: query })
-      .then((res) => setSuppliers(res.data))
-      .catch(() => {});
-  }, [query]);
+    // Debounced and guarded: a request per keystroke let a slow answer for
+    // "ac" land after "acme" and repopulate the table with the wrong rows.
+    // Status goes to the API too, and so does the page.
+    let live = true;
+    const id = setTimeout(() => {
+      setLoading(true);
+      SupplierService.getSuppliers({
+        search: query,
+        status: status === "All" ? undefined : status,
+        page,
+        limit: pageSize,
+      })
+        .then((res) => {
+          if (!live) return;
+          setSuppliers(res.data);
+          setTotal(res.total);
+          setFailed(false);
+        })
+        .catch(() => live && setFailed(true))
+        .finally(() => live && setLoading(false));
+    }, firstLoad.current ? 0 : 250);
+    firstLoad.current = false;
+    return () => {
+      live = false;
+      clearTimeout(id);
+    };
+  }, [query, status, refresh, page, pageSize]);
 
   // The funnel popover closes on an outside click or Escape, like every other
   // popover in the app.
@@ -109,16 +141,10 @@ export default function SuppliersPage() {
     };
   }, [filterOpen]);
 
-  const visible = useMemo(
-    () => suppliers.filter((s) => status === "All" || s.status === status),
-    [suppliers, status]
-  );
-  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const current = Math.min(page, totalPages);
-  const rows = useMemo(
-    () => visible.slice((current - 1) * pageSize, current * pageSize),
-    [visible, current, pageSize]
-  );
+  // The server already filtered and sliced. `rows` is the page.
+  const rows = suppliers;
 
   const patch = (id: string, next: Partial<SupplierRecord>) =>
     setSuppliers((list) => list.map((s) => (s.id === id ? { ...s, ...next } : s)));
@@ -210,7 +236,7 @@ export default function SuppliersPage() {
       <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
         <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="overflow-x-auto">
-            <div className="min-w-[1120px]">
+            <div className="min-w-[1145px]">
               <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>#</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Supplier Name</span></div>
@@ -224,9 +250,14 @@ export default function SuppliersPage() {
               </div>
 
               <div className="mt-[6px]">
-                {rows.length === 0 && (
+                {rows.length === 0 && loading && (
+                  <TableSkeleton columns={GRID} rows={pageSize} />
+                )}
+                {rows.length === 0 && !loading && (
                   <p className="py-[40px] text-center text-[14px] text-[#525252]">
-                    No suppliers match that search or filter.
+                    {failed
+                      ? "Suppliers could not be loaded. Refresh to try again."
+                      : "No suppliers match that search or filter."}
                   </p>
                 )}
                 {rows.map((s, i) => (
@@ -249,9 +280,7 @@ export default function SuppliersPage() {
                   >
                     <div className={CELL}><span className={`${TEXT} truncate`}>{s.index}</span></div>
                     <div className={`${CELL} gap-[8px]`}>
-                      <span className="relative size-[28px] shrink-0 overflow-hidden rounded-[6px]">
-                        <Image src={s.avatar} alt="" fill sizes="28px" className="object-cover" />
-                      </span>
+                      <Avatar name={s.name} src={s.avatar} />
                       <span className={`${TEXT} truncate !text-[#1e1e1e]`}>{s.name}</span>
                     </div>
                     <div className={CELL}><span className={`${TEXT} truncate`}>{s.phone}</span></div>
@@ -294,9 +323,7 @@ export default function SuppliersPage() {
             >
               <div className="flex items-start justify-between gap-[10px]">
                 <div className="flex min-w-0 items-center gap-[8px]">
-                  <span className="relative size-[28px] shrink-0 overflow-hidden rounded-[6px]">
-                    <Image src={s.avatar} alt="" fill sizes="28px" className="object-cover" />
-                  </span>
+                  <Avatar name={s.name} src={s.avatar} />
                   <div className="min-w-0">
                     <p className={`${TEXT} truncate !text-[#1e1e1e]`}>{s.name}</p>
                     <p className="mt-[2px] truncate text-[12px] tracking-[-0.24px] text-[#525252]">{s.phone}</p>
@@ -320,7 +347,7 @@ export default function SuppliersPage() {
           <TablePagination
             page={current}
             pageSize={pageSize}
-            total={visible.length}
+            total={total}
             onPageChange={setPage}
             onPageSizeChange={(n) => {
               setPageSize(n);
@@ -358,9 +385,7 @@ export default function SuppliersPage() {
         {detailOf && (
           <div className="flex flex-col gap-[16px]">
             <div className="flex items-center gap-[12px]">
-              <span className="relative size-[48px] shrink-0 overflow-hidden rounded-[10px] border border-solid border-[#eaeaea]">
-                <Image src={detailOf.avatar} alt="" fill sizes="48px" className="object-cover" />
-              </span>
+              <Avatar name={detailOf.name} src={detailOf.avatar} size={48} radius={10} />
               <div className="min-w-0">
                 <p className="truncate text-[16px] font-medium text-[#1e1e1e]">{detailOf.name}</p>
                 <p className="truncate text-[13px] text-[#525252]">{detailOf.mail}</p>

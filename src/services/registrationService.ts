@@ -3,13 +3,13 @@ import { apiFetch, ApiError } from "./apiClient";
 /**
  * Sign-up, one-time codes and password resets.
  *
- * NONE of these endpoints exist yet — each is written to the shape the screens
- * need, so switching them on means deleting `NOT_BUILT`.
+ * None of these endpoints exist yet. Each is written in the shape the screens
+ * need, so turning them on means deleting `NOT_BUILT`.
  *
- * Three journeys: a new company signs up on the main site (it has no subdomain
- * yet); a shop worker resets on their company's address; platform staff reset
- * on the console. The last must stay separate, or a customer's address could
- * start a reset on one of our own admin accounts.
+ * Three journeys: a new company signs up on the main site, since it has no
+ * address of its own yet; a shop worker resets on their company's address;
+ * our own staff reset on the console. The last stays separate, or a
+ * customer's address could start a reset on one of our admin accounts.
  */
 
 const NOT_BUILT = true;

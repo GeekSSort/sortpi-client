@@ -1,26 +1,25 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ReturnRecord } from "@/types/returns";
 import { ReturnService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import TablePagination from "@/components/shared/TablePagination";
+import TableSkeleton from "@/components/shared/TableSkeleton";
 import DateField from "@/components/shared/DateField";
-import { matchesDay } from "@/lib/dateFilter";
-import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
+import { toApiDay } from "@/lib/dateFilter";
+import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
 
 /**
- * Figma: SORTPoint — Return 45:4116.
+ * Returns — Figma 45:4116.
  *
- * 1160 page: a 48px headline with the search field on the LEFT and the date
- * field + Add New on the right, then an 878px card — 48px head with a centred
- * title, a 1128-wide nine-column table (40px head, 54px rows) and the 64px
- * pagination bar.
+ * Search on the left of the headline, date and Add New on the right, then a
+ * nine-column table: 40px head, 54px rows, pager below.
  *
- * Below md the rows become stacked cards; between md and the design width the
- * table scrolls in its own container. Mine, no Figma frame for either.
+ * Below md each row becomes a card, and in between the table scrolls
+ * sideways. No Figma frame for either; both are our choice.
  */
 
 const STATUS_TONE: Record<ReturnRecord["status"], Tone> = {
@@ -30,7 +29,7 @@ const STATUS_TONE: Record<ReturnRecord["status"], Tone> = {
   Rejected: "red",
 };
 
-/** Node 48:5997 — add. */
+/** Add, node 48:5997. */
 function AddIcon() {
   return (
     <svg className="block size-[20px] shrink-0" viewBox="0 0 20 20" fill="none" aria-hidden>
@@ -68,25 +67,54 @@ export default function ReturnPage() {
   const [date, setDate] = useState<Date | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
+  const [loading, setLoading] = useState(true);
+  /** The debounce is for typing. Waiting 250ms to make the FIRST
+      request just adds a quarter second of blank table on reload. */
+  const firstLoad = useRef(true);
+  /** The API's count of everything matching, not of what this page holds. */
+  const [total, setTotal] = useState(0);
+  const [failed, setFailed] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [detailOf, setDetailOf] = useState<ReturnRecord | null>(null);
   const [slipOf, setSlipOf] = useState<ReturnRecord | null>(null);
-  const [decideOn, setDecideOn] = useState<{ row: ReturnRecord; to: ReturnRecord["status"] } | null>(null);
-  const [working, setWorking] = useState(false);
 
   useEffect(() => {
-    ReturnService.getReturns({ search: query })
-      .then((res) => setReturns(res.data))
-      .catch(() => {});
-  }, [query]);
+    // Debounced and guarded: a request per keystroke let a slow answer for
+    // "RET-1" land after "RET-12" and repopulate the table with the wrong
+    // rows. The day is sent to the API too -- it used to be applied in the
+    // browser over one capped page, so filtering to an older day found
+    // nothing that had not already been fetched.
+    let live = true;
+    const day = date ? toApiDay(date) : undefined;
+    const id = setTimeout(() => {
+      setLoading(true);
+      ReturnService.getReturns({
+        search: query,
+        startDate: day,
+        endDate: day,
+        page,
+        limit: pageSize,
+      })
+        .then((res) => {
+          if (!live) return;
+          setReturns(res.data);
+          setTotal(res.total);
+          setFailed(false);
+        })
+        .catch(() => live && setFailed(true))
+        .finally(() => live && setLoading(false));
+    }, firstLoad.current ? 0 : 250);
+    firstLoad.current = false;
+    return () => {
+      live = false;
+      clearTimeout(id);
+    };
+  }, [query, date, page, pageSize]);
 
-  const visible = useMemo(() => returns.filter((r) => matchesDay(r.dateTime, date)), [returns, date]);
-  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const current = Math.min(page, totalPages);
-  const rows = useMemo(
-    () => visible.slice((current - 1) * pageSize, current * pageSize),
-    [visible, current, pageSize]
-  );
+  // The server already filtered and sliced. `rows` is the page.
+  const rows = returns;
 
   return (
     <div className="flex w-full flex-col gap-[14px] select-none">
@@ -117,7 +145,11 @@ export default function ReturnPage() {
         </div>
 
         <div className="flex shrink-0 items-center gap-[16px]">
-          <DateField value={date} onChange={setDate} ariaLabel="Filter returns by date" />
+          <DateField value={date} onChange={(d) => {
+              setDate(d);
+              // Page 1 of the new filter, not page 5 of the old one.
+              setPage(1);
+            }} ariaLabel="Filter returns by date" />
 
           <Link
             href="/sales-pos/return/new"
@@ -138,7 +170,7 @@ export default function ReturnPage() {
         {/* Table — 48:5511 */}
         <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="overflow-x-auto">
-            <div className="min-w-[1050px]">
+            <div className="min-w-[1128px]">
               <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Return No.</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Invoice No.</span></div>
@@ -152,8 +184,17 @@ export default function ReturnPage() {
               </div>
 
               <div className="mt-[6px]">
-                {rows.length === 0 && (
-                  <p className="py-[40px] text-center text-[14px] text-[#525252]">No returns match that search or date.</p>
+                {rows.length === 0 && loading && (
+                  <TableSkeleton columns={GRID} rows={pageSize} />
+                )}
+                {rows.length === 0 && !loading && (
+                  <p className="py-[40px] text-center text-[14px] text-[#525252]">
+                    {loading
+                      ? "Loading returns…"
+                      : failed
+                        ? "Returns could not be loaded. Refresh to try again."
+                        : "No returns match that search or date."}
+                  </p>
                 )}
                 {rows.map((r, i) => (
                   <div
@@ -173,26 +214,14 @@ export default function ReturnPage() {
                     <div className={`${CELL} justify-center`}>
                       <RowActionMenu
                         label={`Actions for ${r.returnNo}`}
+                        // Approve / Reject / Withdraw used to sit here. They
+                        // changed a row on screen and nothing else: SaleReturn
+                        // has two states, CONFIRMED and CANCELLED, no approval
+                        // step, and no endpoint to move between them. A return
+                        // is already refunded by the time it is listed.
                         actions={[
                           { label: "View return", onSelect: () => setDetailOf(r) },
                           { label: "Print slip", onSelect: () => setSlipOf(r) },
-                          r.status === "Paid"
-                            ? {
-                                label: "Withdraw approval",
-                                onSelect: () => setDecideOn({ row: r, to: "Pending" }),
-                              }
-                            : {
-                                label: "Approve refund",
-                                onSelect: () => setDecideOn({ row: r, to: "Paid" }),
-                              },
-                          ...(r.status === "Rejected" || r.status === "Paid"
-                            ? []
-                            : [
-                                {
-                                  label: "Reject return",
-                                  onSelect: () => setDecideOn({ row: r, to: "Rejected" as const }),
-                                },
-                              ]),
                         ]}
                       />
                     </div>
@@ -232,7 +261,7 @@ export default function ReturnPage() {
           <TablePagination
             page={current}
             pageSize={pageSize}
-            total={visible.length}
+            total={total}
             onPageChange={setPage}
             onPageSizeChange={(n) => {
               setPageSize(n);
@@ -335,76 +364,6 @@ export default function ReturnPage() {
         )}
       </Modal>
 
-      {/* Approve / withdraw / reject — one dialog, driven by the target status */}
-      <Modal
-        open={decideOn !== null}
-        onClose={() => setDecideOn(null)}
-        title={
-          decideOn?.to === "Paid"
-            ? "Approve refund"
-            : decideOn?.to === "Rejected"
-              ? "Reject return"
-              : "Withdraw approval"
-        }
-        width={440}
-        footer={
-          <>
-            <button type="button" className={MODAL_GHOST} onClick={() => setDecideOn(null)}>
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={working}
-              style={{ backgroundImage: decideOn?.to === "Rejected" ? RED_GRADIENT : GOLD_GRADIENT }}
-              className={MODAL_PRIMARY}
-              onClick={() => {
-                if (!decideOn) return;
-                setWorking(true);
-                // Optimistic: the mock backend has no approval endpoint yet.
-                setReturns((list) =>
-                  list.map((x) => (x.id === decideOn.row.id ? { ...x, status: decideOn.to } : x))
-                );
-                setNote(`${decideOn.row.returnNo} → ${decideOn.to}`);
-                setDecideOn(null);
-                setWorking(false);
-              }}
-            >
-              {working
-                ? "Working…"
-                : decideOn?.to === "Paid"
-                  ? "Confirm approval"
-                  : decideOn?.to === "Rejected"
-                    ? "Confirm rejection"
-                    : "Confirm withdrawal"}
-            </button>
-          </>
-        }
-      >
-        {decideOn && (
-          <p className="text-[14px] leading-[1.6] text-[#525252]">
-            {decideOn.to === "Paid" && (
-              <>
-                Pay out <span className="font-medium text-[#1e1e1e]">{decideOn.row.refundAmountFormatted}</span>{" "}
-                for return <span className="font-medium text-[#1e1e1e]">{decideOn.row.returnNo}</span> to{" "}
-                <span className="font-medium text-[#1e1e1e]">{decideOn.row.customerName}</span>?
-              </>
-            )}
-            {decideOn.to === "Rejected" && (
-              <>
-                Reject return <span className="font-medium text-[#1e1e1e]">{decideOn.row.returnNo}</span>? No
-                refund will be paid.
-              </>
-            )}
-            {decideOn.to === "Pending" && (
-              <>
-                Withdraw the approved refund on{" "}
-                <span className="font-medium text-[#1e1e1e]">{decideOn.row.returnNo}</span>? It goes back to
-                Pending.
-              </>
-            )}
-          </p>
-        )}
-      </Modal>
     </div>
   );
 }

@@ -176,7 +176,12 @@
 .sp-stagger > *:nth-child(7) { animation-delay: 390ms; }
 .sp-stagger > *:nth-child(n + 8) { animation-delay: 425ms; }
 
+/* Console table rows: a short lift, staggered by the page so a table reads as
+   filling in rather than appearing all at once. */
+.sp-row { animation: sp-slide-up 220ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+
 @media (prefers-reduced-motion: reduce) {
+  .sp-row,
   .sp-fade,
   .sp-rise,
   .sp-panel,
