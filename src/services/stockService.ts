@@ -1,37 +1,35 @@
 import { StockItem, StockQueryFilter } from "@/types/stock";
-import { initialStockData } from "@/lib/services/stock.service";
 import { apiFetch, apiList } from "./apiClient";
 import { toStockItem } from "./mappers/inventory";
+
+/**
+ * The API's `AdjustmentReason` choices, verbatim.
+ *
+ * Spelled out as a union rather than left as `string`, because the screen was
+ * sending "STOCK_IN" and "STOCK_OUT" — words this API has never accepted — and
+ * a plain `string` parameter had nothing to say about it. Every count 400'd on
+ * `reason` and the row silently put its old number back.
+ */
+export type AdjustmentReason = "COUNT" | "DAMAGE" | "EXPIRY" | "THEFT" | "CORRECTION";
 
 export class StockService {
   /**
    * Fetch stock inventory with search & filter
    */
-  static async getStock(params?: StockQueryFilter): Promise<{ data: StockItem[]; total: number }> {
-    const fallback = () => {
-      let list = [...initialStockData];
-      if (params?.search) {
-        const q = params.search.toLowerCase();
-        list = list.filter(
-          (s) =>
-            s.name.toLowerCase().includes(q) ||
-            s.sku.toLowerCase().includes(q) ||
-            s.warehouse.toLowerCase().includes(q)
-        );
-      }
-      if (params?.status) {
-        list = list.filter((s) => s.status.toLowerCase() === params.status?.toLowerCase());
-      }
-      // The pager reads this, and it is now the real count: a hardcoded 50
-      // meant the offline fallback claimed pages that did not exist.
-      return { data: list, total: list.length };
-    };
-
+  static async getStock(
+    params?: StockQueryFilter,
+    /** Read as if standing in this branch, for this request only. The stock
+        list is branch-scoped, so drafting a transfer OUT of another branch
+        needs to see that branch's shelf. `X-Branch` is refused for a branch the
+        caller is not assigned to, so this widens nothing. */
+    branchId?: string
+  ): Promise<{ data: StockItem[]; total: number }> {
     const searchParams = new URLSearchParams();
     if (params?.search) searchParams.set("search", params.search);
     if (params?.warehouse) searchParams.set("warehouse", params.warehouse);
     if (params?.status) searchParams.set("status", params.status);
     if (params?.page) searchParams.set("page", String(params.page));
+    if (params?.includeUnstocked) searchParams.set("include_unstocked", "true");
     // The API caps a page at 200 (StandardPagination.max_page_size); asking
     // for more than that just gets 200 back.
     searchParams.set("limit", String(params?.limit ?? 200));
@@ -39,9 +37,8 @@ export class StockService {
 
     return apiList<StockItem>(
       `/inventory/stock/${qs}`,
-      { method: "GET" },
-      fallback,
-      (row: any) => (row?.lowStock !== undefined ? row : toStockItem(row))
+      { method: "GET", ...(branchId ? { branchId } : {}) },
+      toStockItem
     );
   }
 
@@ -67,8 +64,13 @@ export class StockService {
     variantId: string;
     newQuantity: number;
     referenceNo: string;
-    reason: string;
+    reason: AdjustmentReason;
     note?: string;
+    /** What each unit cost. REQUIRED when the line is empty: an empty line has
+        no weighted average for the new units to inherit, and the API refuses
+        the apply with `ADJUSTMENT_COST_REQUIRED` rather than let COGS on the
+        first sale be computed against zero. */
+    unitCost?: number;
   }): Promise<void> {
     const draft = await apiFetch<any>("/inventory/adjustments/", {
       method: "POST",
@@ -77,7 +79,13 @@ export class StockService {
         warehouse: input.warehouseId,
         reason: input.reason,
         note: input.note || "",
-        items: [{ variant: input.variantId, new_quantity: input.newQuantity }],
+        items: [
+          {
+            variant: input.variantId,
+            new_quantity: input.newQuantity,
+            ...(input.unitCost != null ? { unit_cost: input.unitCost } : {}),
+          },
+        ],
       }),
     });
 
