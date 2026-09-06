@@ -162,28 +162,27 @@ function toInvoiceRow(row: any): InvoiceRow {
 export class PlatformService {
   static async listTenants(search?: string): Promise<PagedResult<TenantRow>> {
     const qs = search ? `?search=${encodeURIComponent(search)}&limit=200` : "?limit=200";
-    return apiList<TenantRow>(`/platform/organizations/${qs}`, { method: "GET" }, undefined, toTenantRow);
+    return apiList<TenantRow>(`/platform/organizations/${qs}`, { method: "GET" }, toTenantRow);
   }
 
   static async listStaff(): Promise<PagedResult<StaffRow>> {
-    return apiList<StaffRow>("/platform/staff/?limit=200", { method: "GET" }, undefined, toStaffRow);
+    return apiList<StaffRow>("/platform/staff/?limit=200", { method: "GET" }, toStaffRow);
   }
 
   static async listPlans(): Promise<PagedResult<PlanRow>> {
-    return apiList<PlanRow>("/platform/plans/?limit=200", { method: "GET" }, undefined, toPlanRow);
+    return apiList<PlanRow>("/platform/plans/?limit=200", { method: "GET" }, toPlanRow);
   }
 
   static async listSubscriptions(): Promise<PagedResult<SubscriptionRow>> {
     return apiList<SubscriptionRow>(
       "/platform/subscriptions/?limit=200",
       { method: "GET" },
-      undefined,
       toSubscriptionRow
     );
   }
 
   static async listInvoices(): Promise<PagedResult<InvoiceRow>> {
-    return apiList<InvoiceRow>("/platform/invoices/?limit=200", { method: "GET" }, undefined, toInvoiceRow);
+    return apiList<InvoiceRow>("/platform/invoices/?limit=200", { method: "GET" }, toInvoiceRow);
   }
 
   /**
