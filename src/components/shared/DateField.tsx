@@ -69,9 +69,22 @@ function Chevron({ dir }: { dir: "left" | "right" }) {
 }
 
 export interface DateFieldProps {
-  /** null = no date filter applied; the label still shows today. */
+  /**
+   * null = no date filter applied.
+   *
+   * The label used to print TODAY in this state, which said the list was
+   * filtered to today while it was showing every row ever recorded. The two
+   * states now read differently: a picked day, or `emptyLabel`.
+   */
   value: Date | null;
   onChange: (d: Date | null) => void;
+  /**
+   * What the control says when nothing is picked. "All time" for a filter,
+   * because that is what an unfiltered list is showing. A `fullWidth` field is
+   * an INPUT rather than a filter — there is no "all time" date to stamp on a
+   * stock count — so it keeps "Select date".
+   */
+  emptyLabel?: string;
   variant?: "gold" | "outline";
   /** Overrides the default "Change date" label. */
   ariaLabel?: string;
@@ -79,7 +92,7 @@ export interface DateFieldProps {
   fullWidth?: boolean;
 }
 
-export default function DateField({ value, onChange, variant = "outline", ariaLabel = "Change date", fullWidth = false }: DateFieldProps) {
+export default function DateField({ value, onChange, variant = "outline", ariaLabel = "Change date", fullWidth = false, emptyLabel = "All time" }: DateFieldProps) {
   const shown = value ?? new Date();
   const [open, setOpen] = useState(false);
   const [month, setMonth] = useState(() => new Date(shown.getFullYear(), shown.getMonth(), 1));
@@ -139,7 +152,7 @@ export default function DateField({ value, onChange, variant = "outline", ariaLa
         }`}
       >
         <span className={`truncate text-[16px] leading-[24px] whitespace-nowrap ${fullWidth ? "font-normal" : "font-medium"}`} suppressHydrationWarning>
-          {value ? LABEL.format(value) : fullWidth ? "Select date" : LABEL.format(shown)}
+          {value ? LABEL.format(value) : fullWidth ? "Select date" : emptyLabel}
         </span>
         <CalendarIcon />
       </button>
@@ -209,7 +222,10 @@ export default function DateField({ value, onChange, variant = "outline", ariaLa
               }}
               className="flex-1 cursor-pointer rounded-[8px] py-[6px] text-[12px] font-medium text-[#525252] transition-colors hover:bg-[#fafafa]"
             >
-              All dates
+              {/* Same words the pill shows when nothing is picked. Two
+                  labels for one state — "All dates" here, "All time" there —
+                  read as two different things. */}
+              {emptyLabel}
             </button>
             <button
               type="button"
