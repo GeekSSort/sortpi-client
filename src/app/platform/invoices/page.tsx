@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { ApiError } from "@/services/apiClient";
 import { PlatformService, InvoiceRow, toDate, toLabel } from "@/services/platformService";
+import { invalidate, queryKey, useQuery } from "@/lib/query/useQuery";
 import ConsoleList, { Column, Stat } from "@/components/platform/ConsoleList";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import { formatMoney } from "@/lib/format";
@@ -31,18 +32,14 @@ const FIELD =
 const FILTERS = ["All invoices", "Paid", "Open", "Overdue", "Void"] as const;
 // The billing rails, not the shop's: no cash drawer here.
 const METHODS = ["BANK_TRANSFER", "MOBILE_BANKING", "CARD", "MANUAL"] as const;
-
+/** The same tracks as `columns` below, as a literal so Tailwind emits the class. */
+const GRID = "grid-cols-[1fr_1.4fr_1fr_1fr_1fr_1fr_150px_83px]";
 
 
 export default function PlatformInvoicesPage() {
-  const [rows, setRows] = useState<InvoiceRow[]>([]);
-  const [names, setNames] = useState<Map<string, string>>(new Map());
   const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("All invoices");
-  const [reloadKey, setReloadKey] = useState(0);
   const [saving, setSaving] = useState(false);
   const [payOf, setPayOf] = useState<InvoiceRow | null>(null);
   const [amount, setAmount] = useState("");
@@ -50,37 +47,34 @@ export default function PlatformInvoicesPage() {
   const [voidOf, setVoidOf] = useState<InvoiceRow | null>(null);
   const [reason, setReason] = useState("");
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [invoices, tenantNames] = await Promise.all([
-          PlatformService.listInvoices(),
-          PlatformService.tenantNames(),
-        ]);
-        if (cancelled) return;
-        setRows(invoices.data);
-        setNames(tenantNames);
-        setError(null);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof ApiError ? e.message : "Could not load invoices.");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [reloadKey]);
+  const invoices = useQuery("platform-invoices", async () => {
+    const res = await PlatformService.listInvoices();
+    return res.data;
+  });
+  // The company names live under the companies base, not this one, so closing
+  // or renaming a company refreshes the Company column here too.
+  const names = useQuery(queryKey("platform-companies", { view: "names" }), () =>
+    PlatformService.tenantNames()
+  );
 
-  const act = async (fn: () => Promise<void>, done: string) => {
+  const rows = invoices.data ?? [];
+  const loading = invoices.loading || names.loading;
+  const fetching = invoices.fetching || names.fetching;
+  const hasData = invoices.data !== undefined && names.data !== undefined;
+  const error = invoices.error ?? names.error;
+  const refetch = () => {
+    void invoices.refetch();
+    void names.refetch();
+  };
+
+  const act = async (fn: () => Promise<void>, done: string, touched: string[]) => {
     setSaving(true);
     try {
       await fn();
       setNote(done);
       setPayOf(null);
       setVoidOf(null);
-      setReloadKey((k) => k + 1);
+      invalidate(...touched);
     } catch (e) {
       setNote(PlatformService.describeError(e));
     } finally {
@@ -88,7 +82,8 @@ export default function PlatformInvoicesPage() {
     }
   };
 
-  const nameOf = (r: InvoiceRow) => names.get(r.organizationId) || r.organizationId.slice(0, 8);
+  const nameOf = (r: InvoiceRow) =>
+    names.data?.get(r.organizationId) || r.organizationId.slice(0, 8);
   const needle = search.trim().toLowerCase();
   const byFilter = rows.filter((r) =>
     filter === "All invoices" ? true : r.status === filter.toUpperCase()
@@ -182,7 +177,13 @@ export default function PlatformInvoicesPage() {
         stats={stats}
         columns={columns}
         loading={loading}
-        error={error}
+        fetching={fetching}
+        hasData={hasData}
+        skeletonGrid={GRID}
+        error={
+          error ? (error instanceof ApiError ? error.message : "Could not load invoices.") : null
+        }
+        onRetry={refetch}
         note={note}
         filters={FILTERS}
         onFilter={setFilter}
@@ -211,7 +212,10 @@ export default function PlatformInvoicesPage() {
                 payOf &&
                 act(
                   () => PlatformService.recordPayment(payOf.id, Number(amount) || 0, method),
-                  `Payment recorded against ${payOf.number}.`
+                  `Payment recorded against ${payOf.number}.`,
+                  // Paying a bill can take a subscription back out of PAST_DUE,
+                  // so the subscription list is stale as well as this one.
+                  ["platform-invoices", "platform-subscriptions", "platform-overview"]
                 )
               }
             >
@@ -265,7 +269,12 @@ export default function PlatformInvoicesPage() {
               className={`${MODAL_PRIMARY} disabled:cursor-not-allowed disabled:opacity-60`}
               onClick={() =>
                 voidOf &&
-                act(() => PlatformService.voidInvoice(voidOf.id, reason), `${voidOf.number} voided.`)
+                act(
+                  () => PlatformService.voidInvoice(voidOf.id, reason),
+                  `${voidOf.number} voided.`,
+                  // A void changes what is owed, which the console home totals.
+                  ["platform-invoices", "platform-overview"]
+                )
               }
             >
               {saving ? "Voiding..." : "Void invoice"}
