@@ -4,7 +4,6 @@ import {
   ReturnableSale,
   CreateReturnPayload,
 } from "@/types/returns";
-import { initialReturnsData } from "@/lib/services/returns.service";
 import { apiFetch, apiList, toAmount } from "./apiClient";
 import { toReturnRecord } from "./mappers/returns";
 
@@ -25,23 +24,6 @@ export class ReturnService {
    * sent and ignored, so the search box changed nothing.
    */
   static async getReturns(params?: ReturnQueryFilter): Promise<{ data: ReturnRecord[]; total: number }> {
-    const fallback = () => {
-      let list = [...initialReturnsData];
-      if (params?.search) {
-        const q = params.search.toLowerCase();
-        list = list.filter(
-          (r) =>
-            r.customerName.toLowerCase().includes(q) ||
-            r.invoiceNo.toLowerCase().includes(q) ||
-            r.returnNo.toLowerCase().includes(q)
-        );
-      }
-      if (params?.status) {
-        list = list.filter((r) => r.status.toLowerCase() === params.status?.toLowerCase());
-      }
-      return { data: list, total: list.length };
-    };
-
     const searchParams = new URLSearchParams();
     if (params?.search) searchParams.set("search", params.search);
     if (params?.status) searchParams.set("status", params.status);
@@ -56,8 +38,7 @@ export class ReturnService {
     return apiList<ReturnRecord>(
       `/returns/${qs}`,
       { method: "GET" },
-      fallback,
-      (row: any) => (row?.returnNo !== undefined ? row : toReturnRecord(row))
+      toReturnRecord
     );
   }
 
@@ -73,9 +54,7 @@ export class ReturnService {
 
     const res = await apiList<any>(
       `/sales/?search=${encodeURIComponent(query)}&limit=10`,
-      { method: "GET" },
-      { data: [], total: 0 }
-    );
+      { method: "GET" });
 
     const wanted = query.toLowerCase();
     const row =
@@ -123,7 +102,6 @@ export class ReturnService {
     return apiFetch<ReturnRecord>(
       `/sales/${saleId}/returns/`,
       { method: "POST", body: JSON.stringify(body) },
-      undefined,
       toReturnRecord
     );
   }
