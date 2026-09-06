@@ -306,10 +306,13 @@
 /* Scrolls horizontally without a visible bar — used by the POS category row,
    which grew from four fixed tabs to however many categories exist. */
 .no-scrollbar {
+  -ms-overflow-style: none;   /* old Edge */
+  scrollbar-width: none;      /* Firefox */
   -ms-overflow-style: none !important;   /* old Edge */
   scrollbar-width: none !important;      /* Firefox */
 }
 .no-scrollbar::-webkit-scrollbar {
+  display: none;              /* Chrome, Safari */
   display: none !important;              /* Chrome, Safari */
 }
 
