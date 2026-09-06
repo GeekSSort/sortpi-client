@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { ApiError } from "@/services/apiClient";
 import { PlatformService, StaffRow, toDate } from "@/services/platformService";
+import { invalidate, useMutation, useQuery } from "@/lib/query/useQuery";
 import ConsoleList, { Column } from "@/components/platform/ConsoleList";
 import StatusPill from "@/components/shared/StatusPill";
 import Avatar from "@/components/shared/Avatar";
@@ -20,6 +21,8 @@ import { statGood, statRisk, statTotal, statWait } from "@/components/platform/s
 const BODY = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
 const FIELD =
   "h-[44px] w-full rounded-[10px] bg-white px-[12px] text-[14px] text-[#1e1e1e] shadow-[inset_0_0_0_1px_#eaeaea] outline-none focus:shadow-[inset_0_0_0_1.5px_#f5b800]";
+/** The same tracks as `columns` below, as a literal so Tailwind emits the class. */
+const GRID = "grid-cols-[1.4fr_1.6fr_1fr_1fr_150px_83px]";
 
 function AddIcon() {
   return (
@@ -30,62 +33,52 @@ function AddIcon() {
 }
 
 export default function PlatformStaffPage() {
-  const [rows, setRows] = useState<StaffRow[]>([]);
   const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  /** A write that failed, kept apart from a read that failed: the rows are fine. */
+  const [writeError, setWriteError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [reloadKey, setReloadKey] = useState(0);
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState({ fullName: "", email: "", password: "" });
-  const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    PlatformService.listStaff()
-      .then((res) => {
-        if (cancelled) return;
-        setRows(res.data);
-        setError(null);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(e instanceof ApiError ? e.message : "Could not load staff.");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [reloadKey]);
+  // Searched in the browser over the one list, so the key carries no params.
+  const { data, loading, fetching, error, refetch } = useQuery("platform-staff", async () => {
+    const res = await PlatformService.listStaff();
+    return res.data;
+  });
+  const rows = data ?? [];
 
   const needle = search.trim().toLowerCase();
   const shown = needle
     ? rows.filter((r) => r.fullName.toLowerCase().includes(needle) || r.email.toLowerCase().includes(needle))
     : rows;
 
+  // Console accounts belong to no company, so nothing outside this list moves.
+  const { mutate: createStaff, pending: saving } = useMutation(
+    (payload: { fullName: string; email: string; password: string }) =>
+      PlatformService.createStaff(payload),
+    { invalidates: ["platform-staff"] }
+  );
+
   const setActive = async (row: StaffRow, isActive: boolean) => {
     try {
       await PlatformService.setStaffActive(row.id, isActive);
       setNote(`${row.email} is now ${isActive ? "active" : "inactive"}.`);
-      setReloadKey((k) => k + 1);
+      setWriteError(null);
+      invalidate("platform-staff");
     } catch (e) {
-      setError(PlatformService.describeError(e));
+      setWriteError(PlatformService.describeError(e));
     }
   };
 
   const add = async () => {
-    setSaving(true);
     try {
-      await PlatformService.createStaff(form);
+      await createStaff(form);
       setNote(`${form.email} can now sign in to the console.`);
+      setWriteError(null);
       setAddOpen(false);
       setForm({ fullName: "", email: "", password: "" });
-      setReloadKey((k) => k + 1);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not add that person.");
-    } finally {
-      setSaving(false);
+      setWriteError(e instanceof ApiError ? e.message : "Could not add that person.");
     }
   };
 
@@ -154,7 +147,14 @@ export default function PlatformStaffPage() {
         ]}
         columns={columns}
         loading={loading}
-        error={error}
+        fetching={fetching}
+        hasData={data !== undefined}
+        skeletonGrid={GRID}
+        error={
+          writeError ??
+          (error ? (error instanceof ApiError ? error.message : "Could not load staff.") : null)
+        }
+        onRetry={refetch}
         note={note}
         onSearch={setSearch}
         searchPlaceholder="Search by name or email..."

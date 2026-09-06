@@ -1,5 +1,4 @@
 import { EmployeeRecord, HrmQueryFilter } from "@/types/hrm";
-import { initialEmployeesData } from "@/lib/services/hrm.service";
 import { apiFetch, apiList, ApiError, PagedResult, tokenStore } from "./apiClient";
 import { AttendanceToday, toEmployeeRecord } from "./mappers/employee";
 import { BranchService } from "./branchService";
@@ -59,28 +58,14 @@ export class HrmService {
       apiList<any>(
         `/hrm/employees/?${query.toString()}`,
         { method: "GET" },
-        { data: initialEmployeesData as any[], total: initialEmployeesData.length },
         (r) => r
       ),
       apiList<any>(
         `/hrm/attendance/?date_from=${localDay}&date_to=${localDay}&limit=200`,
         { method: "GET" },
-        { data: [], total: 0 },
         (r) => r
       ).catch(() => ({ data: [] as any[] })),
     ]);
-
-    // Sample rows are already in the right shape, so there is nothing to join.
-    if (employees.data[0]?.status) {
-      const rows = employees.data as EmployeeRecord[];
-      return {
-        data: rows.slice((page - 1) * limit, page * limit),
-        total: rows.length,
-        page,
-        limit,
-        totalPages: Math.max(1, Math.ceil(rows.length / limit)),
-      };
-    }
 
     // First wins, and the API returns newest first. This used to `set`
     // unconditionally, so every older row overwrote the newer one and the
@@ -109,11 +94,11 @@ export class HrmService {
   /** Departments and designations, for the Add Employee form. */
   static async getLookups(): Promise<{ departments: Lookup[]; designations: Lookup[] }> {
     const [departments, designations] = await Promise.all([
-      apiList<Lookup>("/hrm/departments/?limit=100", { method: "GET" }, { data: [], total: 0 }, (r: any) => ({
+      apiList<Lookup>("/hrm/departments/?limit=100", { method: "GET" }, (r: any) => ({
         id: String(r?.id ?? ""),
         name: String(r?.name ?? ""),
       })),
-      apiList<Lookup>("/hrm/designations/?limit=100", { method: "GET" }, { data: [], total: 0 }, (r: any) => ({
+      apiList<Lookup>("/hrm/designations/?limit=100", { method: "GET" }, (r: any) => ({
         id: String(r?.id ?? ""),
         name: String(r?.name ?? ""),
       })),

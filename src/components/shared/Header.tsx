@@ -4,12 +4,14 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useQuery, queryKey, setQueryData } from "@/lib/query/useQuery";
 
 import { AuthService, NotificationService } from "@/services";
 import { useSession, clearSessionCache } from "@/services/useSession";
 import BranchSwitcher from "./BranchSwitcher";
 import { NotificationItem } from "@/types/notifications";
 import { useSidebar } from "./SidebarContext";
+import { ListSkeleton } from "./Skeleton";
 
 /**
  * The top bar — Figma 30:15360.
@@ -150,8 +152,27 @@ export default function Header({ title, subtitle, user }: HeaderProps) {
   const { user: session } = useSession();
   const [open, setOpen] = useState<"bell" | "profile" | null>(null);
   const [items, setItems] = useState<NotificationItem[]>([]);
-  const [unread, setUnread] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
+  const [bellLoading, setBellLoading] = useState(false);
+  const [bellError, setBellError] = useState(false);
+
+  /**
+   * The badge is cached like everything else, so moving between screens does
+   * not re-ask on every mount — the header remounts on each navigation, and
+   * that was one request per page view for a number that changes rarely.
+   *
+   * A minute is short enough that a stock alert raised elsewhere shows up
+   * without a reload, and long enough that walking around the app is free.
+   * `markRead` below writes the new count straight into the same cache entry,
+   * so the badge clears the instant the panel opens rather than a round trip
+   * later.
+   */
+  const { data: unreadCount } = useQuery(
+    queryKey("notifications-unread"),
+    () => NotificationService.unreadCount(),
+    { staleMs: 60_000 }
+  );
+  const unread = unreadCount ?? 0;
 
   const heading = title ?? titleForPath(pathname);
   const sub = subtitle !== undefined ? subtitle : subtitleForPath(pathname);
@@ -161,16 +182,6 @@ export default function Header({ title, subtitle, user }: HeaderProps) {
     email: session?.email ?? "",
     avatar: session?.avatar || "/sidebar/nav-avatar.png",
   };
-
-  useEffect(() => {
-    let alive = true;
-    NotificationService.unreadCount()
-      .then((n) => alive && setUnread(n))
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   // Close on outside click or Escape.
   useEffect(() => {
@@ -190,13 +201,23 @@ export default function Header({ title, subtitle, user }: HeaderProps) {
   const openBell = useCallback(async () => {
     if (open === "bell") return setOpen(null);
     setOpen("bell");
-    const list = await NotificationService.list();
-    setItems(list);
-    const unreadIds = list.filter((n) => !n.isRead).map((n) => n.id);
-    if (unreadIds.length) {
-      await NotificationService.markRead(unreadIds);
-      setUnread(0);
-      setItems((prev) => prev.map((n) => ({ ...n, isRead: true })));
+    setBellError(false);
+    setBellLoading(true);
+    try {
+      const list = await NotificationService.list();
+      setItems(list);
+      const unreadIds = list.filter((n) => !n.isRead).map((n) => n.id);
+      if (unreadIds.length) {
+        await NotificationService.markRead(unreadIds);
+        setQueryData(queryKey("notifications-unread"), 0);
+        setItems((prev) => prev.map((n) => ({ ...n, isRead: true })));
+      }
+    } catch {
+      // The panel is open and empty either way; without this it read as "no
+      // notifications", which is a different and reassuring claim.
+      setBellError(true);
+    } finally {
+      setBellLoading(false);
     }
   }, [open]);
 
@@ -285,7 +306,17 @@ export default function Header({ title, subtitle, user }: HeaderProps) {
               Notifications
             </p>
             <ul className="max-h-[320px] overflow-y-auto">
-              {items.length === 0 && (
+              {bellLoading && items.length === 0 && (
+                <li className="px-[16px] py-[12px]">
+                  <ListSkeleton rows={3} />
+                </li>
+              )}
+              {!bellLoading && bellError && (
+                <li className="px-[16px] py-[20px] text-[13px] text-[#525252]">
+                  Could not load notifications.
+                </li>
+              )}
+              {!bellLoading && !bellError && items.length === 0 && (
                 <li className="px-[16px] py-[20px] text-[13px] text-[#525252]">Nothing new.</li>
               )}
               {items.map((n) => (

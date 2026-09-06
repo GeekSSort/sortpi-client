@@ -11,6 +11,11 @@ export interface StockItem {
   available: number;
   reserved: number;
   lowStock: number;
+  /** The weighted average this line was bought at, or 0 when the line has
+      never held stock — and also 0 for a caller without
+      `inventory.view_valuation`, who does not get the key at all. Zero is the
+      signal that a first count has to state what the units cost. */
+  averageCost: number;
   status: "In Stock" | "Low Stock" | "Out of Stock";
 }
 
@@ -20,5 +25,12 @@ export interface StockQueryFilter {
   status?: string;
   page?: number;
   limit?: number;
+  /** List the CATALOGUE against one warehouse rather than that warehouse's
+      ledger rows, so a product it has never held comes back at zero instead of
+      not coming back at all. Needs a resolvable warehouse — the named one, or
+      the active branch's MAIN — and 400s `WAREHOUSE_REQUIRED` without one.
+      NOT for the transfer picker, which asks for a page of 200 and would lose
+      everything past the 200th name. */
+  includeUnstocked?: boolean;
 }
 

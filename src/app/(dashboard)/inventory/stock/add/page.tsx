@@ -1,11 +1,15 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { StockItem } from "@/types/stock";
-import { StockService } from "@/services";
+import { StockService, TransferService } from "@/services";
+import { useSession } from "@/services/useSession";
 import DateField from "@/components/shared/DateField";
 import { GOLD_GRADIENT } from "@/components/shared/Modal";
+import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { FormSkeleton } from "@/components/shared/Skeleton";
+import { QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 
 /**
  * Figma: SORTPoint — Add Stock 57:13954.
@@ -15,7 +19,10 @@ import { GOLD_GRADIENT } from "@/components/shared/Modal";
  * full-width Add Stock button 24px below the card.
  */
 
-const WAREHOUSES = ["Main Warehouse", "Branch 1", "Branch 2", "Outlet Store"] as const;
+// The warehouse list comes from `/warehouses/`. It used to be four invented
+// names — "Main Warehouse", "Branch 1" — so the dropdown offered places this
+// company does not have, and the choice could not be resolved to the id the
+// adjustment has to be posted against.
 
 const LABEL = "w-full text-[18px] leading-[24px] font-medium text-[#525252]";
 const FIELD =
@@ -96,8 +103,8 @@ function Select({
 }
 
 export default function AddStockPage() {
+  const session = useSession();
   const router = useRouter();
-  const [items, setItems] = useState<StockItem[]>([]);
   const [product, setProduct] = useState("");
   const [warehouse, setWarehouse] = useState("");
   const [quantity, setQuantity] = useState("");
@@ -106,24 +113,65 @@ export default function AddStockPage() {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /** What the units cost. Only asked for, and only sent, when the shelf being
+      counted into is EMPTY — see `needsCost`. */
+  const [unitCost, setUnitCost] = useState("");
 
-  useEffect(() => {
+  const stockQuery = useQuery(queryKey("stock", { part: "picker" }), () =>
     StockService.getStock()
-      .then((res) => setItems(res.data))
-      .catch(() => {});
-  }, []);
+  );
+  // Shared with Transfers, which offers the same two ends.
+  const warehouseQuery = useQuery(queryKey("warehouses"), () =>
+    TransferService.getWarehouses()
+  );
 
-  const picked = items.find((i) => i.name === product) ?? null;
-  const currentStock = picked?.available ?? 0;
+  // Memoised because `?? []` is a new array every render, and the derived
+  // lists below depend on them.
+  const items: StockItem[] = useMemo(() => stockQuery.data?.data ?? [], [stockQuery.data]);
+  // THIS branch's shelves. `/warehouses/` lists every branch the caller is
+  // assigned to — that is what the transfer screen needs, to have somewhere to
+  // send to — but counting stock in happens where you are standing, and the
+  // API refuses an adjustment against another branch's warehouse while a
+  // branch is active. Offering one would be offering a 404.
+  const warehouses = useMemo(() => {
+    const all = warehouseQuery.data ?? [];
+    const branchId = session.user?.activeBranch?.id;
+    if (!branchId) return all;
+    const here = all.filter((w) => w.branchId === branchId);
+    return here.length > 0 ? here : all;
+  }, [warehouseQuery.data, session.user?.activeBranch?.id]);
+
+  const warehouseId = warehouses.find((w) => w.name === warehouse)?.id ?? null;
+  // The variant is a property of the product; the shelf being counted is the
+  // one that was picked. Reading the quantity off the first line that happened
+  // to match the name added stock to whichever warehouse came back first.
+  const lineForProduct = items.find((i) => i.name === product) ?? null;
+  const lineAtWarehouse =
+    warehouseId === null
+      ? null
+      : items.find((i) => i.name === product && i.warehouseId === warehouseId) ?? null;
+  const picked = lineAtWarehouse ?? lineForProduct;
+  const currentStock = lineAtWarehouse?.available ?? 0;
   const newTotal = useMemo(
     () => currentStock + (Number(quantity) || 0),
     [currentStock, quantity]
   );
 
+  /**
+   * Whether this add has to state a unit cost.
+   *
+   * Weighted-average costing: units joining a line inherit that line's average,
+   * and a shelf that has never held this product has none. The API refuses the
+   * apply with `ADJUSTMENT_COST_REQUIRED` rather than let the first sale
+   * compute COGS against zero, so the form asks first instead of failing after.
+   */
+  const needsCost = (lineAtWarehouse?.averageCost ?? 0) <= 0;
+
   const productNames = useMemo(
     () => Array.from(new Set(items.map((i) => i.name))),
     [items]
   );
+  const warehouseNames = useMemo(() => warehouses.map((w) => w.name), [warehouses]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -136,20 +184,34 @@ export default function AddStockPage() {
     setError(null);
     setSaving(true);
     try {
-      if (!picked?.variantId || !picked?.warehouseId) {
-        throw new Error("That line is missing its variant or warehouse.");
+      if (!picked?.variantId) {
+        throw new Error("That product is missing its variant.");
+      }
+      if (!warehouseId) {
+        throw new Error("That warehouse could not be resolved. Pick it again.");
+      }
+      const cost = Number(unitCost);
+      if (needsCost && (!unitCost.trim() || Number.isNaN(cost) || cost <= 0)) {
+        throw new Error("Enter what one unit cost, greater than zero.");
       }
       // A stock adjustment takes the COUNT, not the amount added: the service
       // works out the movement against the balance at the moment it applies.
       await StockService.adjustStock({
-        warehouseId: picked.warehouseId,
+        warehouseId,
         variantId: picked.variantId,
         newQuantity: currentStock + qty,
+        ...(needsCost ? { unitCost: cost } : {}),
         referenceNo: `ADJ-${Date.now()}`,
-        reason: "STOCK_IN",
+        // CORRECTION — goods arriving without a purchase order. "STOCK_IN"
+        // was not an AdjustmentReason at all, so this form 400'd on every
+        // submit.
+        reason: "CORRECTION",
         note: `Added ${qty} on ${(date ?? new Date()).toISOString().slice(0, 10)}`,
       });
       setNote(`${qty} added to ${product}`);
+      // The movement is the same one Stock, Products, Transfers and the
+      // dashboard are each counting, so all four go stale together.
+      invalidate("stock", "inventory", "transfers", "dashboard", "pos-products");
       window.setTimeout(() => router.push("/inventory/stock"), 700);
     } catch (err) {
       // The server names the real problem — an out-of-scope warehouse, a
@@ -163,7 +225,7 @@ export default function AddStockPage() {
   };
 
   return (
-    <div className="flex w-full flex-col select-none">
+    <div className="flex w-full flex-col">
       <form onSubmit={submit} className="mx-auto flex w-full max-w-[565px] flex-col gap-[24px]">
         <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
           <div className="flex h-[48px] items-center justify-center px-[16px]">
@@ -173,7 +235,19 @@ export default function AddStockPage() {
           </div>
 
           {/* Form — 57:13993, 88px blocks 12px apart */}
-          <div className="flex flex-col gap-[12px] px-[16px] pt-[9px] pb-[16px]">
+          <div className="relative flex flex-col gap-[12px] px-[16px] pt-[9px] pb-[16px]">
+            <RefreshBar active={stockQuery.fetching || warehouseQuery.fetching} />
+            <QueryBoundary
+              loading={stockQuery.loading || warehouseQuery.loading}
+              error={stockQuery.error ?? warehouseQuery.error}
+              hasData={stockQuery.data !== undefined && warehouseQuery.data !== undefined}
+              skeleton={<FormSkeleton fields={6} columns={1} />}
+              errorMessage="The product and warehouse lists could not be loaded."
+              onRetry={() => {
+                void stockQuery.refetch();
+                void warehouseQuery.refetch();
+              }}
+            >
             <div className="flex flex-col gap-[8px]">
               <span className={LABEL}>Select Product</span>
               <Select
@@ -206,7 +280,7 @@ export default function AddStockPage() {
                 kind="warehouse"
                 value={warehouse}
                 placeholder="Select warehouse"
-                options={WAREHOUSES}
+                options={warehouseNames}
                 onPick={(v) => {
                   setWarehouse(v);
                   setError(null);
@@ -244,6 +318,34 @@ export default function AddStockPage() {
               </div>
             </div>
 
+            {/* Only when the shelf is empty. On a line that already holds
+                stock the new units inherit its average and there is nothing to
+                ask. */}
+            {needsCost && (
+              <div className="flex flex-col gap-[8px]">
+                <label htmlFor="s-cost" className={LABEL}>
+                  Cost per unit
+                </label>
+                <div className={FIELD}>
+                  <input
+                    id="s-cost"
+                    value={unitCost}
+                    onChange={(e) => {
+                      setUnitCost(e.target.value.replace(/[^\d.]/g, ""));
+                      setError(null);
+                    }}
+                    inputMode="decimal"
+                    placeholder="৳ 0.00"
+                    className={INPUT}
+                  />
+                </div>
+                <p className="text-[13px] leading-[1.5] text-[#8f8d87]">
+                  This shelf has never held {product || "this product"}, so there is no cost for
+                  the new units to inherit. What the shop PAID, not the selling price.
+                </p>
+              </div>
+            )}
+
             {/* Derived — 57:14055 */}
             <div className="flex flex-col gap-[8px]">
               <span className={LABEL}>New Total Stock</span>
@@ -262,6 +364,7 @@ export default function AddStockPage() {
 
             {error && <p className="text-[13px] text-[#ef4444]">{error}</p>}
             {note && <p className="text-[13px] text-[#525252]">{note}</p>}
+            </QueryBoundary>
           </div>
         </div>
 

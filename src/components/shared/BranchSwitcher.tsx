@@ -1,9 +1,11 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { BranchService } from "@/services/branchService";
 import { tokenStore } from "@/services/apiClient";
 import { Branch, CreateBranchPayload } from "@/types/branch";
+import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { useSession } from "@/services/useSession";
 
 /**
  * The branch the dashboard reports on, and the way to add another.
@@ -24,34 +26,63 @@ import { Branch, CreateBranchPayload } from "@/types/branch";
  * the previous account's branch names to the next person at the till.
  */
 
+/**
+ * Nothing mutates the stored branch behind this component's back — a switch
+ * reloads the page — so the subscription never fires. It exists to satisfy the
+ * store contract, and being module-level keeps its identity stable.
+ */
+const NO_STORE_UPDATES = () => () => {};
+const readStoredBranch = () => tokenStore.branch();
+const readNoBranch = () => null;
+
 export default function BranchSwitcher({ onChange }: { onChange?: (branchId: string | null) => void }) {
-  const [branches, setBranches] = useState<Branch[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string | null | undefined>(undefined);
+
+  /**
+   * Only for people who administer branches.
+   *
+   * Switching is not a view filter — it writes the active branch onto the
+   * server session and re-issues the token, so every branch-scoped list in the
+   * app answers differently afterwards. A cashier standing at one till has no
+   * business moving the company's cursor, and gating on `branch.view` rather
+   * than on a role NAME keeps that true after a shop renames its roles.
+   */
+  const { user: session, loading: sessionLoading } = useSession();
+  const maySwitch = Boolean(session?.permissions?.includes("branch.view"));
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Inlined: the lint rule traces setState through a named callback called in
-  // an effect. `cancelled` stops a late response writing after unmount.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const rows = await BranchService.list();
-        if (cancelled) return;
-        setActiveId(tokenStore.branch());
-        setBranches(rows);
-        setError(null);
-      } catch (e) {
-        if (!cancelled) setError(BranchService.describeError(e));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  /**
+   * The switcher sits in the header, so it mounts on every navigation. Asking
+   * for the branch list each time was one request per page view for a list
+   * that changes when somebody provisions a branch — minutes apart at most.
+   *
+   * Five minutes stale, and `invalidate("branches")` after a create makes a
+   * new branch appear without waiting for it to expire.
+   */
+  const {
+    data: branchRows,
+    error: listError,
+    refetch: refetchBranches,
+  } = useQuery(queryKey("branches"), () => BranchService.list(), {
+    staleMs: 300_000,
+    enabled: maySwitch,
+  });
+  const branches = branchRows ?? [];
+
+  /**
+   * The active branch lives in localStorage, which does not exist while the
+   * server renders — hence the third argument. Reading it through a store
+   * subscription rather than copying it into state in an effect keeps the
+   * first client paint correct without a second render.
+   */
+  const stored = useSyncExternalStore(NO_STORE_UPDATES, readStoredBranch, readNoBranch);
+  const activeId = picked === undefined ? stored : picked;
+
+  const error = localError ?? (listError ? BranchService.describeError(listError) : null);
 
   // Close on outside click and on Escape — a dropdown that traps the page is
   // worse than no dropdown.
@@ -72,13 +103,13 @@ export default function BranchSwitcher({ onChange }: { onChange?: (branchId: str
   const select = async (branchId: string | null) => {
     setOpen(false);
     setSwitching(true);
-    setError(null);
+    setLocalError(null);
     try {
       await BranchService.setActive(branchId);
-      setActiveId(branchId);
+      setPicked(branchId);
       onChange?.(branchId);
     } catch (e) {
-      setError(BranchService.describeError(e));
+      setLocalError(BranchService.describeError(e));
     } finally {
       setSwitching(false);
     }
@@ -87,25 +118,32 @@ export default function BranchSwitcher({ onChange }: { onChange?: (branchId: str
   const onCreated = async (branch: Branch) => {
     setModalOpen(false);
     try {
-      const rows = await BranchService.list();
-      setBranches(rows);
+      // Straight through the cache, so the header this component sits in and
+      // anything else reading `branches` gets the new row too.
+      invalidate("branches");
+      const rows = (await refetchBranches()) ?? [];
 
       // A branch you just created can be invisible: the list is scoped to the
       // branches you are ASSIGNED to, and creating one does not assign you.
       if (!rows.some((b) => b.id === branch.id)) {
-        setError(
+        setLocalError(
           `${branch.code} was created, but you are not assigned to it yet, so it is not listed. Add yourself to it under Users.`
         );
         return;
       }
       await select(branch.id);
     } catch (e) {
-      setError(BranchService.describeError(e));
+      setLocalError(BranchService.describeError(e));
     }
   };
 
   const active = branches.find((b) => b.id === activeId);
   const label = switching ? "Switching…" : active ? `${active.code} · ${active.name}` : "Choose a branch";
+
+  // Nothing at all, rather than a disabled control: a cashier who cannot
+  // switch is better served by the header not offering it. Held back while the
+  // session is still loading too, so the control does not appear and vanish.
+  if (sessionLoading || !maySwitch) return null;
 
   return (
     <div ref={rootRef} className="relative select-none">

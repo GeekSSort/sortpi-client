@@ -1,11 +1,18 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import Image from "next/image";
-import { ProductCategory, ProductItem } from "@/types/pos";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { ProductItem } from "@/types/pos";
 import ProductPeek, { PeekAnchor } from "./ProductPeek";
 import { PosService } from "@/services";
 import TablePagination from "@/components/shared/TablePagination";
+import { useQuery, queryKey } from "@/lib/query/useQuery";
+import { CardGridSkeleton } from "@/components/shared/Skeleton";
+import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/QueryBoundary";
+import ProductImage from "@/components/shared/ProductImage";
+import ChipScroller from "@/components/shared/ChipScroller";
+import { useProductDiscounts } from "@/lib/usePosDiscounts";
+import { priceAfter } from "@/lib/posDiscounts";
+import { formatMoney } from "@/lib/format";
 
 /**
  * The till's product list — Figma 45:2171.
@@ -16,14 +23,6 @@ import TablePagination from "@/components/shared/TablePagination";
  * On a narrower screen the cards keep their size and the grid drops a column.
  * There is no Figma frame for that; it is our choice.
  */
-
-const CATEGORIES: ProductCategory[] = [
-  "All Categories",
-  "Electronics",
-  "Groceries",
-  "Fashion",
-  "Home & Living",
-];
 
 /** Magnifier, node 45:2174. */
 function SearchIcon() {
@@ -81,76 +80,256 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
     setPeeked({ product, rect: { top: r.top, left: r.left, right: r.right, bottom: r.bottom } });
   };
 
-  const [products, setProducts] = useState<ProductItem[]>([]);
-  const [category, setCategory] = useState<ProductCategory>("All Categories");
+  // The scanner is a keyboard: it types the digits it read and presses Enter.
+  // So the search box IS the scan target, and Enter is the whole protocol —
+  // there is no device to open and no permission to ask for.
+  const searchRef = useRef<HTMLInputElement>(null);
+  const queryRef = useRef("");
+  const scannerBufferRef = useRef("");
+  const scannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputLastKeyAtRef = useRef(0);
+  const inputRapidCountRef = useRef(0);
+  const submitScanRef = useRef<(scannedCode?: string) => Promise<void>>(async () => {});
+  const [scanning, setScanning] = useState(false);
+  const [scanNote, setScanNote] = useState<string | null>(null);
 
-  // Built from what the catalogue holds. The old fixed list only matched the
-  // sample data, so every real product fell outside all four tabs.
-  const categories = React.useMemo(() => {
-    const found = Array.from(new Set(products.map((p) => p.category).filter(Boolean)));
-    found.sort();
-    return ["All Categories", ...found] as ProductCategory[];
-  }, [products]);
+  // What the Discounts screen set. Read here so the wall shows what the
+  // customer will actually be charged — a rate that only appeared on the
+  // screen that set it was an offer the shop could not see it was running.
+  const rates = useProductDiscounts();
+
+  /** "" is every category. Held as an ID, which is what the API filters on. */
+  const [categoryId, setCategoryId] = useState("");
   const [query, setQuery] = useState("");
+  /** The debounce settles the term before it reaches the cache key: one
+      request for a word rather than one per letter, and a slow answer for "so"
+      cannot land on top of the rows for "sony". */
+  const [term, setTerm] = useState("");
   const [page, setPage] = useState(1);
   // Nine a page: three across, three down, as in the design. On a wider
   // screen the grid adds columns instead of stretching the cards.
   const [pageSize, setPageSize] = useState(9);
 
   useEffect(() => {
-    PosService.getProducts().then(setProducts).catch(() => {});
+    if (query === term) return;
+    const id = window.setTimeout(() => {
+      setTerm(query);
+      setPage(1);
+    }, 250);
+    return () => window.clearTimeout(id);
+  }, [query, term]);
+
+  // The chips come from the catalogue, not from the products on this page —
+  // with one page in hand, a category with nothing on it would simply vanish
+  // from the row.
+  const { data: categoryRows } = useQuery(queryKey("pos-categories"), () =>
+    PosService.getCategories()
+  );
+  const categories = useMemo(
+    () => [{ id: "", name: "All Categories" }, ...(categoryRows ?? [])],
+    [categoryRows]
+  );
+
+  // SERVER-side, a page at a time. It used to ask for 60 products and search
+  // them in the browser, so on a real catalogue the wall held the first 60 by
+  // name and a cashier searching for anything after them was told there was no
+  // such product — while the same product sat plainly on the stock screen.
+  const {
+    data,
+    loading,
+    fetching,
+    error,
+    refetch,
+  } = useQuery(
+    queryKey("pos-products", { page, limit: pageSize, search: term, category: categoryId }),
+    () => PosService.getProducts({ page, limit: pageSize, search: term, categoryId }),
+    { staleMs: 60_000 }
+  );
+
+  const products = data?.data;
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const current = Math.min(page, totalPages);
+  // The server already sliced. This is the page.
+  const shown = products ?? [];
+
+  /**
+   * A scan, or Enter on a typed code: ring the product up.
+   *
+   * The wall holds 60 products and a shop has hundreds, so a code that is not
+   * among them is asked for by name — `/products/lookup/` is the POS hot path
+   * and answers on an exact barcode. Only if that finds nothing does the box
+   * fall back to being a search box.
+   */
+  const submitScan = async (scannedCode?: string) => {
+    const code = (scannedCode ?? queryRef.current).trim();
+    if (!code || scanning) return;
+
+    const onTheWall = shown.find(
+      (p) => p.barcode === code || p.sku.toLowerCase() === code.toLowerCase()
+    );
+    if (onTheWall) {
+      onSelectProduct?.(onTheWall);
+      queryRef.current = "";
+      setQuery("");
+      setScanNote(`Added ${onTheWall.name}`);
+      searchRef.current?.focus();
+      return;
+    }
+
+    setScanning(true);
+    setScanNote(null);
+    try {
+      const found = await PosService.lookupBarcode(code);
+      if (found) {
+        onSelectProduct?.(found);
+        queryRef.current = "";
+        setQuery("");
+        setScanNote(`Added ${found.name}`);
+      } else {
+        // Not an error: the cashier may be typing a name, and the list below
+        // is already filtered by what they typed.
+        setScanNote(`No product carries the barcode ${code}.`);
+      }
+    } catch (err) {
+      setScanNote(
+        err instanceof Error && err.message ? err.message : "That barcode could not be looked up."
+      );
+    } finally {
+      setScanning(false);
+      // The next scan has to land somewhere, and a cashier never reaches for
+      // the mouse between two items.
+      searchRef.current?.focus();
+    }
+  };
+  useEffect(() => {
+    submitScanRef.current = submitScan;
+  });
+
+  // USB scanners behave like keyboards, but some models are configured without
+  // an Enter suffix. Capture only rapid keystrokes outside text fields and
+  // submit the barcode after the scanner pauses.
+  useEffect(() => {
+    const onScannerKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+
+      if (event.key === "Enter") {
+        const code = scannerBufferRef.current;
+        scannerBufferRef.current = "";
+        if (scannerTimerRef.current) clearTimeout(scannerTimerRef.current);
+        if (code.length >= 3) {
+          event.preventDefault();
+          void submitScanRef.current(code);
+        }
+        return;
+      }
+
+      if (event.key.length !== 1 || !/[0-9A-Za-z]/.test(event.key)) return;
+      scannerBufferRef.current += event.key;
+
+      if (scannerTimerRef.current) clearTimeout(scannerTimerRef.current);
+      if (scannerBufferRef.current.length >= 3) {
+        scannerTimerRef.current = setTimeout(() => {
+          const code = scannerBufferRef.current;
+          scannerBufferRef.current = "";
+          void submitScanRef.current(code);
+        }, 120);
+      }
+    };
+
+    window.addEventListener("keydown", onScannerKey, true);
+    return () => {
+      window.removeEventListener("keydown", onScannerKey, true);
+      if (scannerTimerRef.current) clearTimeout(scannerTimerRef.current);
+    };
   }, []);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return products.filter(
-      (p) =>
-        (category === "All Categories" || p.category === category) &&
-        (!q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q))
-    );
-  }, [products, category, query]);
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const current = Math.min(page, totalPages);
-  const shown = filtered.slice((current - 1) * pageSize, current * pageSize);
-
   return (
-    <div className="flex h-full w-full flex-col">
+    <div className="relative flex h-full w-full flex-col">
+      <RefreshBar active={fetching} />
       {/* Search — 45:2172 */}
       <div className="flex h-[44px] w-full shrink-0 items-center justify-between overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea]">
         <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
           <SearchIcon />
           <input
+            ref={searchRef}
+            autoFocus
             value={query}
             onChange={(e) => {
+              queryRef.current = e.target.value;
               setQuery(e.target.value);
-              setPage(1);
+              setScanNote(null);
             }}
-            placeholder="Search product by name, SKU or barcode..."
-            aria-label="Search products"
-            className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] font-normal tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void submitScanRef.current();
+                return;
+              }
+
+              if (e.key.length !== 1) return;
+              const now = performance.now();
+              inputRapidCountRef.current =
+                now - inputLastKeyAtRef.current < 60 ? inputRapidCountRef.current + 1 : 1;
+              inputLastKeyAtRef.current = now;
+
+              if (inputRapidCountRef.current >= 3) {
+                if (scannerTimerRef.current) clearTimeout(scannerTimerRef.current);
+                scannerTimerRef.current = setTimeout(() => {
+                  inputRapidCountRef.current = 0;
+                  void submitScanRef.current();
+                }, 140);
+              }
+            }}
+            disabled={scanning}
+            placeholder="Scan a barcode, or search by name or SKU..."
+            aria-label="Scan a barcode or search products"
+            className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] font-normal tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252] disabled:opacity-60"
           />
         </div>
         <button
           type="button"
-          aria-label="Scan barcode"
-          className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e]"
+          // The scanner types wherever the cursor is, so "scan" means "put the
+          // cursor back in the box". Pressed with something typed, it rings
+          // that code up — the same thing Enter does.
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => (query.trim() ? void submitScan() : searchRef.current?.focus())}
+          disabled={scanning}
+          aria-label={query.trim() ? "Look up this barcode" : "Scan barcode"}
+          title={query.trim() ? "Look up this barcode" : "Ready to scan"}
+          className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e] disabled:cursor-not-allowed disabled:opacity-50"
         >
           <ScanIcon />
         </button>
       </div>
 
-      {/* Categories — 45:2183, 16px below the search bar */}
+      {scanNote && (
+        <p className="mt-[6px] shrink-0 text-[12px] leading-[1.4] tracking-[-0.24px] text-[#525252]">
+          {scanNote}
+        </p>
+      )}
+
+      {/* Categories — 45:2183, 16px below the search bar. The strip used to be
+          a bare overflow-x scroller: on a till there is no comfortable way to
+          drag a 4px horizontal scrollbar, and with a shop's real category list
+          the tabs past the fold were invisible. */}
       <div className="mt-[16px] flex w-full shrink-0 items-center justify-between gap-[12px]">
-        <div className="no-scrollbar -mx-[2px] flex h-[40px] min-w-0 flex-1 items-center gap-[2px] overflow-x-auto px-[2px]">
+        <ChipScroller className="h-[40px] min-w-0 flex-1" gap="gap-[2px]">
           {categories.map((c) => {
-            const active = c === category;
+            const active = c.id === categoryId;
             return (
               <button
-                key={c}
+                key={c.id || "all"}
                 type="button"
                 onClick={() => {
-                  setCategory(c);
+                  setCategoryId(c.id);
                   setPage(1);
                 }}
                 className={`flex shrink-0 cursor-pointer items-center justify-center rounded-[10px] whitespace-nowrap transition-colors ${
@@ -159,11 +338,11 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
                     : "p-[10px] text-[14px] leading-[1.2] tracking-[-0.42px] text-[#525252] hover:bg-[#fafafa]"
                 }`}
               >
-                {c}
+                {c.name}
               </button>
             );
           })}
-        </div>
+        </ChipScroller>
 
         <button
           type="button"
@@ -177,11 +356,26 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
       {/* Grid — 45:2197, 24px below the category row */}
       <ProductPeek anchor={peeked} />
 
+      <QueryBoundary
+        loading={loading}
+        error={error}
+        hasData={products !== undefined}
+        skeleton={
+          <CardGridSkeleton
+            count={pageSize}
+            height={248}
+            className="mt-[24px] grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-x-[12.5px] gap-y-[14px]"
+          />
+        }
+        errorMessage="Could not load the product list."
+        onRetry={refetch}
+      >
       <div className="mt-[24px] grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-x-[12.5px] gap-y-[14px]">
         {shown.map((p) => {
           // The server refuses to sell what is not on the shelf, so the till
           // should not let a cashier add it and find out at payment.
           const soldOut = p.stock <= 0;
+          const offer = rates[p.id];
           return (
           <button
             key={p.id}
@@ -193,7 +387,12 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
             onFocus={(e) => peek(p, e.currentTarget)}
             onMouseLeave={() => setPeeked(null)}
             onBlur={() => setPeeked(null)}
-            onClick={() => onSelectProduct?.(p)}
+            onClick={() => {
+              onSelectProduct?.(p);
+              // USB scanners such as the Yumite YT-100 send keystrokes to the
+              // focused element. Keep the scan field ready after a sale.
+              searchRef.current?.focus();
+            }}
             className={`flex items-center overflow-clip rounded-[10px] border-[0.6px] border-solid border-[#eaeaea] bg-white p-[10px] text-left transition-colors ${
               soldOut ? "cursor-not-allowed opacity-55" : "cursor-pointer hover:border-[#f5b800]"
             }`}
@@ -201,7 +400,7 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
             <div className="flex w-full flex-col items-center justify-center gap-[12px]">
               <div className="relative aspect-square w-full overflow-hidden rounded-[8px] border-[0.3px] border-solid border-[#eaeaea] bg-[#fafafa]">
                 {p.image ? (
-                  <Image src={p.image} alt={p.name} fill sizes="180px" className="object-cover" />
+                  <ProductImage src={p.image} alt={p.name} sizes="180px" />
                 ) : (
                   // Real products have no image yet, and an empty src makes the
                   // browser reload the page. Initials are enough to tell two
@@ -218,12 +417,22 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
                 <p className="w-full truncate text-[14px] leading-[24px] font-normal text-[#525252]">
                   {p.name}
                 </p>
-                <div className="flex w-full items-center justify-between gap-[6px]">
-                  <span className="text-[16px] leading-[24px] font-medium whitespace-nowrap text-[#f5b800]">
-                    {p.priceFormatted}
+                <div className="flex w-full flex-col items-start gap-[4px]">
+                  <span className="flex min-w-0 max-w-full items-baseline gap-[6px]">
+                    <span className="min-w-0 truncate text-[16px] leading-[24px] font-medium text-[#f5b800]">
+                      {offer ? formatMoney(priceAfter(p.price, offer), { decimals: 2 }) : p.priceFormatted}
+                    </span>
+                    {offer && (
+                      // The shelf price, struck through. A discounted figure
+                      // with nothing beside it reads as the price going down
+                      // rather than as an offer running.
+                      <span className="shrink-0 text-[12px] leading-[16px] text-[#a3a3a3] line-through">
+                        {p.priceFormatted}
+                      </span>
+                    )}
                   </span>
                   <span
-                    className="flex h-[24px] shrink-0 items-center gap-[7px] overflow-clip rounded-[17px] px-[8px]"
+                    className="flex h-[24px] shrink-0 items-center gap-[7px] rounded-[17px] px-[8px]"
                     style={{ backgroundColor: soldOut ? "#ffdfe2" : "#f5fff8" }}
                   >
                     <span
@@ -245,9 +454,19 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
         })}
       </div>
 
-      {filtered.length === 0 && (
-        <p className="py-[40px] text-center text-[14px] text-[#525252]">No products match that search.</p>
+      {shown.length === 0 && (
+        // A catalogue with nothing in it and a search that matched nothing are
+        // different facts, and neither is the failure state above.
+        <EmptyState
+          message={
+            term || categoryId
+              ? "No products match that search."
+              : "No products in the catalogue yet."
+          }
+          compact
+        />
       )}
+      </QueryBoundary>
 
       {/* Pagination — 45:2309. mt-auto pins it to the bottom of the column so it
           lines up with the pay buttons opposite. */}
@@ -257,7 +476,7 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
           sizes={[9, 18, 27, 54]}
           page={current}
           pageSize={pageSize}
-          total={filtered.length}
+          total={total}
           onPageChange={setPage}
           onPageSizeChange={(n) => {
             setPageSize(n);

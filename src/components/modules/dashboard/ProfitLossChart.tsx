@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { ProfitLossData } from "@/types/dashboard";
 import { formatPercent } from "@/lib/format";
+import { RANGE_OPTIONS, type RangeOption } from "@/lib/range";
 
 /**
  * Figma: SORTPoint — Profit & Loss 30:16864.
@@ -68,14 +69,25 @@ function CaretIcon() {
   );
 }
 
-const RANGES = ["Today", "This Week", "This Month", "This Year"] as const;
-
 interface ProfitLossChartProps {
   data: ProfitLossData;
+  /**
+   * Controlled by the page. This card is handed a single pre-aggregated
+   * figure with no time dimension in it, so it cannot narrow anything locally
+   * — picking a range has to re-ask the server. Owning the state here is what
+   * made the control decorative.
+   */
+  range: RangeOption;
+  onRangeChange: (r: RangeOption) => void;
+  busy?: boolean;
 }
 
-export default function ProfitLossChart({ data }: ProfitLossChartProps) {
-  const [range, setRange] = useState<string>("This Week");
+export default function ProfitLossChart({
+  data,
+  range,
+  onRangeChange,
+  busy = false,
+}: ProfitLossChartProps) {
   const [open, setOpen] = useState(false);
 
   const total = Math.max(1, data.totalRevenue + data.totalExpenses);
@@ -97,17 +109,17 @@ export default function ProfitLossChart({ data }: ProfitLossChartProps) {
             aria-expanded={open}
             className="flex h-[40px] cursor-pointer items-center justify-center gap-[8px] rounded-[11px] border border-solid border-[#eaeaea] bg-white px-[18px] text-[14px] font-medium tracking-[-0.28px] text-[#525252] transition-colors hover:bg-[#fafafa]"
           >
-            <span className="whitespace-nowrap">{range}</span>
+            <span className="whitespace-nowrap">{busy ? "Loading…" : range}</span>
             <CaretIcon />
           </button>
           {open && (
             <div className="absolute top-[46px] right-0 z-30 w-[140px] overflow-hidden rounded-[10px] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)] ring-1 ring-[#eaeaea]">
-              {RANGES.map((r) => (
+              {RANGE_OPTIONS.map((r) => (
                 <button
                   key={r}
                   type="button"
                   onClick={() => {
-                    setRange(r);
+                    onRangeChange(r);
                     setOpen(false);
                   }}
                   className={`block w-full cursor-pointer px-[14px] py-[8px] text-left text-[13px] transition-colors hover:bg-[#fafafa] ${

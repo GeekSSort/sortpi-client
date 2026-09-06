@@ -1,5 +1,4 @@
 import { CustomerRecord, CustomerQueryFilter, CreateCustomerPayload } from "@/types/customer";
-import { initialCustomersData } from "@/lib/services/customer.service";
 import { apiFetch, apiList, toAmount } from "./apiClient";
 import { toCustomerRecord } from "./mappers/customer";
 
@@ -8,28 +7,6 @@ export class CustomerService {
    * Fetch customer directory with search & filters
    */
   static async getCustomers(params?: CustomerQueryFilter): Promise<{ data: CustomerRecord[]; total: number }> {
-    const fallback = () => {
-      let list = [...initialCustomersData];
-      if (params?.search) {
-        const q = params.search.toLowerCase();
-        list = list.filter(
-          (c) =>
-            c.name.toLowerCase().includes(q) ||
-            c.customerId.toLowerCase().includes(q) ||
-            c.phone.includes(q)
-        );
-      }
-      if (params?.customerType) {
-        // The sample rows carry the screen's names, the filter the API's two.
-        const wanted = params.customerType === "WHOLESALE" ? "premium" : "regular";
-        list = list.filter((c) => c.type.toLowerCase() === wanted);
-      }
-      if (params?.status) {
-        list = list.filter((c) => c.status.toLowerCase() === params.status?.toLowerCase());
-      }
-      return { data: list, total: list.length };
-    };
-
     const searchParams = new URLSearchParams();
     if (params?.search) searchParams.set("search", params.search);
     if (params?.status) searchParams.set("status", params.status);
@@ -44,12 +21,7 @@ export class CustomerService {
     // the row by the API; this used to fetch the whole sales list alongside
     // and add it up here, which was both a second full request per page load
     // and wrong past the 200-row cap.
-    const rows = await apiList<any>(`/customers/${qs}`, { method: "GET" }, fallback, (r) => r);
-
-    // Already-mapped fallback rows carry `customerId`; nothing to map.
-    if (rows.data[0]?.customerId !== undefined) {
-      return rows as { data: CustomerRecord[]; total: number };
-    }
+    const rows = await apiList<any>(`/customers/${qs}`, { method: "GET" }, (r) => r);
 
     return {
       data: rows.data.map((row: any) => toCustomerRecord(row)),
@@ -122,7 +94,7 @@ export class CustomerService {
  * server is the real answer.
  */
 async function nextCustomerCode(): Promise<string> {
-  const rows = await apiList<any>("/customers/?limit=500", { method: "GET" }, { data: [], total: 0 }, (r) => r)
+  const rows = await apiList<any>("/customers/?limit=500", { method: "GET" }, (r) => r)
     .catch(() => ({ data: [] as any[] }));
   let highest = 0;
   for (const row of rows.data) {

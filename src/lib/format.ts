@@ -25,7 +25,7 @@ export function formatPercent(value: unknown, decimals = 1): string {
 /** Full amount, grouped the way Bangladesh and India read numbers: 1,53,907. */
 export function formatMoney(value: unknown, opts?: { decimals?: number }): string {
   const n = num(value);
-  const decimals = opts?.decimals ?? 0;
+  const decimals = opts?.decimals ?? (Number.isInteger(n) ? 0 : 2);
   return `${CURRENCY} ${n.toLocaleString("en-IN", {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,

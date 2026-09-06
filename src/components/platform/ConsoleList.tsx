@@ -2,6 +2,9 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import TablePagination from "@/components/shared/TablePagination";
+import TableSkeleton from "@/components/shared/TableSkeleton";
+import { SkeletonBlock, StatCardsSkeleton } from "@/components/shared/Skeleton";
+import { EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import StatCard, { StatCardProps } from "./StatCard";
 
 /**
@@ -43,7 +46,11 @@ export default function ConsoleList<T extends { id: string }>({
   rows,
   columns,
   loading,
+  fetching,
   error,
+  onRetry,
+  hasData = true,
+  skeletonGrid,
   note,
   searchPlaceholder,
   onSearch,
@@ -56,8 +63,25 @@ export default function ConsoleList<T extends { id: string }>({
 }: {
   rows: T[];
   columns: Column<T>[];
+  /** Nothing to show yet — draw the shape of the table instead of a blank card. */
   loading?: boolean;
+  /** A refresh running under rows already on screen. Drives the hairline only. */
+  fetching?: boolean;
   error?: string | null;
+  onRetry?: () => void;
+  /**
+   * Whether an answer has arrived, existence not length: an account with no
+   * companies is a real answer, and treating `[]` as "still loading" would
+   * leave the skeleton up forever.
+   */
+  hasData?: boolean;
+  /**
+   * The page's own grid-cols class string, e.g.
+   * `grid-cols-[1.4fr_1fr_110px_150px_83px]`. It must be a literal in the page
+   * source — Tailwind only generates classes it can see there — and must list
+   * the same tracks as `columns`, so the placeholder rows line up with the head.
+   */
+  skeletonGrid?: string;
   note?: string | null;
   searchPlaceholder?: string;
   onSearch?: (value: string) => void;
@@ -94,16 +118,49 @@ export default function ConsoleList<T extends { id: string }>({
   const grid = useMemo(() => columns.map((c) => c.width).join(" "), [columns]);
   const shown = rows.slice((page - 1) * pageSize, page * pageSize);
   const primary = columns[1] ?? columns[0];
+  const waiting = Boolean(loading) && !hasData;
+
+  // The head is chrome, not content: it stays put while the rows load, so the
+  // table does not appear to be built twice.
+  const head = (
+    <div className="grid items-center" style={{ gridTemplateColumns: grid }}>
+      {columns.map((c) => (
+        <div
+          key={c.key}
+          className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea] ${
+            c.align === "center" ? "justify-center" : ""
+          }`}
+        >
+          <span className={HEAD}>{c.label}</span>
+        </div>
+      ))}
+    </div>
+  );
 
   return (
-    <div className="sp-panel-up flex w-full flex-col gap-[14px] select-none">
-      {stats && stats.length > 0 && (
-        <div className="grid grid-cols-2 gap-[12px] sm:grid-cols-4">
-          {stats.map((s) => (
-            <StatCard key={s.label} {...s} />
-          ))}
-        </div>
-      )}
+    <div className="sp-panel-up flex w-full flex-col gap-[14px]">
+      {stats && stats.length > 0 &&
+        // Every figure here is counted from the rows, so with no rows the strip
+        // would read "0 companies" — a wrong answer, not a waiting one, and a
+        // flatly false one when the reason for no rows is a failed request.
+        (hasData ? (
+          <div className="grid grid-cols-2 gap-[12px] sm:grid-cols-4">
+            {stats.map((s) => (
+              <StatCard key={s.label} {...s} />
+            ))}
+          </div>
+        ) : waiting ? (
+          <StatCardsSkeleton
+            count={stats.length}
+            // The console's own strip, not the dashboard's: a 2-up grid that
+            // becomes 4-up at sm, 12px gaps, and a card with no fixed height —
+            // ~104px from its padding and three lines. Guessing the dashboard's
+            // 132px made the strip settle by nearly thirty pixels.
+            gridClassName="grid grid-cols-2 sm:grid-cols-4"
+            gap={12}
+            height={104}
+          />
+        ) : null)}
 
       {(onSearch || actions || filters) && (
         <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
@@ -171,8 +228,12 @@ export default function ConsoleList<T extends { id: string }>({
         </div>
       )}
 
-      <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
-        {error && (
+      {/* `relative` because RefreshBar is absolutely positioned across the top. */}
+      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+        <RefreshBar active={Boolean(fetching)} />
+        {/* A failed refresh with rows behind it is reported BESIDE them; only a
+            failure with nothing to show takes the card over, below. */}
+        {error && hasData && (
           <p role="alert" className="mx-[16px] mt-[16px] rounded-[8px] bg-[#ffdfe2] px-[12px] py-[8px] text-[13px] text-[#e63946]">
             {error}
           </p>
@@ -183,47 +244,39 @@ export default function ConsoleList<T extends { id: string }>({
           </p>
         )}
 
-        <div className="hidden px-[16px] pt-[16px] md:block">
-          <div className="overflow-x-auto">
-            <div style={{ minWidth }}>
-              <div className="grid items-center" style={{ gridTemplateColumns: grid }}>
-                {columns.map((c) => (
-                  <div
-                    key={c.key}
-                    className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea] ${
-                      c.align === "center" ? "justify-center" : ""
-                    }`}
-                  >
-                    <span className={HEAD}>{c.label}</span>
+        <QueryBoundary
+          loading={Boolean(loading)}
+          error={error}
+          hasData={hasData}
+          errorMessage={error || "Could not load this list."}
+          onRetry={onRetry}
+          skeleton={
+            <>
+              <div className="hidden px-[16px] pt-[16px] md:block">
+                <div className="overflow-x-auto">
+                  <div style={{ minWidth }}>
+                    {head}
+                    <TableSkeleton rows={pageSize} columns={skeletonGrid ?? ""} />
                   </div>
+                </div>
+              </div>
+              {/* The phone shows cards, so it waits with card-shaped blocks. */}
+              <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden" aria-hidden>
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <SkeletonBlock key={i} className="h-[92px] w-full" radius={10} />
                 ))}
               </div>
+            </>
+          }
+        >
+          <div className="hidden px-[16px] pt-[16px] md:block">
+            <div className="overflow-x-auto">
+              <div style={{ minWidth }}>
+                {head}
 
-              {/* Bars where the text will be, so the table does not jump when
-                  the rows arrive. */}
-              {loading &&
-                Array.from({ length: 6 }).map((_, i) => (
-                  <div
-                    key={`skeleton-${i}`}
-                    className="grid items-center border-b border-solid border-[#eaeaea]"
-                    style={{ gridTemplateColumns: grid }}
-                  >
-                    {columns.map((c) => (
-                      <div key={c.key} className={`${CELL} h-[54px]`}>
-                        <span className="h-[10px] w-full max-w-[120px] animate-pulse rounded-full bg-[#f0ede6]" />
-                      </div>
-                    ))}
-                  </div>
-                ))}
+                {shown.length === 0 && <EmptyState message={emptyLine} compact />}
 
-              {!loading && shown.length === 0 && (
-                <p className="px-[12px] py-[28px] text-center text-[14px] text-[#525252]">
-                  {emptyLine}
-                </p>
-              )}
-
-              {!loading &&
-                shown.map((row, i) => (
+                {shown.map((row, i) => (
                   <div
                     key={row.id}
                     style={{ gridTemplateColumns: grid, animationDelay: `${Math.min(i, 7) * 35}ms` }}
@@ -239,38 +292,37 @@ export default function ConsoleList<T extends { id: string }>({
                     ))}
                   </div>
                 ))}
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* Below md a row is a card: six columns have nowhere to go on a phone. */}
-        <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
-          {!loading && shown.length === 0 && (
-            <p className="py-[20px] text-center text-[14px] text-[#525252]">{emptyLine}</p>
-          )}
-          {shown.map((row, i) => (
-            <div
-              key={row.id}
-              style={{ animationDelay: `${Math.min(i, 7) * 35}ms` }}
-              className="sp-row rounded-[10px] p-[12px] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors duration-150 hover:bg-[#fafafa]"
-            >
-              <div className="flex items-start justify-between gap-[10px]">
-                <div className="min-w-0 text-[14px] font-medium text-[#1e1e1e]">{primary.cell(row)}</div>
-                <div className="shrink-0">{columns[columns.length - 1].cell(row)}</div>
+          {/* Below md a row is a card: six columns have nowhere to go on a phone. */}
+          <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
+            {shown.length === 0 && <EmptyState message={emptyLine} compact />}
+            {shown.map((row, i) => (
+              <div
+                key={row.id}
+                style={{ animationDelay: `${Math.min(i, 7) * 35}ms` }}
+                className="sp-row rounded-[10px] p-[12px] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors duration-150 hover:bg-[#fafafa]"
+              >
+                <div className="flex items-start justify-between gap-[10px]">
+                  <div className="min-w-0 text-[14px] font-medium text-[#1e1e1e]">{primary.cell(row)}</div>
+                  <div className="shrink-0">{columns[columns.length - 1].cell(row)}</div>
+                </div>
+                <div className="mt-[8px] flex flex-col gap-[4px] text-[13px] text-[#525252]">
+                  {columns
+                    .filter((c) => c.mobile && c.key !== primary.key)
+                    .map((c) => (
+                      <div key={c.key} className="flex items-center justify-between gap-[12px]">
+                        <span className="text-[#8f8d87]">{c.label}</span>
+                        <span className="truncate text-right">{c.cell(row)}</span>
+                      </div>
+                    ))}
+                </div>
               </div>
-              <div className="mt-[8px] flex flex-col gap-[4px] text-[13px] text-[#525252]">
-                {columns
-                  .filter((c) => c.mobile && c.key !== primary.key)
-                  .map((c) => (
-                    <div key={c.key} className="flex items-center justify-between gap-[12px]">
-                      <span className="text-[#8f8d87]">{c.label}</span>
-                      <span className="truncate text-right">{c.cell(row)}</span>
-                    </div>
-                  ))}
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        </QueryBoundary>
 
         <TablePagination
           page={page}

@@ -1,10 +1,6 @@
 import { Branch, CreateBranchPayload } from "@/types/branch";
 import { apiFetch, apiList, tokenStore, ApiError } from "./apiClient";
-
-const FALLBACK: Branch[] = [
-  { id: "branch-main", code: "MAIN", name: "Head Office", isActive: true },
-  { id: "branch-dhk", code: "DHK", name: "Dhaka", isActive: true },
-];
+import { clearCache } from "@/lib/query/store";
 
 function toBranch(row: any): Branch {
   return {
@@ -27,7 +23,6 @@ export class BranchService {
     const res = await apiList<Branch>(
       "/branches/",
       { method: "GET" },
-      { data: FALLBACK, total: FALLBACK.length },
       toBranch
     );
     return res.data;
@@ -64,6 +59,12 @@ export class BranchService {
 
     if (res?.access) tokenStore.set(res.access, res.refresh);
     tokenStore.setBranch(branchId);
+
+    // Every list in the cache was answered for the PREVIOUS branch. Keeping
+    // them would show Dhaka's stock under Chattogram's name for as long as the
+    // entries stayed fresh, which is the exact confusion branch scoping exists
+    // to prevent.
+    clearCache();
   }
 
   /** Human text for the errors this screen can actually provoke. */

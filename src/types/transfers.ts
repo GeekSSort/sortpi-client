@@ -1,3 +1,14 @@
+/** One product on a transfer note, as the API returns it. */
+export interface TransferLine {
+  id: string;
+  name: string;
+  sku: string;
+  quantity: number;
+  /** What actually arrived. 0 until the transfer is received, and less than
+      `quantity` when the delivery was short. */
+  receivedQuantity: number;
+}
+
 export interface TransferRecord {
   id: string;
   transferId: string;
@@ -5,6 +16,8 @@ export interface TransferRecord {
   toLocation: string;
   productsSummary: string;
   quantity: number;
+  /** Every line, for the detail dialog. The table shows a summary of them. */
+  lines: TransferLine[];
   dateTime: string;
   /** The API's four, not the stock screen's — those were copied in by mistake. */
   status: "Draft" | "Dispatched" | "Received" | "Cancelled";

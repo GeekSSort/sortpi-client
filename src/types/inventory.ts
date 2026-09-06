@@ -1,5 +1,8 @@
 export interface InventoryProduct {
   id: string;
+  /** The default variant. The till keys everything — prices, offers, stock —
+      by variant, so a product id alone cannot be matched against them. */
+  variantId: string;
   index: string;
   name: string;
   image: string;

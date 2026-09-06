@@ -2,6 +2,7 @@
 
 import React, { useMemo, useRef, useState } from "react";
 import { SalesDataPoint } from "@/types/dashboard";
+import { RANGE_OPTIONS, type RangeOption } from "@/lib/range";
 
 /**
  * Sales Summary — Figma 30:15467.
@@ -74,12 +75,43 @@ function CaretIcon() {
   );
 }
 
-const RANGES = ["Today", "This Week", "This Month", "This Year"] as const;
+
+/**
+ * Room at the right so the last date label is not sliced by the viewBox.
+ * The label used to be drawn left-anchored at x=653 in a 690-wide box, so
+ * "2026-09-06" ran off the edge and rendered as "2026-".
+ */
+const RIGHT_PAD = 8;
+
+/** Whole thousands read as "12k"; anything under, as the number itself. */
+function tickLabel(value: number): string {
+  if (value === 0) return "0";
+  return value >= 1000 ? `${Math.round(value / 1000)}k` : String(Math.round(value));
+}
+
+/**
+ * "2026-08-09" is a database value, not a chart label. The axis has room for
+ * three of them, so they are shortened to the day and month people read.
+ */
+function axisDate(raw: string): string {
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
 
 interface SalesSummaryChartProps {
   data?: SalesDataPoint[];
   /** Which stretches of the line get the dotted shading, as in the design. */
   highlights?: [number, number][];
+  /**
+   * The range is CONTROLLED by the page, because picking one has to re-ask the
+   * server rather than re-slice what is already here. A card that owned this
+   * state could only ever change its own caption.
+   */
+  range: RangeOption;
+  onRangeChange: (r: RangeOption) => void;
+  /** A refresh for the newly picked range is under way. */
+  busy?: boolean;
 }
 
 export default function SalesSummaryChart({
@@ -88,22 +120,39 @@ export default function SalesSummaryChart({
     [1, 2],
     [4, 5],
   ],
+  range,
+  onRangeChange,
+  busy = false,
 }: SalesSummaryChartProps) {
-  const [range, setRange] = useState<string>("This Week");
   const [rangeOpen, setRangeOpen] = useState(false);
   const [hover, setHover] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
-  const chart = useMemo(() => {
-    const points = data.length ? data : [];
-    const max = Math.max(1, ...points.map((p) => p.sales));
-    // Six steps above the bottom line, rounded up, so the axis reads in whole
-    // numbers.
-    const step = Math.max(1000, Math.ceil(max / 6000) * 1000);
-    const base = step;
-    const valueToY = (v: number) => AXIS_BOTTOM - ((v - base) / step) * ROW_GAP;
+  /**
+   * The series as given. The range no longer narrows anything here — the
+   * server is asked for the chosen window and returns only those days, so
+   * "Today" is one day's figures rather than a year's curve with a caption
+   * over it.
+   */
+  const visible = data;
 
-    const span = W - PLOT_X;
+  const chart = useMemo(() => {
+    const points = visible;
+    const max = Math.max(1, ...points.map((p) => p.sales));
+    /**
+     * The axis starts at ZERO, not at one step above it.
+     *
+     * It used to start at `step`, so any day below that — a quiet Sunday, or
+     * simply a shop whose busiest day is under 6k — was plotted BELOW the
+     * baseline, where the viewBox clipped it. The curve appeared to run off
+     * the bottom of the card and flatten against the axis.
+     */
+    const step = Math.max(1, Math.ceil(max / (ROWS - 1) / 1000) * 1000);
+    const base = 0;
+    const valueToY = (v: number) =>
+      AXIS_BOTTOM - ((v - base) / (step * (ROWS - 1))) * (AXIS_BOTTOM - AXIS_TOP);
+
+    const span = W - PLOT_X - RIGHT_PAD;
     const xs = points.map((_, i) =>
       points.length > 1 ? PLOT_X + (i * span) / (points.length - 1) : PLOT_X + span / 2
     );
@@ -117,13 +166,14 @@ export default function SalesSummaryChart({
       area: pts.length ? `${smoothPath(pts)} L ${xs[xs.length - 1]} ${AXIS_BOTTOM} L ${xs[0]} ${AXIS_BOTTOM} Z` : "",
       ticks: Array.from({ length: ROWS }, (_, i) => ({
         y: AXIS_TOP + i * ROW_GAP,
-        label: `${(base + (ROWS - 1 - i) * step) / 1000}k`,
+        label: tickLabel(base + (ROWS - 1 - i) * step),
       })),
     };
-  }, [data]);
+  }, [visible]);
 
   const exportCsv = () => {
-    const rows = [["Date", "Sales", "Orders"], ...data.map((d) => [d.date, d.sales, d.orders])];
+    // What the card is SHOWING, so a narrowed range exports narrowed.
+    const rows = [["Date", "Sales", "Orders"], ...visible.map((d) => [d.date, d.sales, d.orders])];
     const url = URL.createObjectURL(
       new Blob([rows.map((r) => r.join(",")).join("\n")], { type: "text/csv" })
     );
@@ -149,11 +199,11 @@ export default function SalesSummaryChart({
   // Where the hover card sits, as a percentage of the plot, so it floats over
   // the chart instead of pushing it down.
   const tip = useMemo(() => {
-    if (hover === null || !data[hover] || !chart.pts[hover]) return null;
+    if (hover === null || !visible[hover] || !chart.pts[hover]) return null;
     const xPct = (chart.pts[hover].x / W) * 100;
     const yPct = (chart.pts[hover].y / H) * 100;
     return {
-      row: data[hover],
+      row: visible[hover],
       xPct,
       yPct,
       // Below the point when there is no room above it.
@@ -161,7 +211,7 @@ export default function SalesSummaryChart({
       // Hold it to the nearest corner so it does not run off the edge.
       anchorX: xPct < 16 ? "0%" : xPct > 84 ? "-100%" : "-50%",
     };
-  }, [hover, data, chart]);
+  }, [hover, visible, chart]);
 
   const btn =
     "flex h-[40px] items-center justify-center gap-[8px] rounded-[11px] border border-solid border-[#eaeaea] bg-white px-[18px] text-[14px] font-medium tracking-[-0.28px] text-[#525252] transition-colors hover:bg-[#fafafa] cursor-pointer";
@@ -188,17 +238,17 @@ export default function SalesSummaryChart({
               aria-expanded={rangeOpen}
               className={btn}
             >
-              <span className="whitespace-nowrap">{range}</span>
+              <span className="whitespace-nowrap">{busy ? "Loading…" : range}</span>
               <CaretIcon />
             </button>
             {rangeOpen && (
               <div className="absolute top-[46px] right-0 z-30 w-[140px] overflow-hidden rounded-[10px] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)] ring-1 ring-[#eaeaea]">
-                {RANGES.map((r) => (
+                {RANGE_OPTIONS.map((r) => (
                   <button
                     key={r}
                     type="button"
                     onClick={() => {
-                      setRange(r);
+                      onRangeChange(r);
                       setRangeOpen(false);
                     }}
                     className={`block w-full cursor-pointer px-[14px] py-[8px] text-left text-[13px] transition-colors hover:bg-[#fafafa] ${
@@ -249,7 +299,7 @@ export default function SalesSummaryChart({
                 {t.label}
               </text>
               <line x1={32} x2={36} y1={t.y} y2={t.y} stroke="#525252" />
-              <line x1={GRID_X} x2={W} y1={t.y} y2={t.y} stroke="#eaeaea" opacity={0.3} />
+              <line x1={GRID_X} x2={W - RIGHT_PAD} y1={t.y} y2={t.y} stroke="#eaeaea" opacity={0.3} />
             </g>
           ))}
 
@@ -298,29 +348,45 @@ export default function SalesSummaryChart({
             </g>
           )}
 
-          {/* Footer — 30:16858 */}
-          {data.length > 0 && (
-            <g>
-              <text x={40} y={FOOTER_Y + 10.5} dominantBaseline="middle" className="fill-[#525252] text-[12px]">
-                {data[0].date}
+          {/* Footer — 30:16858
+              Three dates, anchored to their own ends rather than drawn from
+              fixed x positions: the first from the left, the last from the
+              right, the middle centred. The old version placed all three
+              left-anchored at hard-coded coordinates sized for one particular
+              label width, so the last one ran past the viewBox and was cut in
+              half, and the connector rules landed on top of the text whenever
+              the labels were a different length. */}
+          {visible.length > 0 && (
+            <g className="fill-[#525252] text-[12px]">
+              <text x={PLOT_X} y={FOOTER_Y + 10.5} dominantBaseline="middle" textAnchor="start">
+                {axisDate(visible[0].date)}
               </text>
-              <line x1={87} x2={336.5} y1={FOOTER_Y + 10.5} y2={FOOTER_Y + 10.5} stroke="#525252" opacity={0.4} />
+              <line
+                x1={PLOT_X + 62}
+                x2={W / 2 - 44}
+                y1={FOOTER_Y + 10.5}
+                y2={FOOTER_Y + 10.5}
+                stroke="#525252"
+                opacity={0.4}
+              />
+              <text x={W / 2} y={FOOTER_Y + 10.5} dominantBaseline="middle" textAnchor="middle">
+                {axisDate(visible[Math.floor((visible.length - 1) / 2)].date)}
+              </text>
+              <line
+                x1={W / 2 + 44}
+                x2={W - RIGHT_PAD - 62}
+                y1={FOOTER_Y + 10.5}
+                y2={FOOTER_Y + 10.5}
+                stroke="#525252"
+                opacity={0.4}
+              />
               <text
-                x={346.5}
+                x={W - RIGHT_PAD}
                 y={FOOTER_Y + 10.5}
                 dominantBaseline="middle"
-                className="fill-[#525252] text-[12px]"
+                textAnchor="end"
               >
-                {data[Math.floor((data.length - 1) / 2)].date}
-              </text>
-              <line x1={393.5} x2={643} y1={FOOTER_Y + 10.5} y2={FOOTER_Y + 10.5} stroke="#525252" opacity={0.4} />
-              <text
-                x={653}
-                y={FOOTER_Y + 10.5}
-                dominantBaseline="middle"
-                className="fill-[#525252] text-[12px]"
-              >
-                {data[data.length - 1].date}
+                {axisDate(visible[visible.length - 1].date)}
               </text>
             </g>
           )}

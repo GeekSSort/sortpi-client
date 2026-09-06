@@ -21,7 +21,10 @@ export default function RowActionMenu({
   actions,
 }: {
   label: string;
-  actions: { label: string; onSelect?: () => void }[];
+  /** `tone: "danger"` paints a destructive item red. The Sales screen has been
+      passing it on Refund since it was written and the type never admitted it,
+      so the item rendered like any other AND a production build failed on it. */
+  actions: { label: string; tone?: "danger"; onSelect?: () => void }[];
 }) {
   const [open, setOpen] = useState(false);
   const [spot, setSpot] = useState<{ top: number; left: number } | null>(null);
@@ -112,7 +115,9 @@ export default function RowActionMenu({
                   a.onSelect?.();
                   setOpen(false);
                 }}
-                className="block w-full cursor-pointer px-[14px] py-[8px] text-left text-[13px] text-[#525252] transition-colors hover:bg-[#fafafa]"
+                className={`block w-full cursor-pointer px-[14px] py-[8px] text-left text-[13px] transition-colors hover:bg-[#fafafa] ${
+                  a.tone === "danger" ? "text-[#e63946] hover:bg-[#fff5f5]" : "text-[#525252]"
+                }`}
               >
                 {a.label}
               </button>

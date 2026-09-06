@@ -12,14 +12,15 @@ import { CompanyProfile } from "@/types/settings";
  * listed in the backend report.
  */
 
-export function toCompanyProfile(row: any, fallback: CompanyProfile): CompanyProfile {
+/** `null` when the payload carries no organization, so the caller can say so. */
+export function toCompanyProfile(row: any): CompanyProfile | null {
   const org = Array.isArray(row) ? row[0] : row?.data?.[0] || row;
-  if (!org) return fallback;
+  if (!org) return null;
 
   const code = String(org.currencyCode || org.currency_code || "");
   const symbol = String(org.currencySymbol || org.currency_symbol || "");
   return {
-    companyName: String(org.name || fallback.companyName),
+    companyName: String(org.name || ""),
     businessType: String(org.legalName || org.legal_name || ""),
     companyEmail: String(org.email || ""),
     phoneNumber: String(org.phone || ""),
@@ -27,7 +28,7 @@ export function toCompanyProfile(row: any, fallback: CompanyProfile): CompanyPro
     website: String(org.website || ""),
     taxId: String(org.taxNumber || org.tax_number || ""),
     tradeLicenseBin: String(org.tradeLicense || org.trade_license || ""),
-    currency: code ? `${code}${symbol ? ` — ${symbol}` : ""}` : fallback.currency,
+    currency: code ? `${code}${symbol ? ` — ${symbol}` : ""}` : "",
     logoUrl: String(org.logoUrl || org.logo_url || ""),
   };
 }

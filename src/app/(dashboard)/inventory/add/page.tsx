@@ -1,12 +1,16 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import Image from "next/image";
+import React, { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { InventoryService } from "@/services";
 import type { CatalogOption, CatalogOptions } from "@/services/inventoryService";
 import { GOLD_GRADIENT } from "@/components/shared/Modal";
 import UploadIcon from "@/components/shared/UploadIcon";
+import { useQuery, queryKey, useMutation, invalidate } from "@/lib/query/useQuery";
+import { FormSkeleton } from "@/components/shared/Skeleton";
+import { QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
+import ProductImage from "@/components/shared/ProductImage";
+import { readDiscounts, writeDiscounts } from "@/lib/posDiscounts";
 
 /**
  * Figma: SORTPoint — Add New Product 57:12014.
@@ -44,6 +48,7 @@ const blank = {
   brand: "",
   unit: "",
   sku: "",
+  barcode: "",
   purchasePrice: "",
   sellingPrice: "",
   discount: "",
@@ -51,7 +56,75 @@ const blank = {
   image: "",
 };
 
-type SelectKind = "category" | "brand" | "unit" | "tax";
+/** Off the price, or onto it: a share of it, or a fixed number of taka. */
+type Rate = "percent" | "flat";
+
+/** Tax and discount are each a number plus which kind of number it is. */
+const blankRates: { discount: Rate; tax: Rate } = { discount: "percent", tax: "percent" };
+
+type SelectKind = "category" | "brand" | "unit";
+
+/**
+ * A number with a % / ৳ switch beside it.
+ *
+ * Both of these used to be something else — discount a bare box whose unit
+ * nobody stated, tax a dropdown of rows a shop had to create elsewhere first —
+ * so neither could express "৳20 off" or "7.5% VAT we have not set up yet".
+ */
+function RateField({
+  id,
+  label,
+  value,
+  mode,
+  onValue,
+  onMode,
+  hint,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  mode: Rate;
+  onValue: (v: string) => void;
+  onMode: (m: Rate) => void;
+  hint?: string;
+}) {
+  const TAB =
+    "flex h-[36px] min-w-[38px] cursor-pointer items-center justify-center rounded-[8px] px-[10px] text-[14px] font-medium transition-colors";
+  return (
+    <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
+      <label htmlFor={id} className={LABEL}>
+        {label}
+      </label>
+      <div className={`${FIELD} gap-[8px] pr-[8px]`}>
+        <input
+          id={id}
+          value={value}
+          onChange={(e) => onValue(e.target.value.replace(/[^\d.]/g, ""))}
+          inputMode="decimal"
+          placeholder="0"
+          className={INPUT}
+        />
+        <div className="flex shrink-0 items-center gap-[4px] rounded-[9px] bg-[#fafafa] p-[2px]">
+          {(["percent", "flat"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => onMode(m)}
+              aria-pressed={mode === m}
+              aria-label={m === "percent" ? `${label} as a percentage` : `${label} in taka`}
+              className={`${TAB} ${
+                mode === m ? "bg-white text-[#1e1e1e] shadow-[0_1px_2px_rgba(0,0,0,0.06)]" : "text-[#8f8d87]"
+              }`}
+            >
+              {m === "percent" ? "%" : "৳"}
+            </button>
+          ))}
+        </div>
+      </div>
+      {hint && <p className="text-[12px] leading-[16px] text-[#8f8d87]">{hint}</p>}
+    </div>
+  );
+}
 
 /** The shared dropdown field: same 56px shell as the text inputs. */
 function Select({
@@ -118,43 +191,74 @@ function Select({
 export default function AddProductPage() {
   const router = useRouter();
   const [form, setForm] = useState({ ...blank });
+  const [rates, setRates] = useState({ ...blankRates });
   const [open, setOpen] = useState<SelectKind | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [options, setOptions] = useState<CatalogOptions>({
+  /** The bytes to upload once the product exists and has an id. */
+  const [imageFile, setImageFile] = useState<File | null>(null);
+
+  // The catalogue is the same for every screen that offers these lists, so it
+  // is read through the shared cache rather than re-fetched on each visit.
+  const catalog = useQuery(queryKey("inventory", { part: "catalog" }), () =>
+    InventoryService.getCatalogOptions()
+  );
+  const options: CatalogOptions = catalog.data ?? {
     categories: [],
     brands: [],
     units: [],
     taxes: [],
-  });
+  };
 
-  useEffect(() => {
-    InventoryService.getCatalogOptions()
-      .then((opts) => {
-        setOptions(opts);
-        // A shop with one unit should not have to pick it every time.
-        if (opts.units.length === 1) setForm((f) => ({ ...f, unit: opts.units[0].id }));
-      })
-      .catch(() => setError("The category and unit lists could not be loaded."));
-  }, []);
+  // A shop with one unit should not have to pick it every time. Derived rather
+  // than written into the form by an effect: an effect would have to wait for
+  // a render, so the field flashed empty on the way past.
+  const unit = form.unit || (options.units.length === 1 ? options.units[0].id : "");
+
+  const { mutate: createProduct, pending: saving } = useMutation(
+    (payload: Parameters<typeof InventoryService.createProduct>[0]) =>
+      InventoryService.createProduct(payload),
+    // A new product is a new row in Products, a new line in Stock and one more
+    // item in the dashboard's counts.
+    { invalidates: ["inventory", "stock", "dashboard", "pos-products"] }
+  );
 
   const set = (k: keyof typeof blank, v: string) => {
     setForm((f) => ({ ...f, [k]: v }));
     setError(null);
   };
 
-  /** Selling price less the discount, plus tax on the remainder. */
+  /** Selling price less the discount, plus tax on the remainder.
+   *
+   * Each of the two is a percentage or a flat number of taka, so the switch
+   * beside the box decides the arithmetic. `form.tax` used to hold a tax row's
+   * UUID and this read `Number(form.tax)` — always NaN, so the preview never
+   * once included tax. */
   const finalPrice = useMemo(() => {
     const sell = Number(form.sellingPrice) || 0;
-    const disc = Math.min(100, Math.max(0, Number(form.discount) || 0));
-    const tax = Number(form.tax) || 0;
-    const afterDiscount = sell - (sell * disc) / 100;
-    return afterDiscount + (afterDiscount * tax) / 100;
-  }, [form.sellingPrice, form.discount, form.tax]);
+    const discEntered = Math.max(0, Number(form.discount) || 0);
+    const taxEntered = Math.max(0, Number(form.tax) || 0);
 
+    const discountOff =
+      rates.discount === "percent"
+        ? (sell * Math.min(100, discEntered)) / 100
+        : Math.min(sell, discEntered);
+    const afterDiscount = Math.max(0, sell - discountOff);
+    const taxOn =
+      rates.tax === "percent" ? (afterDiscount * taxEntered) / 100 : taxEntered;
+    return afterDiscount + taxOn;
+  }, [form.sellingPrice, form.discount, form.tax, rates]);
+
+  /**
+   * The FILE is kept, not just a preview URL of it.
+   *
+   * This used to call `URL.createObjectURL` and nothing else, so the picture
+   * appeared on the form, survived until the page navigated, and was never
+   * uploaded — which is why no product in the catalogue had an image.
+   */
   const pickImage = (file?: File) => {
     if (!file) return;
+    setImageFile(file);
     setForm((f) => ({ ...f, image: URL.createObjectURL(file) }));
   };
 
@@ -164,20 +268,63 @@ export default function AddProductPage() {
     if (!form.name.trim()) return setError("Product name is required.");
     if (!form.category) return setError("Pick a category.");
     // Brand is optional on the API, so it is optional here. Unit is not.
-    if (!form.unit) return setError("Pick a unit.");
+    if (!unit) return setError("Pick a unit.");
     if (!Number(form.sellingPrice)) return setError("Selling price must be greater than zero.");
-    setSaving(true);
     try {
-      const created = await InventoryService.createProduct({
+      // A typed percentage has to become a Tax row before it can be a foreign
+      // key. A flat tax has no column on this API at all — `Tax.rate` is a
+      // percentage — so it is left off the product and priced on screen only.
+      let taxId: string | undefined;
+      const taxRate = Math.max(0, Number(form.tax) || 0);
+      if (rates.tax === "percent" && taxRate > 0) {
+        try {
+          taxId = await InventoryService.resolveTax(taxRate, options.taxes);
+        } catch {
+          // Not fatal: a product without a tax row is a product, and refusing
+          // to save one over its VAT would be the worse trade.
+          setNote("The tax rate could not be saved; the product will have none.");
+        }
+      }
+
+      const created = await createProduct({
         name: form.name.trim(),
         categoryId: form.category,
-        unitId: form.unit,
+        unitId: unit,
         brandId: form.brand || undefined,
-        taxId: form.tax || undefined,
+        taxId,
         sellingPrice: Number(form.sellingPrice),
         purchasePrice: Number(form.purchasePrice) || undefined,
         sku: form.sku.trim() || undefined,
+        barcode: form.barcode.trim() || undefined,
       });
+      // The image can only be attached once the product has an id, so it goes
+      // after the create rather than in the same request. A failure here is
+      // reported without pretending the product was not saved — it was.
+      if (imageFile) {
+        setNote(`${created.name} saved — uploading image…`);
+        try {
+          await InventoryService.uploadProductImage(created.id, imageFile);
+          invalidate("inventory", "pos-products");
+        } catch (imgErr) {
+          setError(
+            imgErr instanceof Error && imgErr.message
+              ? `Product saved, but the image did not upload: ${imgErr.message}`
+              : "Product saved, but the image did not upload."
+          );
+          return;
+        }
+      }
+      // A discount typed here is the till's product offer — the same store the
+      // Discounts screen writes and the POS prices its tiles by. Keyed by the
+      // variant, which is what everything at the till is keyed by.
+      const discountValue = Math.max(0, Number(form.discount) || 0);
+      if (discountValue > 0 && created.variantId) {
+        writeDiscounts({
+          ...readDiscounts(),
+          [created.variantId]: { mode: rates.discount, value: discountValue },
+        });
+      }
+
       setNote(`${created.name} saved`);
       window.setTimeout(() => router.push("/inventory"), 700);
     } catch (err) {
@@ -186,13 +333,11 @@ export default function AddProductPage() {
       setError(
         err instanceof Error && err.message ? err.message : "Could not save the product."
       );
-    } finally {
-      setSaving(false);
     }
   };
 
   return (
-    <div className="flex w-full flex-col gap-[14px] select-none">
+    <div className="flex w-full flex-col gap-[14px]">
       {/* Centred 565 column — 57:12578 */}
       <form onSubmit={save} className="mx-auto flex w-full max-w-[565px] flex-col gap-[24px]">
         <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
@@ -203,7 +348,16 @@ export default function AddProductPage() {
           </div>
 
           {/* Form — 57:12584, 88px blocks 12px apart */}
-          <div className="flex flex-col gap-[12px] px-[16px] pt-[9px] pb-[16px]">
+          <div className="relative flex flex-col gap-[12px] px-[16px] pt-[9px] pb-[16px]">
+            <RefreshBar active={catalog.fetching} />
+            <QueryBoundary
+              loading={catalog.loading}
+              error={catalog.error}
+              hasData={catalog.data !== undefined}
+              skeleton={<FormSkeleton fields={8} columns={1} />}
+              errorMessage="The category, unit and tax lists could not be loaded."
+              onRetry={catalog.refetch}
+            >
             <div className="flex flex-col gap-[8px]">
               <label htmlFor="p-name" className={LABEL}>Product Name</label>
               <div className={FIELD}>
@@ -233,13 +387,32 @@ export default function AddProductPage() {
             <div className="flex flex-col gap-[30px] sm:flex-row sm:items-start">
               <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
                 <span className={LABEL}>Unit</span>
-                <Select kind="unit" value={form.unit} placeholder="Select unit" options={options.units} onPick={(v) => set("unit", v)} open={open} setOpen={setOpen} />
+                <Select kind="unit" value={unit} placeholder="Select unit" options={options.units} onPick={(v) => set("unit", v)} open={open} setOpen={setOpen} />
               </div>
               <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
                 <label htmlFor="p-sku" className={LABEL}>SKU <span className="text-[#8f8d87]">(optional)</span></label>
                 <div className={FIELD}>
                   <input id="p-sku" value={form.sku} onChange={(e) => set("sku", e.target.value)} placeholder="Left blank, the API makes one" className={INPUT} />
                 </div>
+              </div>
+            </div>
+
+            {/* The till scans this. Without it a product can only be rung up
+                by finding it on the wall, which is the slow path the scanner
+                exists to replace. The input is a scan target: focus it and
+                pull the trigger. */}
+            <div className="flex flex-col gap-[8px]">
+              <label htmlFor="p-barcode" className={LABEL}>
+                Barcode <span className="text-[#8f8d87]">(optional)</span>
+              </label>
+              <div className={FIELD}>
+                <input
+                  id="p-barcode"
+                  value={form.barcode}
+                  onChange={(e) => set("barcode", e.target.value.trim())}
+                  placeholder="Scan or type the barcode on the packet"
+                  className={INPUT}
+                />
               </div>
             </div>
 
@@ -259,18 +432,32 @@ export default function AddProductPage() {
               </div>
             </div>
 
-            {/* 57:12800 */}
+            {/* 57:12800 — a number and its unit, twice. Tax was a dropdown of
+                rows the shop had to create in Settings first, so a rate it had
+                not set up could not be typed at all. */}
             <div className="flex flex-col gap-[30px] sm:flex-row sm:items-start">
-              <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
-                <label htmlFor="p-discount" className={LABEL}>Discount</label>
-                <div className={FIELD}>
-                  <input id="p-discount" value={form.discount} onChange={(e) => set("discount", e.target.value.replace(/[^\d.]/g, ""))} inputMode="decimal" placeholder="0 %" className={INPUT} />
-                </div>
-              </div>
-              <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
-                <span className={LABEL}>Tax / VAT</span>
-                <Select kind="tax" value={form.tax} placeholder="Select tax (optional)" options={options.taxes} onPick={(v) => set("tax", v)} open={open} setOpen={setOpen} />
-              </div>
+              <RateField
+                id="p-discount"
+                label="Discount"
+                value={form.discount}
+                mode={rates.discount}
+                onValue={(v) => set("discount", v)}
+                onMode={(m) => setRates((r) => ({ ...r, discount: m }))}
+                hint="The till's offer on this product."
+              />
+              <RateField
+                id="p-tax"
+                label="Tax / VAT"
+                value={form.tax}
+                mode={rates.tax}
+                onValue={(v) => set("tax", v)}
+                onMode={(m) => setRates((r) => ({ ...r, tax: m }))}
+                hint={
+                  rates.tax === "percent"
+                    ? "Saved as the shop's tax rate for this product."
+                    : "A flat tax is priced here only — the API stores a percentage."
+                }
+              />
             </div>
 
             {/* Derived, so read-only — 57:12823 */}
@@ -288,7 +475,7 @@ export default function AddProductPage() {
               {form.image ? (
                 <>
                   <span className="relative size-[32px] shrink-0 overflow-hidden rounded-[6px]">
-                    <Image src={form.image || "/placeholder-product.svg"} alt="" fill sizes="32px" className="object-cover" unoptimized />
+                    <ProductImage src={form.image} alt="" sizes="32px" />
                   </span>
                   <span className="text-[16px] leading-[24px] text-[#525252]">Image selected</span>
                 </>
@@ -313,6 +500,7 @@ export default function AddProductPage() {
 
             {error && <p className="text-[13px] text-[#ef4444]">{error}</p>}
             {note && <p className="text-[13px] text-[#525252]">{note}</p>}
+            </QueryBoundary>
           </div>
         </div>
 

@@ -17,7 +17,6 @@ export class PayrollService {
     const runs = await apiList<PayrollRun>(
       "/hrm/payroll-runs/?limit=100",
       { method: "GET" },
-      { data: [], total: 0 },
       (r) => r as PayrollRun
     );
 

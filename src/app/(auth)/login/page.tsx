@@ -219,7 +219,7 @@ export default function LoginPage() {
 
           {/* Options */}
           <div className="flex w-full items-center justify-between">
-            <label className="flex items-center justify-center gap-[6px] select-none">
+            <label className="flex items-center justify-center gap-[6px]">
               <input
                 type="checkbox"
                 checked={rememberMe}

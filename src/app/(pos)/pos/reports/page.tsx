@@ -1,7 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import Image from "next/image";
+import React, { useMemo, useState } from "react";
 import MetricCards from "@/components/modules/dashboard/MetricCards";
 import SalesSummaryChart from "@/components/modules/dashboard/SalesSummaryChart";
 import ProfitLossChart from "@/components/modules/dashboard/ProfitLossChart";
@@ -10,10 +9,20 @@ import RowActionMenu from "@/components/shared/RowActionMenu";
 import TablePagination from "@/components/shared/TablePagination";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Modal, { MODAL_GHOST } from "@/components/shared/Modal";
-import { DashboardService, PosService, CustomerService, initialDashboardData } from "@/services";
+import { DashboardService, PosService, CustomerService } from "@/services";
+import { tokenStore } from "@/services/apiClient";
+import { useQuery, queryKey } from "@/lib/query/useQuery";
+import { resolveRange, type RangeOption } from "@/lib/range";
+import {
+  StatCardsSkeleton,
+  ChartSkeleton,
+  CardGridSkeleton,
+  ListSkeleton,
+} from "@/components/shared/Skeleton";
+import { QueryBoundary, RefreshBar, EmptyState, ErrorState } from "@/components/shared/QueryBoundary";
 import { DashboardResponse, MetricCardData } from "@/types/dashboard";
-import { ProductItem } from "@/types/pos";
 import { CustomerRecord } from "@/types/customer";
+import ProductImage from "@/components/shared/ProductImage";
 
 /**
  * POS Reports — Figma 247:7564.
@@ -103,49 +112,82 @@ function FilterIcon() {
 }
 
 export default function PosReportsPage() {
-  const [data, setData] = useState<DashboardResponse>(initialDashboardData);
-  const [products, setProducts] = useState<ProductItem[]>([]);
-  const [customers, setCustomers] = useState<CustomerRecord[]>([]);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
   const [note, setNote] = useState<string | null>(null);
   const [detailOf, setDetailOf] = useState<CustomerRecord | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
 
-  useEffect(() => {
-    DashboardService.getDashboardData()
-      .then(setData)
-      .catch(() => {});
-    PosService.getProducts()
-      .then(setProducts)
-      .catch(() => {});
-  }, []);
+  const branchId = tokenStore.branch();
 
-  useEffect(() => {
-    // Guarded so a slow answer for "ra" cannot land after "rahman" and
-    // repopulate the table with the wrong rows.
-    let live = true;
-    setLoading(true);
+  // These used to start at a canned dashboard — a named cashier and a revenue
+  // figure nobody had earned — so a failed request left invented money on a
+  // branch report. Undefined until the server answers; a skeleton until then.
+  // Reading the clock during render is impure, and a report should not change
+  // what it means at midnight under the person reading it.
+  const [today] = useState(() => new Date());
+  const [salesRange, setSalesRange] = useState<RangeOption>("This Week");
+  const [pnlRange, setPnlRange] = useState<RangeOption>("This Week");
+  const salesWindow = useMemo(() => resolveRange(salesRange, today), [salesRange, today]);
+  const pnlWindow = useMemo(() => resolveRange(pnlRange, today), [pnlRange, today]);
+
+  const {
+    data,
+    loading: dashLoading,
+    fetching: dashFetching,
+    error: dashError,
+    refetch: refetchDash,
+  } = useQuery(
+    // Same key the back-office dashboard uses, so the two share one answer
+    // instead of asking twice. The branch is part of it because these are the
+    // BRANCH figures: two branches are two answers and must not share a slot.
+    queryKey("dashboard", { branch: branchId, ...salesWindow }),
+    () => DashboardService.getDashboardData(branchId, salesWindow),
+    { staleMs: 30_000 }
+  );
+
+  // The Profit & Loss card asks for its own window, so its picker works here
+  // exactly as it does on the back-office dashboard.
+  const {
+    data: pnlData,
+    fetching: pnlFetching,
+    error: pnlError,
+    refetch: refetchPnl,
+  } = useQuery(
+    queryKey("dashboard", { branch: branchId, ...pnlWindow }),
+    () => DashboardService.getDashboardData(branchId, pnlWindow),
+    { staleMs: 30_000 }
+  );
+
+  const {
+    data: products,
+    loading: productsLoading,
+    error: productsError,
+    refetch: refetchProducts,
+    // Ten tiles, so ten products: the wall's query is now one page per request
+    // and this one asks for exactly the page it shows.
+  } = useQuery(queryKey("pos-products", { page: 1, limit: 10 }), () =>
+    PosService.getProducts({ page: 1, limit: 10 })
+  , { staleMs: 60_000 });
+
+  // The search is part of the key, so a slow answer for "ra" can no longer
+  // land after "rahman" — the two are separate cache entries.
+  const {
+    data: customerPage,
+    loading: customersLoading,
+    fetching: customersFetching,
+    error: customersError,
+    refetch: refetchCustomers,
+  } = useQuery(queryKey("customers", { search: query }), () =>
     CustomerService.getCustomers({ search: query })
-      .then((res) => {
-        if (!live) return;
-        setCustomers(res.data);
-        setFailed(false);
-      })
-      .catch(() => live && setFailed(true))
-      .finally(() => live && setLoading(false));
-    return () => {
-      live = false;
-    };
-  }, [query]);
+  );
+  const customers = useMemo(() => customerPage?.data ?? [], [customerPage]);
 
-  const metrics = useMemo(() => branchMetrics(data), [data]);
+  const metrics = useMemo(() => (data ? branchMetrics(data) : []), [data]);
 
-  // The design shows two rows of five. Sorted by stock movement is meaningless
-  // on mock data, so the order is the catalogue's own.
-  const topSelling = useMemo(() => products.slice(0, 10), [products]);
+  // The design shows two rows of five. Stock movement is not on the catalogue
+  // response, so the order is the catalogue's own.
+  const topSelling = useMemo(() => products?.data ?? [], [products]);
 
   const totalPages = Math.max(1, Math.ceil(customers.length / pageSize));
   const current = Math.min(page, totalPages);
@@ -155,33 +197,105 @@ export default function PosReportsPage() {
   );
 
   return (
-    <div className="flex w-full flex-col gap-[24px] select-none">
-      {/* Branch figures — 247:7663 */}
-      <MetricCards metrics={metrics} />
+    <div className="relative flex w-full flex-col gap-[24px] pb-[24px]">
+      <RefreshBar active={dashFetching || customersFetching} />
 
-      {/* Sales Summary beside Profit & Loss — 247:7757 / 247:7893 */}
-      <div className="grid grid-cols-1 gap-[20px] lg:grid-cols-[757fr_383fr]">
-        <div className="min-w-0">
-          <SalesSummaryChart data={data.salesSummary} />
-        </div>
-        <div className="min-w-0">
-          <ProfitLossChart data={data.profitLoss} />
-        </div>
-      </div>
+      <QueryBoundary
+        loading={dashLoading}
+        error={dashError}
+        hasData={data !== undefined}
+        skeleton={
+          <div className="flex w-full flex-col gap-[24px]">
+            <StatCardsSkeleton count={4} />
+            <div className="grid grid-cols-1 gap-[20px] lg:grid-cols-[757fr_383fr]">
+              <div className="min-w-0 rounded-[12px] bg-white p-[20px] shadow-[inset_0_0_0_1px_#eaeaea]">
+                <ChartSkeleton height={260} />
+              </div>
+              <div className="min-w-0 rounded-[12px] bg-white p-[20px] shadow-[inset_0_0_0_1px_#eaeaea]">
+                <ChartSkeleton height={260} />
+              </div>
+            </div>
+          </div>
+        }
+        errorMessage="Could not load the branch figures."
+        onRetry={refetchDash}
+      >
+        {data && (
+          <div className="flex w-full flex-col gap-[24px]">
+            {/* Branch figures — 247:7663 */}
+            <MetricCards metrics={metrics} />
+
+            {/* Sales Summary beside Profit & Loss — 247:7757 / 247:7893 */}
+            <div className="grid grid-cols-1 gap-[20px] lg:grid-cols-[757fr_383fr]">
+              <div className="min-w-0">
+                <SalesSummaryChart
+                  data={data.salesSummary}
+                  range={salesRange}
+                  onRangeChange={setSalesRange}
+                  busy={dashFetching}
+                />
+              </div>
+              <div className="min-w-0">
+                {pnlData ? (
+                  <ProfitLossChart
+                    data={pnlData.profitLoss}
+                    range={pnlRange}
+                    onRangeChange={setPnlRange}
+                    busy={pnlFetching}
+                  />
+                ) : (
+                  <div className="flex h-full flex-col rounded-[12px] bg-white p-[20px] shadow-[inset_0_0_0_1px_#eaeaea]">
+                    {pnlError ? (
+                      <ErrorState message="Could not load profit &amp; loss." onRetry={refetchPnl} compact />
+                    ) : (
+                      <ChartSkeleton height={220} />
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </QueryBoundary>
 
       {/* Top Selling Product — 247:8060 */}
       <div className="flex w-full flex-col gap-[16px]">
         <h2 className="text-[24px] leading-[1.2] font-medium tracking-[-0.72px] text-[#1e1e1e]">
           Top Selling Product
         </h2>
+        <QueryBoundary
+          loading={productsLoading}
+          error={productsError}
+          hasData={products !== undefined}
+          skeleton={
+            <CardGridSkeleton
+              count={10}
+              height={68}
+              className="grid grid-cols-[repeat(auto-fill,minmax(212px,1fr))] gap-[14px]"
+            />
+          }
+          errorMessage="Could not load the product list."
+          onRetry={refetchProducts}
+        >
+        {topSelling.length === 0 ? (
+          <EmptyState message="No products in the catalogue yet." compact />
+        ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(212px,1fr))] gap-[14px]">
           {topSelling.map((p) => (
             <div
               key={p.id}
               className="flex items-center gap-[12px] overflow-clip rounded-[10px] bg-white p-[10px] shadow-[inset_0_0_0_1px_#eaeaea]"
             >
-              <span className="relative size-[48px] shrink-0 overflow-hidden rounded-[8px] shadow-[inset_0_0_0_0.3px_#eaeaea]">
-                <Image src={p.image} alt="" fill sizes="48px" className="object-cover" />
+              <span className="relative flex size-[48px] shrink-0 items-center justify-center overflow-hidden rounded-[8px] bg-[#fafafa] shadow-[inset_0_0_0_0.3px_#eaeaea]">
+                {/* A real product often has no photo, and next/image with an
+                    empty src reloads the page. Initials stand in instead. */}
+                {p.image ? (
+                  <ProductImage src={p.image} alt="" sizes="48px" />
+                ) : (
+                  <span aria-hidden className="text-[15px] font-semibold text-[#c9c9c9]">
+                    {initials(p.name)}
+                  </span>
+                )}
               </span>
               <div className="flex min-w-0 flex-1 flex-col gap-[4px]">
                 <p className="truncate text-[14px] leading-[1.4] font-normal text-[#525252]">{p.name}</p>
@@ -200,6 +314,8 @@ export default function PosReportsPage() {
             </div>
           ))}
         </div>
+        )}
+        </QueryBoundary>
       </div>
 
       {/* Recent Customer List — 247:8332 */}
@@ -248,13 +364,21 @@ export default function PosReportsPage() {
               </div>
 
               <div className="mt-[6px]">
-                {rows.length === 0 && loading && (
-                  <TableSkeleton columns={GRID} rows={pageSize} />
-                )}
-                {rows.length === 0 && !loading && (
-                  <p className="py-[40px] text-center text-[14px] text-[#525252]">
-                    No customers match that search.
-                  </p>
+                <QueryBoundary
+                  loading={customersLoading}
+                  error={customersError}
+                  hasData={customerPage !== undefined}
+                  skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
+                  errorMessage="Could not load the customer list."
+                  onRetry={refetchCustomers}
+                >
+                {rows.length === 0 && (
+                  // "Nobody matched" and "the server is down" now read
+                  // differently; the second is the ErrorState above.
+                  <EmptyState
+                    message={query ? "No customers match that search." : "No customers yet."}
+                    compact
+                  />
                 )}
                 {rows.map((c, i) => (
                   <div
@@ -301,6 +425,7 @@ export default function PosReportsPage() {
                     </div>
                   </div>
                 ))}
+                </QueryBoundary>
               </div>
             </div>
           </div>
@@ -308,6 +433,10 @@ export default function PosReportsPage() {
 
         {/* Stacked cards below md */}
         <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
+          {customersLoading && customerPage === undefined && <ListSkeleton rows={pageSize} />}
+          {customersError !== undefined && customerPage === undefined && (
+            <ErrorState message="Could not load the customer list." onRetry={refetchCustomers} compact />
+          )}
           {rows.map((c) => (
             <button
               key={c.id}
@@ -383,4 +512,14 @@ export default function PosReportsPage() {
       </Modal>
     </div>
   );
+}
+
+/** First letters of the first two words, standing in for a missing photo. */
+function initials(name: string): string {
+  return (name || "?")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .join("");
 }

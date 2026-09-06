@@ -65,6 +65,15 @@ export function writeDiscounts(next: DiscountMap): void {
   } catch {
     // The offers still apply for this session.
   }
+  // `storage` fires in every OTHER tab and never in this one, so the till's
+  // product wall and the products table would keep the old rate until they
+  // were remounted. Dispatched outside the try: a browser that refused the
+  // write still has the new map in memory for this session.
+  try {
+    window.dispatchEvent(new Event("sp:discounts-changed"));
+  } catch {
+    // Nothing is listening in a non-DOM environment.
+  }
 }
 
 /** What comes off one unit, never more than the price itself. */

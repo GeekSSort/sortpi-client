@@ -16,6 +16,16 @@ export interface SystemUserRecord {
    * names or saving silently drops the roles it could not read.
    */
   roles: string[];
+  /**
+   * The branches this person may sign in to, by id.
+   *
+   * An EMPTY list is not "nowhere" — the server reads it as head office, which
+   * reaches every branch. `branchLabel` carries the sentence a reader needs;
+   * these are the ids the change-branch flow would need.
+   */
+  branchIds: string[];
+  /** "Dhaka Branch, Chattogram Branch", or "All branches" for head office. */
+  branchLabel: string;
   lastLogin: string;
   status: "Active" | "Inactive";
 }

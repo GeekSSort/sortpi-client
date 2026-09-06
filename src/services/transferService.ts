@@ -1,7 +1,7 @@
 import { TransferRecord, TransferQueryFilter, CreateTransferPayload } from "@/types/transfers";
-import { initialTransfersData } from "@/lib/services/transfers.service";
 import { apiFetch, apiList } from "./apiClient";
 import { toTransferRecord } from "./mappers/transfer";
+import { BranchService } from "./branchService";
 
 /**
  * Stock transfers, against the endpoints that exist.
@@ -11,6 +11,16 @@ import { toTransferRecord } from "./mappers/transfer";
  * into the destination. Both were on the API from the start with nothing on the
  * screen able to call them, so a transfer could be drafted and then never move.
  */
+/** One end of a transfer: a warehouse, and which branch it belongs to. */
+export interface TransferEndpoint {
+  id: string;
+  name: string;
+  branchId: string;
+  /** MAIN or TRANSIT. A transfer never names a TRANSIT warehouse — the
+      dispatch step moves stock into one on its own. */
+  type: string;
+}
+
 export class TransferService {
   /**
    * Fetch transfer records with search and filters.
@@ -19,26 +29,6 @@ export class TransferService {
    * ignored, so the search box changed nothing.
    */
   static async getTransfers(params?: TransferQueryFilter): Promise<{ data: TransferRecord[]; total: number }> {
-    const fallback = () => {
-      let list = [...initialTransfersData];
-      if (params?.search) {
-        const q = params.search.toLowerCase();
-        list = list.filter(
-          (t) =>
-            t.transferId.toLowerCase().includes(q) ||
-            t.fromLocation.toLowerCase().includes(q) ||
-            t.toLocation.toLowerCase().includes(q) ||
-            t.productsSummary.toLowerCase().includes(q)
-        );
-      }
-      if (params?.status) {
-        list = list.filter((t) => t.status.toLowerCase() === params.status?.toLowerCase());
-      }
-      // The pager reads this, and it is now the real count: a hardcoded 50
-      // meant the offline fallback claimed pages that did not exist.
-      return { data: list, total: list.length };
-    };
-
     const searchParams = new URLSearchParams();
     if (params?.search) searchParams.set("search", params.search);
     if (params?.status) searchParams.set("status", params.status);
@@ -53,26 +43,44 @@ export class TransferService {
     return apiList<TransferRecord>(
       `/inventory/transfers/${qs}`,
       { method: "GET" },
-      fallback,
-      (row: any) => (row?.transferId !== undefined ? row : toTransferRecord(row))
+      toTransferRecord
     );
   }
 
-  /** The two ends a transfer can name. */
-  static async getWarehouses(): Promise<{ id: string; name: string }[]> {
-    const res = await apiList<any>(
-      "/warehouses/?limit=200",
-      { method: "GET" },
-      { data: [], total: 0 },
-      (r) => r
-    );
+  /**
+   * The two ends a transfer can name.
+   *
+   * Labelled by BRANCH first, because that is how a shop thinks about where
+   * stock is going: "Chattogram", not "CTG-MAIN". A warehouse code on its own
+   * told a storeman nothing about which shop it belonged to, and the two ends
+   * of a transfer are exactly the question "which shop".
+   *
+   * Only what the caller can see: `/warehouses/` is branch-scoped, so a user
+   * assigned to one branch is offered that branch's warehouses and no others.
+   */
+  static async getWarehouses(): Promise<TransferEndpoint[]> {
+    const [res, branches] = await Promise.all([
+      apiList<any>("/warehouses/?limit=200", { method: "GET" }, (r) => r),
+      // One short request, shared with the branch switcher's cache entry.
+      BranchService.list().catch(() => [] as { id: string; name: string; code: string }[]),
+    ]);
+    const branchNames = new Map(branches.map((b) => [b.id, b.name || b.code]));
+
     return res.data
       .filter((w: any) => w?.id)
-      .map((w: any) => ({
-        id: String(w.id),
-        // The code is what a storeman says out loud; the name is the label.
-        name: [w?.code, w?.name].filter(Boolean).join(" — ") || String(w.id),
-      }));
+      .map((w: any) => {
+        const branchId = String(w?.branch ?? "");
+        const branch = branchNames.get(branchId) || "";
+        const code = String(w?.code ?? "");
+        return {
+          id: String(w.id),
+          branchId,
+          type: String(w?.type ?? ""),
+          // "Dhaka — DHK-MAIN". The code stays, because it is what is printed
+          // on the shelf and on the transfer note.
+          name: [branch, code || w?.name].filter(Boolean).join(" — ") || String(w.id),
+        };
+      });
   }
 
   /**
@@ -82,9 +90,18 @@ export class TransferService {
    * takes the stock off the source shelf. The screen used to build a record in
    * local state and call it saved.
    */
-  static async createTransfer(payload: CreateTransferPayload): Promise<TransferRecord> {
+  static async createTransfer(
+    payload: CreateTransferPayload,
+    /** The SOURCE branch, when it is not the one the caller is standing in.
+        `perform_create` checks the caller may move stock out of the source
+        warehouse, and that check reads the active branch — so drafting an
+        inbound transfer has to say which branch it is drafting on behalf of.
+        The header is refused for a branch the caller is not assigned to. */
+    sourceBranchId?: string
+  ): Promise<TransferRecord> {
     const created = await apiFetch<any>("/inventory/transfers/", {
       method: "POST",
+      ...(sourceBranchId ? { branchId: sourceBranchId } : {}),
       body: JSON.stringify({
         reference_no: payload.referenceNo,
         from_warehouse: payload.fromWarehouseId,
@@ -101,7 +118,26 @@ export class TransferService {
 
   /** Source → transit. Takes the stock off the source shelf. */
   static async dispatchTransfer(id: string): Promise<TransferRecord> {
-    return apiFetch<any>(`/inventory/transfers/${id}/dispatch/`, { method: "POST" }, undefined, toTransferRecord);
+    return apiFetch<any>(`/inventory/transfers/${id}/dispatch/`, { method: "POST" }, toTransferRecord);
+  }
+
+  /**
+   * Transit → source. The van turned round.
+   *
+   * A REVERSING pair of movements, never a deletion: the ledger is
+   * insert-only, so a dispatch made by mistake and undone two minutes later
+   * stays in the history as both things that happened. The transfer goes back
+   * to DRAFT, so it can be corrected and sent again.
+   *
+   * DISPATCHED only. Once anything has been received the units are on another
+   * branch's shelf and the API answers 409.
+   */
+  static async undoDispatch(id: string): Promise<TransferRecord> {
+    return apiFetch<any>(
+      `/inventory/transfers/${id}/undo-dispatch/`,
+      { method: "POST" },
+      toTransferRecord
+    );
   }
 
   /**
@@ -122,7 +158,6 @@ export class TransferService {
           lines: (lines || []).map((l) => ({ item: l.itemId, quantity: l.quantity })),
         }),
       },
-      undefined,
       toTransferRecord
     );
   }

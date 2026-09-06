@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { ApiError } from "@/services/apiClient";
 import { PlatformService, TenantRow, toDate, toLabel } from "@/services/platformService";
+import { invalidate, queryKey, useQuery } from "@/lib/query/useQuery";
 import ConsoleList, { Column, Stat } from "@/components/platform/ConsoleList";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import Modal, { MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
@@ -27,50 +28,50 @@ const TONE: Record<string, Tone> = {
 
 const BODY = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
 const FILTERS = ["All companies", "Paying", "On trial", "Need chasing", "Closed"] as const;
+/** The same tracks as `columns` below, as a literal so Tailwind emits the class. */
+const GRID = "grid-cols-[1.4fr_1fr_110px_110px_1fr_150px_83px]";
 
 /* The icons a console figure uses. Same set as the dashboard, so a card means
    the same thing wherever it appears. */
 
+/** A shop account reaching the console is a different problem from a dead API. */
+function describe(e: unknown): string {
+  if (e instanceof ApiError && e.code === "REALM_MISMATCH")
+    return "This is a shop account. The console needs a SORTPoint staff sign-in.";
+  if (e instanceof ApiError) return e.message;
+  return "Could not load companies.";
+}
 
 export default function PlatformCompaniesPage() {
-  const [rows, setRows] = useState<TenantRow[]>([]);
   const [detailOf, setDetailOf] = useState<TenantRow | null>(null);
   const [closeOf, setCloseOf] = useState<TenantRow | null>(null);
   const [filter, setFilter] = useState<string>("All companies");
   const [note, setNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [reloadKey, setReloadKey] = useState(0);
   const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [term, setTerm] = useState("");
 
+  // Every keystroke is a new cache key, and a new key has nothing to show —
+  // typed straight through, the table would blink to a skeleton per letter.
+  // A quarter second of quiet first, so one word is one request.
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await PlatformService.listTenants(search || undefined);
-        if (cancelled) return;
-        // SYSTEM is our own organization, not a customer. It owns no shop data
-        // and exists to hold pre-login audit rows.
-        setRows(res.data.filter((r) => r.name !== "SYSTEM"));
-        setError(null);
-      } catch (e) {
-        if (cancelled) return;
-        setError(
-          e instanceof ApiError && e.code === "REALM_MISMATCH"
-            ? "This is a shop account. The console needs a SORTPoint staff sign-in."
-            : e instanceof ApiError
-              ? e.message
-              : "Could not load companies."
-        );
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [search, reloadKey]);
+    if (search === term) return;
+    const id = setTimeout(() => setTerm(search), 250);
+    return () => clearTimeout(id);
+  }, [search, term]);
+
+  // The search runs on the server, so it belongs in the key — without it a
+  // search for "acme" would be served the unfiltered list from the cache.
+  const { data, loading, fetching, error, refetch } = useQuery(
+    queryKey("platform-companies", { search: term }),
+    async () => {
+      const res = await PlatformService.listTenants(term || undefined);
+      // SYSTEM is our own organization, not a customer. It owns no shop data
+      // and exists to hold pre-login audit rows.
+      return res.data.filter((r) => r.name !== "SYSTEM");
+    }
+  );
+  const rows = data ?? [];
 
   const columns: Column<TenantRow>[] = [
     {
@@ -140,7 +141,9 @@ export default function PlatformCompaniesPage() {
       await PlatformService.setCompanyActive(row.id, isActive);
       setNote(`${row.name} is now ${isActive ? "open" : "closed"}.`);
       setCloseOf(null);
-      setReloadKey((k) => k + 1);
+      // Closing a company stops its billing too, so the subscriptions list and
+      // the console figures are both stale the moment this returns.
+      invalidate("platform-companies", "platform-subscriptions", "platform-overview");
     } catch (e) {
       setNote(PlatformService.describeError(e));
     } finally {
@@ -171,7 +174,11 @@ export default function PlatformCompaniesPage() {
         stats={stats}
         columns={columns}
         loading={loading}
-        error={error}
+        fetching={fetching}
+        hasData={data !== undefined}
+        skeletonGrid={GRID}
+        error={error ? describe(error) : null}
+        onRetry={refetch}
         onSearch={setSearch}
         searchPlaceholder="Search by company name..."
         emptyLine="No companies match this search."

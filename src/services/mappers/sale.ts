@@ -19,19 +19,39 @@ export function formatAmount(value: number): string {
   return `৳ ${CURRENCY.format(value)}`;
 }
 
-const PAYMENT_LABELS: Record<string, SaleRecord["paymentMethod"]> = {
+const PAYMENT_LABELS: Record<string, string> = {
   CASH: "Cash",
   CARD: "Card",
   BANK: "Bank Transfer",
   MOBILE: "bKash",
+  OTHER: "Others",
 };
 
-function paymentMethodOf(row: any): SaleRecord["paymentMethod"] {
+function paymentMethodOf(row: any): string {
   const payments: any[] = Array.isArray(row?.payments) ? row.payments : [];
   if (payments.length === 0) return "Cash";
   // A split payment has no single method, so the largest part names it.
   const largest = payments.reduce((a, b) => (toAmount(b?.amount) > toAmount(a?.amount) ? b : a));
-  return PAYMENT_LABELS[String(largest?.method || "").toUpperCase()] || "Cash";
+  const provider = largest?.payment_provider || largest?.paymentProvider;
+  if (provider && typeof provider === "string" && provider.trim()) {
+    return provider.trim();
+  }
+  const rawMethod = String(
+    largest?.payment_method || largest?.paymentMethod || largest?.method || ""
+  ).toUpperCase();
+  return PAYMENT_LABELS[rawMethod] || rawMethod || "Cash";
+}
+
+function referenceNoOf(row: any): string {
+  const payments: any[] = Array.isArray(row?.payments) ? row.payments : [];
+  for (const p of payments) {
+    const ref = p?.reference_no || p?.referenceNo || p?.transaction_id || p?.transactionId;
+    if (ref && typeof ref === "string" && ref.trim()) return ref.trim();
+  }
+  const note = String(row?.note ?? "");
+  const match = note.match(/Txn:\s*([^\s,;]+)/i);
+  if (match && match[1]) return match[1];
+  return "";
 }
 
 /**
@@ -61,19 +81,22 @@ function whenOf(value: unknown): string {
 
 function statusOf(row: any): SaleRecord["status"] {
   if (String(row?.status).toUpperCase() === "CANCELLED") return "Refunded";
-  return toAmount(row?.dueAmount) > 0 ? "Unpaid" : "Paid";
+  return toAmount(row?.dueAmount ?? row?.due_amount) > 0 ? "Unpaid" : "Paid";
 }
 
 export function toSaleRecord(row: any): SaleRecord {
-  const total = toAmount(row?.grandTotal);
+  const total = toAmount(row?.grandTotal ?? row?.grand_total);
+  const refNo = referenceNoOf(row);
   return {
     id: String(row?.id ?? ""),
-    invoiceNo: String(row?.invoiceNumber ?? ""),
-    dateTime: whenOf(row?.saleDate),
-    customerName: String(row?.customerName ?? "Walk-in Customer"),
+    invoiceNo: String(row?.invoiceNumber ?? row?.invoice_number ?? ""),
+    dateTime: whenOf(row?.saleDate ?? row?.sale_date),
+    customerName: String(row?.customerName ?? row?.customer_name ?? "Walk-in Customer"),
     totalAmount: total,
     totalAmountFormatted: formatAmount(total),
     paymentMethod: paymentMethodOf(row),
     status: statusOf(row),
+    referenceNo: refNo,
+    transactionId: refNo,
   };
 }

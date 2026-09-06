@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import { ApiError } from "@/services/apiClient";
 import {
@@ -11,6 +11,14 @@ import {
   toDate,
   toLabel,
 } from "@/services/platformService";
+import { useQuery } from "@/lib/query/useQuery";
+import {
+  ChartSkeleton,
+  DetailSkeleton,
+  ListSkeleton,
+  StatCardsSkeleton,
+} from "@/components/shared/Skeleton";
+import { QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import StatCard from "@/components/platform/StatCard";
 import { statGood, statMoney, statRisk, statWait } from "@/components/platform/stats";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
@@ -111,50 +119,40 @@ function companiesByPlan(plans: PlanRow[], tenants: TenantRow[]): Bar[] {
 
 const VIEWS = ["Revenue", "Sign-ups", "Plan mix"] as const;
 
-export default function PlatformDashboardPage() {
-  const [tenants, setTenants] = useState<TenantRow[]>([]);
-  const [subs, setSubs] = useState<SubscriptionRow[]>([]);
-  const [plans, setPlans] = useState<PlanRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<(typeof VIEWS)[number]>("Revenue");
-  // The clock is read with the data, not while rendering: reading it during a
-  // render makes the render impure and the figures drift between paints.
-  const [now, setNow] = useState<number | null>(null);
+/** A shop account reaching the console is a different problem from a dead API. */
+function describe(e: unknown): string {
+  if (e instanceof ApiError && e.code === "REALM_MISMATCH")
+    return "This is a shop account. The console needs a SORTPoint staff sign-in.";
+  if (e instanceof ApiError) return e.message;
+  return "Could not load the console.";
+}
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [t, s, p] = await Promise.all([
-          PlatformService.listTenants(),
-          PlatformService.listSubscriptions(),
-          PlatformService.listPlans(),
-        ]);
-        if (cancelled) return;
-        // SYSTEM is our own organization, not a customer.
-        setTenants(t.data.filter((r) => r.name !== "SYSTEM"));
-        setSubs(s.data);
-        setPlans(p.data);
-        setNow(Date.now());
-        setError(null);
-      } catch (e) {
-        if (cancelled) return;
-        setError(
-          e instanceof ApiError && e.code === "REALM_MISMATCH"
-            ? "This is a shop account. The console needs a SORTPoint staff sign-in."
-            : e instanceof ApiError
-              ? e.message
-              : "Could not load the console."
-        );
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
+export default function PlatformDashboardPage() {
+  const [view, setView] = useState<(typeof VIEWS)[number]>("Revenue");
+
+  // One key for the whole screen: the three lists are only ever read together
+  // here, and every console write names `platform-overview` so these figures
+  // are never left behind by a change made on another screen.
+  const { data, loading, fetching, error, refetch } = useQuery("platform-overview", async () => {
+    const [t, s, p] = await Promise.all([
+      PlatformService.listTenants(),
+      PlatformService.listSubscriptions(),
+      PlatformService.listPlans(),
+    ]);
+    return {
+      // SYSTEM is our own organization, not a customer.
+      tenants: t.data.filter((r) => r.name !== "SYSTEM") as TenantRow[],
+      subs: s.data as SubscriptionRow[],
+      plans: p.data as PlanRow[],
+      // The clock is read with the data, not while rendering: reading it during
+      // a render makes the render impure and the figures drift between paints.
+      at: Date.now(),
     };
-  }, []);
+  });
+
+  const tenants = data?.tenants ?? [];
+  const subs = data?.subs ?? [];
+  const now = data?.at ?? null;
 
   const paying = tenants.filter((t) => t.status === "ACTIVE");
   const trialing = tenants.filter((t) => t.status === "TRIALING");
@@ -168,241 +166,273 @@ export default function PlatformDashboardPage() {
     (s) => s.status === "TRIALING" && s.trialEndsAt && now !== null && new Date(s.trialEndsAt).getTime() - now < 7 * DAY
   );
 
+  // Read straight off `data` rather than the defaulted copies above: those are
+  // fresh arrays on every render while the request is out, which would make
+  // this memo recompute each paint.
   const bars = useMemo<Bar[]>(() => {
-    if (view === "Sign-ups") return now === null ? [] : signupsByMonth(tenants, now);
-    if (view === "Plan mix") return companiesByPlan(plans, tenants);
-    return revenueByPlan(plans, subs);
-  }, [view, tenants, subs, plans, now]);
+    if (!data) return [];
+    if (view === "Sign-ups") return signupsByMonth(data.tenants, data.at);
+    if (view === "Plan mix") return companiesByPlan(data.plans, data.tenants);
+    return revenueByPlan(data.plans, data.subs);
+  }, [view, data]);
   const peak = Math.max(1, ...bars.map((b) => b.value));
 
   const recent = [...tenants].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)).slice(0, 5);
   const nameOf = (id: string) => tenants.find((t) => t.id === id)?.name || id.slice(0, 8);
 
-  if (error) {
-    return (
-      <p role="alert" className="rounded-[12px] bg-[#ffdfe2] px-[16px] py-[14px] text-[14px] text-[#e63946]">
-        {error}
-      </p>
-    );
-  }
+  // The waiting picture is the real page with its content greyed out: four
+  // cards, the chart panel beside the standing panel, then the two lists.
+  // A single spinner would collapse the layout and rebuild it a second later.
+  const skeleton = (
+    <>
+      <StatCardsSkeleton count={4} />
+      <div className="grid grid-cols-1 gap-[16px] lg:grid-cols-[1.5fr_1fr]">
+        <section className={CARD}>
+          <ChartSkeleton height={190} />
+        </section>
+        <section className={CARD}>
+          <DetailSkeleton rows={4} />
+        </section>
+      </div>
+      <div className="grid grid-cols-1 gap-[16px] lg:grid-cols-2">
+        <section className={CARD}>
+          <ListSkeleton rows={4} />
+        </section>
+        <section className={CARD}>
+          <ListSkeleton rows={5} />
+        </section>
+      </div>
+    </>
+  );
 
   return (
-    <div className="sp-panel-up flex w-full flex-col gap-[16px] select-none">
-      {/* Money first, then who is paying, who might, and who has stopped. */}
-      <div className="grid grid-cols-2 gap-[12px] xl:grid-cols-4">
-        <StatCard
-          {...statMoney({
-            label: "Monthly revenue",
-            value: loading ? "—" : formatMoneyCompact(monthly),
-            note: `${formatMoneyCompact(monthly * 12)} a year at this rate`,
-            href: "/platform/subscriptions",
-          })}
-        />
-        <StatCard
-          {...statGood({
-            label: "Paying",
-            value: loading ? "—" : paying.length,
-            note: "on an active plan",
-            href: "/platform/companies",
-          })}
-        />
-        <StatCard
-          {...statWait({
-            label: "On trial",
-            value: loading ? "—" : trialing.length,
-            note: endingSoon.length
-              ? `${endingSoon.length} ending this week`
-              : `${formatMoneyCompact(trialValue)} if they convert`,
-            href: "/platform/subscriptions",
-          })}
-        />
-        <StatCard
-          {...statRisk({
-            label: "Need chasing",
-            value: loading ? "—" : chasing.length,
-            note: "overdue or stopped",
-            href: "/platform/companies",
-          })}
-        />
-      </div>
+    // `relative` because RefreshBar is absolutely positioned across the top.
+    <div className="sp-panel-up relative flex w-full flex-col gap-[16px]">
+      <RefreshBar active={fetching} />
+      <QueryBoundary
+        loading={loading}
+        error={error}
+        hasData={data !== undefined}
+        skeleton={skeleton}
+        errorMessage={describe(error)}
+        onRetry={refetch}
+      >
+        {/* Money first, then who is paying, who might, and who has stopped. */}
+        <div className="grid grid-cols-2 gap-[12px] xl:grid-cols-4">
+          <StatCard
+            {...statMoney({
+              label: "Monthly revenue",
+              value: formatMoneyCompact(monthly),
+              note: `${formatMoneyCompact(monthly * 12)} a year at this rate`,
+              href: "/platform/subscriptions",
+            })}
+          />
+          <StatCard
+            {...statGood({
+              label: "Paying",
+              value: paying.length,
+              note: "on an active plan",
+              href: "/platform/companies",
+            })}
+          />
+          <StatCard
+            {...statWait({
+              label: "On trial",
+              value: trialing.length,
+              note: endingSoon.length
+                ? `${endingSoon.length} ending this week`
+                : `${formatMoneyCompact(trialValue)} if they convert`,
+              href: "/platform/subscriptions",
+            })}
+          />
+          <StatCard
+            {...statRisk({
+              label: "Need chasing",
+              value: chasing.length,
+              note: "overdue or stopped",
+              href: "/platform/companies",
+            })}
+          />
+        </div>
 
-      <div className="grid grid-cols-1 gap-[16px] lg:grid-cols-[1.5fr_1fr]">
-        {/* One chart, three questions. Bars rather than a line: at this many
-            companies a line would draw a slope that is not really there. */}
-        <section className={CARD}>
-          <div className="flex flex-wrap items-center justify-between gap-[12px]">
-            <h2 className={TITLE}>
-              {view === "Revenue" ? "Revenue by plan" : view === "Sign-ups" ? "New companies" : "Companies per plan"}
-            </h2>
-            <div className="flex items-center gap-[2px] rounded-[10px] bg-[#f5f4f1] p-[3px]">
-              {VIEWS.map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => setView(v)}
-                  className={`cursor-pointer rounded-[8px] px-[12px] py-[6px] text-[13px] font-medium transition-colors duration-200 ${
-                    view === v
-                      ? "bg-white text-[#1e1e1e] shadow-[0_1px_2px_rgba(82,88,102,0.10)]"
-                      : "text-[#525252] hover:text-[#1e1e1e]"
-                  }`}
-                >
-                  {v}
-                </button>
+        <div className="grid grid-cols-1 gap-[16px] lg:grid-cols-[1.5fr_1fr]">
+          {/* One chart, three questions. Bars rather than a line: at this many
+              companies a line would draw a slope that is not really there. */}
+          <section className={CARD}>
+            <div className="flex flex-wrap items-center justify-between gap-[12px]">
+              <h2 className={TITLE}>
+                {view === "Revenue" ? "Revenue by plan" : view === "Sign-ups" ? "New companies" : "Companies per plan"}
+              </h2>
+              <div className="flex items-center gap-[2px] rounded-[10px] bg-[#f5f4f1] p-[3px]">
+                {VIEWS.map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setView(v)}
+                    className={`cursor-pointer rounded-[8px] px-[12px] py-[6px] text-[13px] font-medium transition-colors duration-200 ${
+                      view === v
+                        ? "bg-white text-[#1e1e1e] shadow-[0_1px_2px_rgba(82,88,102,0.10)]"
+                        : "text-[#525252] hover:text-[#1e1e1e]"
+                    }`}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-[22px] flex h-[190px] items-end gap-[12px]">
+              {bars.length === 0 && (
+                <p className="w-full self-center text-center text-[14px] text-[#525252]">
+                  {view === "Revenue" ? "Nobody is paying yet." : "Nothing to show yet."}
+                </p>
+              )}
+              {bars.map((b) => (
+                <div key={b.label} className="flex min-w-0 flex-1 flex-col items-center gap-[8px]">
+                  <span className="text-[12px] font-medium text-[#525252] tabular-nums">{b.display}</span>
+                  <div
+                    title={`${b.label}: ${b.display}`}
+                    style={{
+                      height: `${Math.max(6, (b.value / peak) * 132)}px`,
+                      backgroundColor: b.colour,
+                    }}
+                    className="w-full cursor-default rounded-t-[6px] transition-all duration-500 ease-out hover:opacity-80"
+                  />
+                  <span className="w-full truncate text-center text-[12px] text-[#8f8d87]">{b.label}</span>
+                </div>
               ))}
             </div>
-          </div>
+          </section>
 
-          <div className="mt-[22px] flex h-[190px] items-end gap-[12px]">
-            {bars.length === 0 && (
-              <p className="w-full self-center text-center text-[14px] text-[#525252]">
-                {view === "Revenue" ? "Nobody is paying yet." : "Nothing to show yet."}
+          {/* The split, as a share rather than a count. */}
+          <section className={CARD}>
+            <h2 className={TITLE}>Where companies stand</h2>
+            <div className="mt-[16px] flex flex-col gap-[14px]">
+              {(
+                [
+                  ["Paying", paying.length, GREEN],
+                  ["On trial", trialing.length, BLUE],
+                  ["Need chasing", chasing.length, RED],
+                  ["No plan", tenants.filter((t) => !t.plan).length, SLATE],
+                ] as const
+              ).map(([label, count, colour]) => (
+                <div key={label} className="flex flex-col gap-[6px]">
+                  <span className="flex items-center justify-between text-[13px]">
+                    <span className="flex items-center gap-[8px] text-[#1e1e1e]">
+                      <span className="size-[8px] rounded-full" style={{ backgroundColor: colour }} />
+                      {label}
+                    </span>
+                    <span className="text-[#525252] tabular-nums">{count}</span>
+                  </span>
+                  <span className="h-[8px] w-full overflow-hidden rounded-full bg-[#f0ede6]">
+                    <span
+                      style={{
+                        width: `${tenants.length ? (count / tenants.length) * 100 : 0}%`,
+                        backgroundColor: colour,
+                      }}
+                      className="block h-full rounded-full transition-all duration-500 ease-out"
+                    />
+                  </span>
+                </div>
+              ))}
+              <p className="mt-[2px] text-[12px] text-[#8f8d87]">
+                {formatMoney(perCompany)} a month from each paying company.
               </p>
-            )}
-            {bars.map((b) => (
-              <div key={b.label} className="flex min-w-0 flex-1 flex-col items-center gap-[8px]">
-                <span className="text-[12px] font-medium text-[#525252] tabular-nums">{b.display}</span>
-                <div
-                  title={`${b.label}: ${b.display}`}
-                  style={{
-                    height: `${Math.max(6, (b.value / peak) * 132)}px`,
-                    backgroundColor: b.colour,
-                  }}
-                  className="w-full cursor-default rounded-t-[6px] transition-all duration-500 ease-out hover:opacity-80"
-                />
-                <span className="w-full truncate text-center text-[12px] text-[#8f8d87]">{b.label}</span>
-              </div>
-            ))}
-          </div>
-        </section>
+            </div>
+          </section>
+        </div>
 
-        {/* The split, as a share rather than a count. */}
-        <section className={CARD}>
-          <h2 className={TITLE}>Where companies stand</h2>
-          <div className="mt-[16px] flex flex-col gap-[14px]">
-            {(
-              [
-                ["Paying", paying.length, GREEN],
-                ["On trial", trialing.length, BLUE],
-                ["Need chasing", chasing.length, RED],
-                ["No plan", tenants.filter((t) => !t.plan).length, SLATE],
-              ] as const
-            ).map(([label, count, colour]) => (
-              <div key={label} className="flex flex-col gap-[6px]">
-                <span className="flex items-center justify-between text-[13px]">
-                  <span className="flex items-center gap-[8px] text-[#1e1e1e]">
-                    <span className="size-[8px] rounded-full" style={{ backgroundColor: colour }} />
-                    {label}
-                  </span>
-                  <span className="text-[#525252] tabular-nums">{count}</span>
-                </span>
-                <span className="h-[8px] w-full overflow-hidden rounded-full bg-[#f0ede6]">
-                  <span
-                    style={{
-                      width: `${tenants.length ? (count / tenants.length) * 100 : 0}%`,
-                      backgroundColor: colour,
-                    }}
-                    className="block h-full rounded-full transition-all duration-500 ease-out"
-                  />
-                </span>
-              </div>
-            ))}
-            <p className="mt-[2px] text-[12px] text-[#8f8d87]">
-              {formatMoney(perCompany)} a month from each paying company.
-            </p>
-          </div>
-        </section>
-      </div>
-
-      <div className="grid grid-cols-1 gap-[16px] lg:grid-cols-2">
-        {/* Whoever needs a phone call today. */}
-        <section className={CARD}>
-          <div className="flex items-center justify-between gap-[12px]">
-            <h2 className={TITLE}>Needs attention</h2>
-            <Link
-              href="/platform/companies"
-              className="cursor-pointer text-[13px] font-medium text-[#f5b800] transition-opacity hover:underline hover:opacity-80"
-            >
-              All companies
-            </Link>
-          </div>
-          <div className="mt-[14px] flex flex-col">
-            {chasing.length === 0 && endingSoon.length === 0 && (
-              <p className="py-[10px] text-[14px] text-[#525252]">
-                Nothing overdue and no trial ending this week.
-              </p>
-            )}
-            {chasing.map((t) => (
+        <div className="grid grid-cols-1 gap-[16px] lg:grid-cols-2">
+          {/* Whoever needs a phone call today. */}
+          <section className={CARD}>
+            <div className="flex items-center justify-between gap-[12px]">
+              <h2 className={TITLE}>Needs attention</h2>
               <Link
-                key={t.id}
                 href="/platform/companies"
-                className="-mx-[8px] flex cursor-pointer items-center justify-between gap-[12px] rounded-[8px] border-b border-[#f0ede6] px-[8px] py-[10px] transition-colors last:border-0 hover:bg-[#fafafa]"
+                className="cursor-pointer text-[13px] font-medium text-[#f5b800] transition-opacity hover:underline hover:opacity-80"
               >
-                <span className="min-w-0">
-                  <span className="block truncate text-[14px] font-medium text-[#1e1e1e]">{t.name}</span>
-                  <span className="block truncate text-[12px] text-[#8f8d87]">{toLabel(t.plan)}</span>
-                </span>
-                <StatusPill label={toLabel(t.status)} tone={TONE[String(t.status)] ?? "slate"} />
+                All companies
               </Link>
-            ))}
-            {endingSoon.map((s) => (
-              <Link
-                key={s.id}
-                href="/platform/subscriptions"
-                className="-mx-[8px] flex cursor-pointer items-center justify-between gap-[12px] rounded-[8px] border-b border-[#f0ede6] px-[8px] py-[10px] transition-colors last:border-0 hover:bg-[#fafafa]"
-              >
-                <span className="min-w-0">
-                  <span className="block truncate text-[14px] font-medium text-[#1e1e1e]">
-                    {nameOf(s.organizationId)}
+            </div>
+            <div className="mt-[14px] flex flex-col">
+              {chasing.length === 0 && endingSoon.length === 0 && (
+                <p className="py-[10px] text-[14px] text-[#525252]">
+                  Nothing overdue and no trial ending this week.
+                </p>
+              )}
+              {chasing.map((t) => (
+                <Link
+                  key={t.id}
+                  href="/platform/companies"
+                  className="-mx-[8px] flex cursor-pointer items-center justify-between gap-[12px] rounded-[8px] border-b border-[#f0ede6] px-[8px] py-[10px] transition-colors last:border-0 hover:bg-[#fafafa]"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-[14px] font-medium text-[#1e1e1e]">{t.name}</span>
+                    <span className="block truncate text-[12px] text-[#8f8d87]">{toLabel(t.plan)}</span>
                   </span>
-                  <span className="block truncate text-[12px] text-[#8f8d87]">
-                    Trial ends {toDate(s.trialEndsAt)}
+                  <StatusPill label={toLabel(t.status)} tone={TONE[String(t.status)] ?? "slate"} />
+                </Link>
+              ))}
+              {endingSoon.map((s) => (
+                <Link
+                  key={s.id}
+                  href="/platform/subscriptions"
+                  className="-mx-[8px] flex cursor-pointer items-center justify-between gap-[12px] rounded-[8px] border-b border-[#f0ede6] px-[8px] py-[10px] transition-colors last:border-0 hover:bg-[#fafafa]"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-[14px] font-medium text-[#1e1e1e]">
+                      {nameOf(s.organizationId)}
+                    </span>
+                    <span className="block truncate text-[12px] text-[#8f8d87]">
+                      Trial ends {toDate(s.trialEndsAt)}
+                    </span>
                   </span>
-                </span>
-                <StatusPill label="Trial ending" tone="orange" />
-              </Link>
-            ))}
-          </div>
-        </section>
+                  <StatusPill label="Trial ending" tone="orange" />
+                </Link>
+              ))}
+            </div>
+          </section>
 
-        {/* The newest sign-ups, so a support call has context. */}
-        <section className={CARD}>
-          <div className="flex items-center justify-between gap-[12px]">
-            <h2 className={TITLE}>Latest sign-ups</h2>
-            <Link
-              href="/platform/companies"
-              className="cursor-pointer text-[13px] font-medium text-[#f5b800] transition-opacity hover:underline hover:opacity-80"
-            >
-              All companies
-            </Link>
-          </div>
-          <div className="mt-[14px] flex flex-col">
-            {!loading && recent.length === 0 && (
-              <p className="py-[10px] text-[14px] text-[#525252]">No companies yet.</p>
-            )}
-            {recent.map((t) => (
+          {/* The newest sign-ups, so a support call has context. */}
+          <section className={CARD}>
+            <div className="flex items-center justify-between gap-[12px]">
+              <h2 className={TITLE}>Latest sign-ups</h2>
               <Link
-                key={t.id}
                 href="/platform/companies"
-                className="-mx-[8px] flex cursor-pointer items-center justify-between gap-[12px] rounded-[8px] border-b border-[#f0ede6] px-[8px] py-[10px] transition-colors last:border-0 hover:bg-[#fafafa]"
+                className="cursor-pointer text-[13px] font-medium text-[#f5b800] transition-opacity hover:underline hover:opacity-80"
               >
-                <span className="min-w-0">
-                  <span className="block truncate text-[14px] font-medium text-[#1e1e1e]">{t.name}</span>
-                  <span className="block truncate text-[12px] text-[#8f8d87]">
-                    {t.userCount} people &middot; {t.branchCount} branches
-                  </span>
-                </span>
-                <span className="shrink-0 text-[13px] text-[#525252]">{toDate(t.createdAt)}</span>
+                All companies
               </Link>
-            ))}
-          </div>
-        </section>
-      </div>
+            </div>
+            <div className="mt-[14px] flex flex-col">
+              {recent.length === 0 && (
+                <p className="py-[10px] text-[14px] text-[#525252]">No companies yet.</p>
+              )}
+              {recent.map((t) => (
+                <Link
+                  key={t.id}
+                  href="/platform/companies"
+                  className="-mx-[8px] flex cursor-pointer items-center justify-between gap-[12px] rounded-[8px] border-b border-[#f0ede6] px-[8px] py-[10px] transition-colors last:border-0 hover:bg-[#fafafa]"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-[14px] font-medium text-[#1e1e1e]">{t.name}</span>
+                    <span className="block truncate text-[12px] text-[#8f8d87]">
+                      {t.userCount} people &middot; {t.branchCount} branches
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-[13px] text-[#525252]">{toDate(t.createdAt)}</span>
+                </Link>
+              ))}
+            </div>
+          </section>
+        </div>
 
-      <p className="text-[12px] text-[#8f8d87]">
-        Counted in this browser from the companies, subscriptions and plans lists. The
-        console API has no summary call yet, and no history, so these are today&rsquo;s
-        figures only.
-      </p>
+        <p className="text-[12px] text-[#8f8d87]">
+          Counted in this browser from the companies, subscriptions and plans lists. The
+          console API has no summary call yet, and no history, so these are today&rsquo;s
+          figures only.
+        </p>
+      </QueryBoundary>
     </div>
   );
 }

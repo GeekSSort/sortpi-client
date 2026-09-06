@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo } from "react";
 import { OverviewService } from "@/services";
+import { useQuery, queryKey } from "@/lib/query/useQuery";
 import { CustomerListItem } from "@/types/overview";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import OverviewPanel, { PANEL_CELL, PANEL_HEAD, PANEL_TEXT } from "./OverviewPanel";
@@ -18,22 +19,26 @@ const TYPE_TONE: Record<CustomerListItem["type"], Tone> = {
 const taka = (n: number) => `৳ ${n.toLocaleString("en-IN")}`;
 
 export default function CustomerListModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
-  const [customers, setCustomers] = useState<CustomerListItem[]>([]);
+  // Only asks while the panel is open, and the answer is shared with every
+  // other screen reading this key — reopening the panel repaints from cache
+  // instead of blanking the table for the length of a round trip.
+  const {
+    data: customers,
+    loading,
+    error,
+    refetch,
+  } = useQuery(queryKey("overview-customers"), () => OverviewService.getCustomers(), { enabled: isOpen });
 
-  useEffect(() => {
-    OverviewService.getCustomers()
-      .then(setCustomers)
-      .catch(() => {});
-  }, []);
+  const rows = useMemo(() => customers ?? [], [customers]);
 
   const stats = useMemo(() => {
-    const due = customers.reduce((s, c) => s + c.due, 0);
+    const due = rows.reduce((s, c) => s + c.due, 0);
     return [
-      { label: "Customers", value: String(customers.length) },
-      { label: "Lifetime spend", value: taka(customers.reduce((s, c) => s + c.totalSpent, 0)) },
+      { label: "Customers", value: String(rows.length) },
+      { label: "Lifetime spend", value: taka(rows.reduce((s, c) => s + c.totalSpent, 0)) },
       { label: "Outstanding due", value: taka(due) },
     ];
-  }, [customers]);
+  }, [rows]);
 
   return (
     <OverviewPanel<CustomerListItem>
@@ -42,12 +47,15 @@ export default function CustomerListModal({ isOpen, onClose }: { isOpen: boolean
       title="Customer List"
       subtitle="The people behind your customer count."
       searchPlaceholder="Search by customer, ID or phone..."
-      rows={customers}
+      rows={rows}
       searchable={(r) => `${r.customer} ${r.customerId} ${r.phone}`}
       filters={FILTERS}
       matchesFilter={(r, f) => r.status === f}
       stats={stats}
       grid={GRID}
+      loading={loading}
+      error={error}
+      onRetry={refetch}
       minWidth={900}
       emptyText="No customers match that search."
       head={

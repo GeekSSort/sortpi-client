@@ -4,23 +4,33 @@ import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronDown, CheckCircle2 } from "lucide-react";
 import { CustomerService } from "@/services";
+import { useMutation } from "@/lib/query/useQuery";
 
 export default function AddCustomerPage() {
   const router = useRouter();
-  const [customerName, setCustomerName] = useState("Rahman Uddin");
-  const [customerType, setCustomerType] = useState<"Regular" | "VIP" | "Premium">("Premium");
-  const [phoneNumber, setPhoneNumber] = useState("+880 1542-34790");
+  // Empty, not a sample person. The form used to open pre-filled with a
+  // plausible name, type and phone number, and pressing the button without
+  // touching a field created that invented customer for real.
+  const [customerName, setCustomerName] = useState("");
+  const [customerType, setCustomerType] = useState<"Regular" | "VIP" | "Premium">("Regular");
+  const [phoneNumber, setPhoneNumber] = useState("");
   const [isTypeDropdownOpen, setIsTypeDropdownOpen] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [successMessage, setSuccessMessage] = useState(false);
+
+  // A new customer shows up in the directory and in the dashboard's customer
+  // count the moment this resolves, on whichever screens are already mounted.
+  const { mutate: createCustomer, pending: isSubmitting, error } = useMutation(
+    (payload: Parameters<typeof CustomerService.createCustomer>[0]) =>
+      CustomerService.createCustomer(payload),
+    { invalidates: ["customers", "dashboard"] }
+  );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!customerName || !phoneNumber) return;
+    if (!customerName.trim() || !phoneNumber.trim()) return;
 
-    setIsSubmitting(true);
     try {
-      await CustomerService.createCustomer({
+      await createCustomer({
         name: customerName,
         phone: phoneNumber,
         type: customerType,
@@ -31,15 +41,14 @@ export default function AddCustomerPage() {
       setTimeout(() => {
         router.push("/customers");
       }, 1400);
-    } catch (err) {
-      console.error("Failed to add customer:", err);
-    } finally {
-      setIsSubmitting(false);
+    } catch {
+      // The failure is rendered below rather than swallowed into the console —
+      // a silent catch left the form looking as though nothing had happened.
     }
   };
 
   return (
-    <div className="w-full flex flex-col gap-6 pb-12 select-none">
+    <div className="w-full flex flex-col gap-6 pb-12">
       {/* Top Title & Subtitle */}
       <div>
         <h2 className="text-xl sm:text-2xl font-extrabold text-gray-900 tracking-tight">
@@ -130,6 +139,18 @@ export default function AddCustomerPage() {
               </div>
             </div>
           </div>
+
+          {/* Failure has to be visible, or the button just looks unresponsive */}
+          {error !== undefined && !successMessage && (
+            <div
+              role="alert"
+              className="p-3.5 bg-red-50 border border-red-200 rounded-xl text-xs font-semibold text-red-700 text-center"
+            >
+              {error instanceof Error && error.message
+                ? error.message
+                : "The customer could not be added. Please try again."}
+            </div>
+          )}
 
           {/* Success Notification */}
           {successMessage && (

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { EmployeeRecord } from "@/types/hrm";
 import { HrmService } from "@/services/hrmService";
@@ -13,6 +13,8 @@ import DateField from "@/components/shared/DateField";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
 import { toTimeInput } from "@/services/mappers/employee";
 import { toApiDay } from "@/lib/dateFilter";
+import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/QueryBoundary";
 
 /**
  * All Employees — Figma 59:17405.
@@ -103,15 +105,15 @@ function AddIcon() {
 
 /** No employee photos exist server-side, so the avatar cell shows initials. */
 export default function HrmPage() {
-  const [rows, setRows] = useState<EmployeeRecord[]>([]);
-  const [total, setTotal] = useState(0);
   const [query, setQuery] = useState("");
+  /** The debounce settles the term before it reaches the cache key: typing a
+      name is one request instead of five. */
+  const [term, setTerm] = useState("");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("All Employees");
   const [filterOpen, setFilterOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
   const [day, setDay] = useState<Date | null>(null);
-  const [loading, setLoading] = useState(true);
   const [note, setNote] = useState<string | null>(null);
   const filterRef = useRef<HTMLDivElement>(null);
 
@@ -121,62 +123,37 @@ export default function HrmPage() {
   const [clockTime, setClockTime] = useState("");
   const [dropOf, setDropOf] = useState<EmployeeRecord | null>(null);
   const [saving, setSaving] = useState(false);
-  /** The debounce is for typing. Waiting 250ms to make the FIRST request
-      just adds a quarter second of blank table on reload. */
-  const firstLoad = useRef(true);
-
-  const load = useCallback(async () => {
-    try {
-      const res = await HrmService.getEmployees({
-        search: query || undefined,
-        status: filter === "All Employees" ? undefined : filter,
-        day: day ? toApiDay(day) : undefined,
-        page,
-        limit: pageSize,
-      });
-      setRows(res.data);
-      setTotal(res.total);
-      setNote(null);
-    } catch (e) {
-      setNote(HrmService.describeError(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [query, filter, day, page, pageSize]);
 
   useEffect(() => {
-    // Debounced: this used to fire a request per keystroke. The guard was
-    // already here, so the rows were never wrong — just five requests to type
-    // a name.
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      setLoading(true);
-      (async () => {
-        try {
-          const res = await HrmService.getEmployees({
-            search: query || undefined,
-            status: filter === "All Employees" ? undefined : filter,
-            day: day ? toApiDay(day) : undefined,
-            page,
-            limit: pageSize,
-          });
-          if (cancelled) return;
-          setRows(res.data);
-          setTotal(res.total);
-          setNote(null);
-        } catch (e) {
-          if (!cancelled) setNote(HrmService.describeError(e));
-        } finally {
-          if (!cancelled) setLoading(false);
-        }
-      })();
-    }, firstLoad.current ? 0 : 250);
-    firstLoad.current = false;
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [query, filter, day, page, pageSize]);
+    if (query === term) return;
+    const id = setTimeout(() => setTerm(query), 250);
+    return () => clearTimeout(id);
+  }, [query, term]);
+
+  const apiDay = day ? toApiDay(day) : undefined;
+  // Every input the answer depends on is in the key. Leaving the status filter
+  // or the day out would let "All Employees" and "Present" share one slot and
+  // show each other's rows.
+  const { data, loading, fetching, error, refetch } = useQuery(
+    queryKey("employees", {
+      page,
+      limit: pageSize,
+      search: term,
+      status: filter === "All Employees" ? undefined : filter,
+      day: apiDay,
+    }),
+    () =>
+      HrmService.getEmployees({
+        search: term || undefined,
+        status: filter === "All Employees" ? undefined : filter,
+        day: apiDay,
+        page,
+        limit: pageSize,
+      })
+  );
+
+  const rows = data?.data ?? [];
+  const total = data?.total ?? 0;
 
   useEffect(() => {
     if (!filterOpen) return;
@@ -199,7 +176,9 @@ export default function HrmPage() {
       setNote(done);
       setClockOf(null);
       setDropOf(null);
-      await load();
+      // A clock-in or a deactivation changes the roster here and the hours the
+      // payroll run reads, so both go stale rather than only this table.
+      invalidate("employees", "payroll");
     } catch (e) {
       setNote(HrmService.describeError(e));
     } finally {
@@ -214,7 +193,7 @@ export default function HrmPage() {
   };
 
   return (
-    <div className="flex w-full flex-col gap-[14px] select-none">
+    <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 59:17407. Same shape as the other list pages: search on the
           left, the controls that narrow the list on the right. */}
       <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
@@ -316,7 +295,8 @@ export default function HrmPage() {
       </div>
 
       {/* Table card — 59:17439 */}
-      <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+        <RefreshBar active={fetching} />
         {note && (
           <p role="status" className="mx-[16px] mt-[16px] rounded-[8px] bg-[#fdf7e6] px-[12px] py-[8px] text-[13px] text-[#6d5b46]">
             {note}
@@ -337,23 +317,37 @@ export default function HrmPage() {
                 <div className={`${CELL} h-[40px] justify-center border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Status</span></div>
                 <div className={`${CELL} h-[40px] justify-center border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Action</span></div>
 
-                {loading && (
-                  <div className="col-span-8 px-[12px] py-[28px] text-center text-[14px] text-[#525252]">
-                    Loading employees…
+                <QueryBoundary
+                  loading={loading}
+                  error={error}
+                  hasData={data !== undefined}
+                  skeleton={
+                    <div className="col-span-8">
+                      <TableSkeleton columns={GRID} rows={pageSize} />
+                    </div>
+                  }
+                  errorMessage={HrmService.describeError(error)}
+                  onRetry={refetch}
+                >
+                {rows.length === 0 && (
+                  <div className="col-span-8">
+                    <EmptyState
+                      message={
+                        term || filter !== "All Employees" || day
+                          ? "No employees match this view."
+                          : "No employees yet."
+                      }
+                      hint={
+                        term || filter !== "All Employees" || day
+                          ? undefined
+                          : "Add one to get started."
+                      }
+                      compact
+                    />
                   </div>
                 )}
 
-                {loading && rows.length === 0 && (
-                  <TableSkeleton columns={GRID} rows={pageSize} />
-                )}
-                {!loading && rows.length === 0 && (
-                  <div className="col-span-8 px-[12px] py-[28px] text-center text-[14px] text-[#525252]">
-                    No employees match this view.
-                  </div>
-                )}
-
-                {!loading &&
-                  rows.map((e, i) => (
+                {rows.map((e, i) => (
                     <React.Fragment key={e.id || e.index}>
                       <div className={`${CELL} h-[54px] ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
                         <span className={BODY}>{e.index}</span>
@@ -389,6 +383,7 @@ export default function HrmPage() {
                       </div>
                     </React.Fragment>
                   ))}
+                </QueryBoundary>
               </div>
             </div>
           </div>

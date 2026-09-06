@@ -7,27 +7,6 @@ import SelectedItems from "@/components/modules/pos/SelectedItems";
 import { ProductItem, CartItem } from "@/types/pos";
 import { usePosView } from "@/components/modules/pos/posView";
 
-/** Two panes, side by side. */
-function TwoColumnIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden>
-      <rect x="1.5" y="2.5" width="6.5" height="13" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="10" y="2.5" width="6.5" height="13" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  );
-}
-
-/** Three panes: products, basket, money. */
-function ThreeColumnIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden>
-      <rect x="1.5" y="2.5" width="4" height="13" rx="1.3" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="7" y="2.5" width="4" height="13" rx="1.3" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="12.5" y="2.5" width="4" height="13" rx="1.3" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  );
-}
-
 export default function PosPage() {
   const [cart, setCart] = useState<CartItem[]>([]);
 
@@ -79,12 +58,19 @@ export default function PosPage() {
         {/* Products, what has been rung up, and the money — one job each. All
             three are as tall as the window and scroll inside themselves, so
             the page never scrolls as a whole. */}
-        <div className="grid h-full w-full min-h-0 grid-cols-1 gap-[16px] xl:grid-cols-[1.6fr_1fr_1fr]">
+        {/* The product wall carries more per row than the other two columns:
+            tiles have a minimum width of 150px, so at 1.6fr it fitted only two
+            per row on a laptop while the cart and the invoice sat half empty.
+            the extra width comes from the SELECTED ITEMS column, which holds
+            two short columns and has room to spare, not from the invoice —
+            that one carries the discount box, the coupon field and the
+            totals, and narrowing it clipped their labels. */}
+        <div className="grid h-full w-full min-h-0 grid-cols-1 gap-[16px] xl:grid-cols-[2.1fr_0.95fr_1.2fr]">
           <div className="flex min-h-0 min-w-0 flex-col overflow-y-auto rounded-[12px] bg-white p-[16px] shadow-[inset_0_0_0_1px_#eaeaea]">
             <ProductGrid onSelectProduct={handleSelectProduct} />
           </div>
 
-          <div className="min-h-0 min-w-0">
+          <div className="flex h-full min-h-0 min-w-0 flex-col">
             <SelectedItems
               cart={cart}
               onUpdateQuantity={handleUpdateQuantity}

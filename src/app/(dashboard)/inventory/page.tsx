@@ -1,7 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import Image from "next/image";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { InventoryProduct } from "@/types/inventory";
 import { InventoryService } from "@/services";
@@ -9,7 +8,15 @@ import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import TablePagination from "@/components/shared/TablePagination";
 import TableSkeleton from "@/components/shared/TableSkeleton";
+import CatalogManagerModal from "@/components/modules/dashboard/CatalogManagerModal";
+import type { CatalogKind } from "@/services/inventoryService";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
+import { useQuery, queryKey, setQueryData, invalidate } from "@/lib/query/useQuery";
+import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/QueryBoundary";
+import ProductImage from "@/components/shared/ProductImage";
+import { useProductDiscounts } from "@/lib/usePosDiscounts";
+import { priceAfter } from "@/lib/posDiscounts";
+import { formatMoney } from "@/lib/format";
 
 /**
  * Products — Figma 51:10942.
@@ -54,73 +61,116 @@ function FilterIcon() {
 }
 
 // #  Product Name  Category  Brand  Price  Stock  SKU  Status  Action
+function TagIcon() {
+  return (
+    <svg className="block size-[18px] shrink-0" viewBox="0 0 18 18" fill="none" aria-hidden>
+      <path
+        d="M2.25 8.06V3.19c0-.52.42-.94.94-.94h4.87c.25 0 .49.1.66.28l6.56 6.56c.37.37.37.96 0 1.33l-4.87 4.87c-.37.37-.96.37-1.33 0L2.53 8.72a.94.94 0 0 1-.28-.66Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <circle cx="5.6" cy="5.6" r="1.05" fill="currentColor" />
+    </svg>
+  );
+}
+
+function BrandIcon() {
+  return (
+    <svg className="block size-[18px] shrink-0" viewBox="0 0 18 18" fill="none" aria-hidden>
+      <path
+        d="M9 1.9l2.06 4.3 4.69.63-3.42 3.28.85 4.7L9 12.55l-4.18 2.26.85-4.7L2.25 6.83l4.69-.63L9 1.9Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 const GRID = "grid-cols-[50fr_210fr_144fr_114fr_130fr_100fr_157fr_140fr_83fr]";
 const CELL = "flex min-w-0 items-center p-[12px]";
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e]";
 const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
 
 export default function InventoryPage() {
-  const [products, setProducts] = useState<InventoryProduct[]>([]);
   const [query, setQuery] = useState("");
+  /** The debounce settles the search term before it reaches the cache key, so
+      typing makes one request instead of one per letter — and a slow answer
+      for "so" can no longer land on top of the rows for "sony", because it
+      belongs to a key that is no longer on screen. */
+  const [term, setTerm] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
-  /** The debounce is for typing. Waiting 250ms to make the FIRST request
-      just adds a quarter second of blank table on reload. */
-  const firstLoad = useRef(true);
-  /** The API's count of everything matching, not of what this page holds. */
-  const [total, setTotal] = useState(0);
   const [note, setNote] = useState<string | null>(null);
+  /** Which lookup list the manage modal is showing, if any. */
+  const [managing, setManaging] = useState<CatalogKind | null>(null);
   const [detailOf, setDetailOf] = useState<InventoryProduct | null>(null);
   const [deleteOf, setDeleteOf] = useState<InventoryProduct | null>(null);
   const [editOf, setEditOf] = useState<InventoryProduct | null>(null);
-  const [draft, setDraft] = useState({ name: "", brand: "", price: "", stock: "" });
+  /** `brandId`, not a brand name: the API takes an id, and a shop's brand list
+      is the only place those ids come from. */
+  const [draft, setDraft] = useState({ name: "", brandId: "", price: "" });
   const [editError, setEditError] = useState<string | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  // The till's product offers, so this table shows what a customer is charged
+  // rather than a shelf price the POS has already discounted past.
+  const rates = useProductDiscounts();
+
+  // The brand list, for the edit dialog's picker. Shared with the add-product
+  // form's cache entry, so opening the dialog costs nothing on a page that has
+  // already been to Add New.
+  const catalog = useQuery(queryKey("inventory", { part: "catalog" }), () =>
+    InventoryService.getCatalogOptions()
+  );
+  const brandOptions = catalog.data?.brands ?? [];
 
   const openEdit = (r: InventoryProduct) => {
-    setDraft({ name: r.name, brand: r.brand, price: String(r.price), stock: String(r.stock) });
+    // The row carries the brand's NAME — it is what the table shows — so the
+    // id is looked back up. Brand names are unique per organization, which is
+    // what makes that safe.
+    const brand = brandOptions.find((b) => b.name === r.brand);
+    setDraft({ name: r.name, brandId: brand?.id ?? "", price: String(r.price) });
     setEditError(null);
     setEditOf(r);
   };
 
-  /** Stock decides the status, so it is derived rather than editable. */
-  const statusFor = (stock: number): InventoryProduct["status"] =>
-    stock === 0 ? "Out of Stock" : stock <= 10 ? "Low Stock" : "In Stock";
-
   useEffect(() => {
-    // Debounced and guarded: a request per keystroke let a slow answer for
-    // "so" land after "sony" and repopulate the table with the wrong rows.
-    let live = true;
-    const id = setTimeout(() => {
-      setLoading(true);
-      // One page at a time. The whole list used to be requested and sliced in
-      // the browser, but the API caps a page at 200, so anything past that was
-      // silently truncated and the pager called 200 the total.
-      InventoryService.getProducts({ search: query, page, limit: pageSize })
-        .then((res) => {
-          if (!live) return;
-          setProducts(res.data);
-          setTotal(res.total);
-          setFailed(false);
-        })
-        .catch(() => live && setFailed(true))
-        .finally(() => live && setLoading(false));
-    }, firstLoad.current ? 0 : 250);
-    firstLoad.current = false;
-    return () => {
-      live = false;
-      clearTimeout(id);
-    };
-  }, [query, page, pageSize]);
+    if (query === term) return;
+    const id = setTimeout(() => setTerm(query), 250);
+    return () => clearTimeout(id);
+  }, [query, term]);
 
+  // One page at a time. The whole list used to be requested and sliced in the
+  // browser, but the API caps a page at 200, so anything past that was
+  // silently truncated and the pager called 200 the total.
+  const key = queryKey("inventory", { page, limit: pageSize, search: term });
+  const { data, loading, fetching, error, refetch } = useQuery(key, () =>
+    InventoryService.getProducts({ search: term, page, limit: pageSize })
+  );
+
+  const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const current = Math.min(page, totalPages);
   // The server already sliced. `rows` is the page.
-  const rows = products;
+  const rows = data?.data ?? [];
+
+  /**
+   * Rewrite this page in the cache.
+   *
+   * Edit and delete have no endpoint yet, so both are screen-only — but the
+   * rows now live in the cache rather than in component state, and patching
+   * the entry is what keeps the change visible until the next refetch replaces
+   * it with the server's answer.
+   */
+  const patchRows = (fn: (list: InventoryProduct[]) => InventoryProduct[]) => {
+    if (!data) return;
+    setQueryData(key, { ...data, data: fn(data.data) });
+  };
 
   return (
-    <div className="flex w-full flex-col gap-[14px] select-none">
+    <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 51:10943 */}
       <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
         <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
@@ -147,7 +197,27 @@ export default function InventoryPage() {
           </button>
         </div>
 
-        <div className="flex shrink-0 items-center gap-[16px]">
+        <div className="flex shrink-0 flex-wrap items-center gap-[12px]">
+          {/* Categories and brands were read-only from the app: the add-product
+              form offered whatever was already there and a shop had no way to
+              make its own. They sit here rather than in Settings because this
+              is the screen where somebody notices one is missing. */}
+          <button
+            type="button"
+            onClick={() => setManaging("category")}
+            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[12px] bg-white px-[16px] py-[8px] text-[15px] leading-[24px] font-medium whitespace-nowrap text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e]"
+          >
+            <TagIcon />
+            Categories
+          </button>
+          <button
+            type="button"
+            onClick={() => setManaging("brand")}
+            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[12px] bg-white px-[16px] py-[8px] text-[15px] leading-[24px] font-medium whitespace-nowrap text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e]"
+          >
+            <BrandIcon />
+            Brands
+          </button>
           <Link
             href="/inventory/add"
             style={{ backgroundImage: GOLD_GRADIENT }}
@@ -160,7 +230,8 @@ export default function InventoryPage() {
       </div>
 
       {/* Table card — 51:10975 */}
-      <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+        <RefreshBar active={fetching} />
         <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="overflow-x-auto">
             <div className="min-w-[1128px]">
@@ -177,15 +248,19 @@ export default function InventoryPage() {
               </div>
 
               <div className="mt-[6px]">
-                {rows.length === 0 && loading && (
-                  <TableSkeleton columns={GRID} rows={pageSize} />
-                )}
-                {rows.length === 0 && !loading && (
-                  <p className="py-[40px] text-center text-[14px] text-[#525252]">
-                    {failed
-                      ? "Products could not be loaded. Refresh to try again."
-                      : "No products match that search."}
-                  </p>
+                <QueryBoundary
+                  loading={loading}
+                  error={error}
+                  hasData={data !== undefined}
+                  skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
+                  errorMessage="Products could not be loaded."
+                  onRetry={refetch}
+                >
+                {rows.length === 0 && (
+                  <EmptyState
+                    message={term ? "No products match that search." : "No products yet."}
+                    hint={term ? undefined : "Add one to get started."}
+                  />
                 )}
                 {rows.map((r, i) => (
                   <div
@@ -196,13 +271,30 @@ export default function InventoryPage() {
                     {/* 28px thumbnail, 8px from the name — 57:12649 */}
                     <div className={`${CELL} gap-[8px]`}>
                       <span className="relative size-[28px] shrink-0 overflow-hidden rounded-[6px]">
-                        <Image src={r.image || "/placeholder-product.svg"} alt="" fill sizes="28px" className="object-cover" />
+                        <ProductImage src={r.image} alt="" sizes="28px" />
                       </span>
                       <span className={`${TEXT} truncate`}>{r.name}</span>
                     </div>
                     <div className={CELL}><span className={`${TEXT} truncate`}>{r.category}</span></div>
                     <div className={CELL}><span className={`${TEXT} truncate`}>{r.brand}</span></div>
-                    <div className={CELL}><span className={`${TEXT} truncate`}>{r.priceFormatted}</span></div>
+                    <div className={CELL}>
+                      {(() => {
+                        const offer = rates[r.variantId];
+                        if (!offer || r.price <= 0) {
+                          return <span className={`${TEXT} truncate`}>{r.priceFormatted}</span>;
+                        }
+                        return (
+                          <span className="flex min-w-0 flex-col">
+                            <span className={`${TEXT} truncate`}>
+                              {formatMoney(priceAfter(r.price, offer), { decimals: 2 })}
+                            </span>
+                            <span className="truncate text-[11px] leading-[14px] text-[#a3a3a3] line-through">
+                              {r.priceFormatted}
+                            </span>
+                          </span>
+                        );
+                      })()}
+                    </div>
                     <div className={CELL}><span className={`${TEXT} truncate`}>{r.stock}</span></div>
                     <div className={CELL}><span className={`${TEXT} truncate`}>{r.sku}</span></div>
                     <div className={`${CELL} justify-center`}>
@@ -220,6 +312,7 @@ export default function InventoryPage() {
                     </div>
                   </div>
                 ))}
+                </QueryBoundary>
               </div>
             </div>
           </div>
@@ -232,7 +325,7 @@ export default function InventoryPage() {
               <div className="flex items-start justify-between gap-[10px]">
                 <div className="flex min-w-0 items-center gap-[8px]">
                   <span className="relative size-[28px] shrink-0 overflow-hidden rounded-[6px]">
-                    <Image src={r.image || "/placeholder-product.svg"} alt="" fill sizes="28px" className="object-cover" />
+                    <ProductImage src={r.image} alt="" sizes="28px" />
                   </span>
                   <div className="min-w-0">
                     <p className={`${TEXT} truncate !text-[#1e1e1e]`}>{r.name}</p>
@@ -247,7 +340,11 @@ export default function InventoryPage() {
                 <span className="truncate text-[12px] tracking-[-0.24px] text-[#525252]">
                   {r.category} · {r.stock} in stock
                 </span>
-                <span className={`${TEXT} shrink-0`}>{r.priceFormatted}</span>
+                <span className={`${TEXT} shrink-0`}>
+                  {rates[r.variantId] && r.price > 0
+                    ? formatMoney(priceAfter(r.price, rates[r.variantId]), { decimals: 2 })
+                    : r.priceFormatted}
+                </span>
               </div>
             </div>
           ))}
@@ -298,7 +395,7 @@ export default function InventoryPage() {
           <div className="flex flex-col gap-[16px]">
             <div className="flex items-center gap-[12px]">
               <span className="relative size-[56px] shrink-0 overflow-hidden rounded-[10px] border border-solid border-[#eaeaea]">
-                <Image src={detailOf.image || "/placeholder-product.svg"} alt="" fill sizes="56px" className="object-cover" />
+                <ProductImage src={detailOf.image} alt="" sizes="56px" />
               </span>
               <div className="min-w-0">
                 <p className="truncate text-[16px] font-medium text-[#1e1e1e]">{detailOf.name}</p>
@@ -346,7 +443,7 @@ export default function InventoryPage() {
               onClick={() => {
                 if (!deleteOf) return;
                 // Changed on screen only: there is no delete endpoint yet.
-                setProducts((list) => list.filter((x) => x.id !== deleteOf.id));
+                patchRows((list) => list.filter((x) => x.id !== deleteOf.id));
                 setNote(`${deleteOf.name} deleted`);
                 setDeleteOf(null);
               }}
@@ -378,40 +475,61 @@ export default function InventoryPage() {
             </button>
             <button
               type="button"
+              disabled={savingEdit}
               style={{ backgroundImage: GOLD_GRADIENT }}
               className={MODAL_PRIMARY}
-              onClick={() => {
-                if (!editOf) return;
+              onClick={async () => {
+                if (!editOf || savingEdit) return;
                 const name = draft.name.trim();
                 const price = Number(draft.price);
-                const stock = Number(draft.stock);
                 if (!name) return setEditError("Product name is required.");
-                if (!draft.brand.trim()) return setEditError("Brand is required.");
                 if (!draft.price.trim() || Number.isNaN(price) || price < 0)
                   return setEditError("Enter a valid price.");
-                if (!draft.stock.trim() || Number.isNaN(stock) || stock < 0)
-                  return setEditError("Enter a valid stock count.");
-                // Changed on screen only: there is no update endpoint yet.
-                setProducts((list) =>
-                  list.map((x) =>
-                    x.id === editOf.id
-                      ? {
-                          ...x,
-                          name,
-                          brand: draft.brand.trim(),
-                          price,
-                          priceFormatted: `৳ ${price.toLocaleString("en-IN")}`,
-                          stock,
-                          status: statusFor(stock),
-                        }
-                      : x
-                  )
-                );
-                setNote(`${name} updated`);
-                setEditOf(null);
+
+                // Two requests, because they are two resources: the product
+                // carries its name and brand, the price belongs to the
+                // variant. Each is skipped when nothing about it changed.
+                const brandChanged =
+                  draft.brandId !== (brandOptions.find((b) => b.name === editOf.brand)?.id ?? "");
+                const detailsChanged = name !== editOf.name || brandChanged;
+                const priceChanged = price !== editOf.price;
+                if (!detailsChanged && !priceChanged) {
+                  setEditOf(null);
+                  return;
+                }
+
+                setSavingEdit(true);
+                setEditError(null);
+                try {
+                  if (detailsChanged) {
+                    await InventoryService.updateProduct(editOf.id, {
+                      name,
+                      brandId: draft.brandId || null,
+                    });
+                  }
+                  if (priceChanged) {
+                    await InventoryService.setPrice(editOf.id, price);
+                  }
+                  setNote(`${name} updated`);
+                  setEditOf(null);
+                  // The same product is a tile on the till, a line on the
+                  // stock screen and a figure on the dashboard. Refetched
+                  // rather than patched: the API owns what it now says.
+                  invalidate("inventory", "stock", "dashboard", "pos-products");
+                } catch (err) {
+                  // The server names the real problem — a duplicate name, a
+                  // missing permission — and that is more use than "try again".
+                  setEditError(
+                    err instanceof Error && err.message
+                      ? err.message
+                      : "The changes could not be saved."
+                  );
+                } finally {
+                  setSavingEdit(false);
+                }
               }}
             >
-              Save changes
+              {savingEdit ? "Saving…" : "Save changes"}
             </button>
           </>
         }
@@ -420,7 +538,7 @@ export default function InventoryPage() {
           <div className="flex flex-col gap-[14px]">
             <div className="flex items-center gap-[12px]">
               <span className="relative size-[48px] shrink-0 overflow-hidden rounded-[10px] border border-solid border-[#eaeaea]">
-                <Image src={editOf.image || "/placeholder-product.svg"} alt="" fill sizes="48px" className="object-cover" />
+                <ProductImage src={editOf.image} alt="" sizes="48px" />
               </span>
               <div className="min-w-0">
                 <p className="truncate text-[13px] text-[#525252]">{editOf.sku}</p>
@@ -430,9 +548,7 @@ export default function InventoryPage() {
 
             {[
               { k: "name" as const, label: "Product name", placeholder: "Product name", mode: undefined },
-              { k: "brand" as const, label: "Brand", placeholder: "Brand", mode: undefined },
               { k: "price" as const, label: "Price", placeholder: "0", mode: "decimal" as const },
-              { k: "stock" as const, label: "Stock", placeholder: "0", mode: "numeric" as const },
             ].map((f) => (
               <label key={f.k} className="flex flex-col gap-[6px]">
                 <span className="text-[14px] font-medium tracking-[-0.28px] text-[#525252]">{f.label}</span>
@@ -451,6 +567,44 @@ export default function InventoryPage() {
               </label>
             ))}
 
+            {/* A picker, not a text box: the API takes a brand id and a typed
+                name resolves to nothing. */}
+            <label className="flex flex-col gap-[6px]">
+              <span className="text-[14px] font-medium tracking-[-0.28px] text-[#525252]">Brand</span>
+              <select
+                value={draft.brandId}
+                onChange={(e) => {
+                  setDraft((d) => ({ ...d, brandId: e.target.value }));
+                  setEditError(null);
+                }}
+                aria-label="Brand"
+                className="flex h-[44px] cursor-pointer items-center rounded-[10px] bg-white px-[12px] text-[14px] tracking-[-0.28px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] outline-none"
+              >
+                <option value="">No brand</option>
+                {brandOptions.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {/* Stock is a ledger balance, not a field: changing it writes a
+                movement against a named warehouse, and this row does not know
+                which one. Manage Stock is where that is done. */}
+            <div className="flex items-center justify-between gap-[12px] rounded-[10px] bg-[#fafafa] px-[12px] py-[10px]">
+              <span className="text-[13px] text-[#525252]">
+                Stock: <span className="font-medium text-[#1e1e1e]">{editOf.stock}</span>
+              </span>
+              <Link
+                href="/inventory/stock"
+                onClick={() => setEditOf(null)}
+                className="text-[13px] font-medium text-[#f5b800] hover:underline"
+              >
+                Manage stock
+              </Link>
+            </div>
+
             <p className="text-[12px] text-[#8a8a8a]">
               Status follows the stock count: 0 is Out of Stock, 10 or fewer is Low Stock.
             </p>
@@ -458,6 +612,14 @@ export default function InventoryPage() {
           </div>
         )}
       </Modal>
+
+      {managing && (
+        <CatalogManagerModal
+          kind={managing}
+          open
+          onClose={() => setManaging(null)}
+        />
+      )}
     </div>
   );
 }

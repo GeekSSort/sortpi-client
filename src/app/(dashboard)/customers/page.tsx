@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { CustomerRecord } from "@/types/customer";
 import { CustomerService } from "@/services";
@@ -9,6 +9,8 @@ import RowActionMenu from "@/components/shared/RowActionMenu";
 import TablePagination from "@/components/shared/TablePagination";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
+import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/QueryBoundary";
 
 /**
  * Customers — Figma 51:9099.
@@ -57,59 +59,43 @@ const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e
 const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
 
 export default function CustomersPage() {
-  const [customers, setCustomers] = useState<CustomerRecord[]>([]);
   const [query, setQuery] = useState("");
+  /** The debounce lives here, not in the request: settling the term before it
+      reaches the cache key stops a request per keystroke, and the cache stops
+      a slow answer for "ra" landing after "rahman" — the key it belongs to is
+      no longer the key on screen. */
+  const [term, setTerm] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
-  const [loading, setLoading] = useState(true);
-  /** The debounce is for typing. Waiting 250ms to make the FIRST
-      request just adds a quarter second of blank table on reload. */
-  const firstLoad = useRef(true);
-  const [failed, setFailed] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [profileOf, setProfileOf] = useState<CustomerRecord | null>(null);
   const [payFor, setPayFor] = useState<CustomerRecord | null>(null);
   const [payAmount, setPayAmount] = useState("");
   const [payError, setPayError] = useState<string | null>(null);
   const [paying, setPaying] = useState(false);
-  /** Bumped to refetch after a payment, so the balance shown is the server's. */
-  const [refresh, setRefresh] = useState(0);
-  /** The API's count of everything matching, not of what this page holds. */
-  const [total, setTotal] = useState(0);
 
   useEffect(() => {
-    // Debounced and guarded: a request per keystroke let a slow answer for
-    // "ra" land after "rahman" and repopulate the table with the wrong rows.
-    let live = true;
-    const id = setTimeout(() => {
-      setLoading(true);
-      // One page at a time. The whole list used to be requested and sliced in
-      // the browser, but the API caps a page at 200 — so a directory past 200
-      // customers was silently truncated and the pager called 200 the total.
-      CustomerService.getCustomers({ search: query, page, limit: pageSize })
-        .then((res) => {
-          if (!live) return;
-          setCustomers(res.data);
-          setTotal(res.total);
-          setFailed(false);
-        })
-        .catch(() => live && setFailed(true))
-        .finally(() => live && setLoading(false));
-    }, firstLoad.current ? 0 : 250);
-    firstLoad.current = false;
-    return () => {
-      live = false;
-      clearTimeout(id);
-    };
-  }, [query, refresh, page, pageSize]);
+    if (query === term) return;
+    const id = setTimeout(() => setTerm(query), 250);
+    return () => clearTimeout(id);
+  }, [query, term]);
 
+  // One page at a time. The whole list used to be requested and sliced in the
+  // browser, but the API caps a page at 200 — so a directory past 200
+  // customers was silently truncated and the pager called 200 the total.
+  const { data, loading, fetching, error, refetch } = useQuery(
+    queryKey("customers", { page, limit: pageSize, search: term }),
+    () => CustomerService.getCustomers({ search: term, page, limit: pageSize })
+  );
+
+  const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const current = Math.min(page, totalPages);
   // The server already sliced. `rows` is the page.
-  const rows = customers;
+  const rows = data?.data ?? [];
 
   return (
-    <div className="flex w-full flex-col gap-[14px] select-none">
+    <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 51:9100 */}
       <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
         <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
@@ -153,7 +139,8 @@ export default function CustomersPage() {
       </div>
 
       {/* Table card — 51:9132 */}
-      <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+        <RefreshBar active={fetching} />
         {/* Table — 51:9149 */}
         <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="overflow-x-auto">
@@ -171,17 +158,19 @@ export default function CustomersPage() {
               </div>
 
               <div className="mt-[6px]">
-                {rows.length === 0 && loading && (
-                  <TableSkeleton columns={GRID} rows={pageSize} />
-                )}
-                {rows.length === 0 && !loading && (
-                  <p className="py-[40px] text-center text-[14px] text-[#525252]">
-                    {loading
-                      ? "Loading customers…"
-                      : failed
-                        ? "Customers could not be loaded. Refresh to try again."
-                        : "No customers match that search."}
-                  </p>
+                <QueryBoundary
+                  loading={loading}
+                  error={error}
+                  hasData={data !== undefined}
+                  skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
+                  errorMessage="Customers could not be loaded."
+                  onRetry={refetch}
+                >
+                {rows.length === 0 && (
+                  <EmptyState
+                    message={term ? "No customers match that search." : "No customers yet."}
+                    hint={term ? undefined : "Add one to get started."}
+                  />
                 )}
                 {rows.map((c, i) => (
                   <div
@@ -220,6 +209,7 @@ export default function CustomersPage() {
                     </div>
                   </div>
                 ))}
+                </QueryBoundary>
               </div>
             </div>
           </div>
@@ -355,8 +345,10 @@ export default function CustomersPage() {
                   );
                   setNote(`৳ ${amount.toLocaleString("en-IN")} recorded for ${payFor.name}`);
                   setPayFor(null);
-                  // Refetch rather than patch: the ledger owns the balance.
-                  setRefresh((n) => n + 1);
+                  // Refetch rather than patch: the ledger owns the balance. A
+                  // payment moves the customer's due, the sales ledger and the
+                  // dashboard's revenue figures, so all three go stale.
+                  invalidate("customers", "sales", "dashboard");
                 } catch (error) {
                   setPayError(
                     error instanceof Error && error.message

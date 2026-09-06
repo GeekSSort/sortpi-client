@@ -1,32 +1,43 @@
 import { CompanyProfile } from "@/types/settings";
-import { initialCompanyProfile } from "@/lib/services/settings.service";
 import { toCompanyProfile, toOrganizationPayload, organizationId } from "./mappers/settings";
 import { apiFetch, apiList, tokenStore } from "./apiClient";
 
 export class SettingsService {
   /**
-   * Fetch company profile settings
+   * Fetch company profile settings.
+   *
+   * `null` when the account has no organization on it. The form has to decide
+   * what to show for that — it used to be handed a sample company instead, so
+   * a shop with nothing saved read as one that was already set up.
    */
-  static async getCompanyProfile(): Promise<CompanyProfile> {
+  static async getCompanyProfile(): Promise<CompanyProfile | null> {
     // A list of one, with organization field names. Mapped, so every input
     // gets a string and stays controlled.
-    const rows = await apiFetch<any>("/organizations/", { method: "GET" }, null);
-    return toCompanyProfile(rows, initialCompanyProfile);
+    const rows = await apiFetch<any>("/organizations/", { method: "GET" });
+    return toCompanyProfile(rows);
   }
 
   /**
-   * Update company profile settings
+   * Update company profile settings.
+   *
+   * With no organization to PATCH there is nowhere to save, and the old
+   * version returned the typed-in values as though there were: the form
+   * reported "Saved" over a request that was never made.
    */
   static async updateCompanyProfile(payload: Partial<CompanyProfile>): Promise<CompanyProfile> {
-    const rows = await apiFetch<any>("/organizations/", { method: "GET" }, null);
+    const rows = await apiFetch<any>("/organizations/", { method: "GET" });
     const id = organizationId(rows);
-    if (!id) return { ...initialCompanyProfile, ...payload };
+    if (!id) {
+      throw new Error("No organization is in context, so there is nothing to save to.");
+    }
 
     const saved = await apiFetch<any>(`/organizations/${id}/`, {
       method: "PATCH",
       body: JSON.stringify(toOrganizationPayload(payload)),
     });
-    return toCompanyProfile(saved, { ...initialCompanyProfile, ...payload } as CompanyProfile);
+    const profile = toCompanyProfile(saved);
+    if (!profile) throw new Error("The server accepted the change but returned no organization.");
+    return profile;
   }
 
   /**
@@ -45,7 +56,7 @@ export class SettingsService {
     const key = tokenStore.branch() ?? "org";
     let cached = valueCache.get(key);
     if (!cached) {
-      cached = apiFetch<any[]>("/settings/resolved/", { method: "GET" }, [])
+      cached = apiFetch<any[]>("/settings/resolved/", { method: "GET" })
         .then((rows) => {
           const out: Record<string, string> = {};
           for (const row of rows || []) {
@@ -79,7 +90,6 @@ export class SettingsService {
     const rows = await apiList<any>(
       `/settings/?limit=200`,
       { method: "GET" },
-      { data: [], total: 0 },
       (r) => r
     );
     const existing = (rows.data || []).find(
