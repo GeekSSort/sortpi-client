@@ -2,6 +2,7 @@ import { SystemUserRecord, UserQueryFilter, CreateUserPayload } from "@/types/ro
 import { PermissionRecord, RoleRecord, RolePayload } from "@/types/permissions";
 import { apiFetch, apiList, ApiError, PagedResult, tokenStore } from "./apiClient";
 import { toSystemUser } from "./mappers/user";
+import { BranchService } from "./branchService";
 
 /**
  * System users and the roles they hold.
@@ -39,19 +40,24 @@ export class RoleService {
   static async getUsers(params?: UserQueryFilter): Promise<PagedResult<SystemUserRecord>> {
     const page = params?.page ?? 1;
     const limit = params?.limit ?? 8;
-    const res = await apiList<any>(
-      `/users/?${query(params)}`,
-      { method: "GET" },
-      { data: [], total: 0 },
-      (row) => row
-    );
+
+    // `/users/` names branches by id only, and a table of UUIDs tells a reader
+    // nothing. One extra request for the branch list — short, and shared with
+    // the switcher's cache entry — turns them into names.
+    const [res, branches] = await Promise.all([
+      apiList<any>(`/users/?${query(params)}`, { method: "GET" }, (row) => row),
+      BranchService.list().catch(() => [] as { id: string; name: string; code: string }[]),
+    ]);
+    const branchNames = new Map(branches.map((b) => [b.id, b.name || b.code]));
 
     // The row number continues across pages, so page 2 starts at 09 rather
     // than at 01 again.
     const offset = (page - 1) * limit;
     return {
       ...res,
-      data: res.data.map((row: any, i: number) => toSystemUser(row, offset + i + 1)),
+      data: res.data.map((row: any, i: number) =>
+        toSystemUser(row, offset + i + 1, branchNames)
+      ),
     };
   }
 
@@ -60,7 +66,6 @@ export class RoleService {
     const roles = await apiList<RoleOption>(
       "/roles/?limit=100",
       { method: "GET" },
-      { data: [], total: 0 },
       (r: any) => ({
         id: String(r?.id ?? ""),
         name: String(r?.name ?? ""),
@@ -75,7 +80,6 @@ export class RoleService {
     const roles = await apiList<RoleRecord>(
       "/roles/?limit=200",
       { method: "GET" },
-      { data: [], total: 0 },
       toRoleRecord
     );
     return roles.data;
@@ -92,7 +96,6 @@ export class RoleService {
     const rows = await apiList<PermissionRecord>(
       "/permissions/?limit=200",
       { method: "GET" },
-      { data: [], total: 0 },
       (p: any) => ({
         id: String(p?.id ?? ""),
         module: String(p?.module ?? ""),
