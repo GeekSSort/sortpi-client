@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { ReturnRecord } from "@/types/returns";
 import { ReturnService } from "@/services";
@@ -11,6 +11,8 @@ import TableSkeleton from "@/components/shared/TableSkeleton";
 import DateField from "@/components/shared/DateField";
 import { toApiDay } from "@/lib/dateFilter";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
+import { useQuery, queryKey } from "@/lib/query/useQuery";
+import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/QueryBoundary";
 
 /**
  * Returns — Figma 45:4116.
@@ -62,62 +64,48 @@ const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e
 const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
 
 export default function ReturnPage() {
-  const [returns, setReturns] = useState<ReturnRecord[]>([]);
   const [query, setQuery] = useState("");
+  /** The debounce settles the term before it reaches the cache key: one
+      request per pause, and a slow answer for "RET-1" can no longer land on
+      top of the rows for "RET-12". */
+  const [term, setTerm] = useState("");
   const [date, setDate] = useState<Date | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
-  const [loading, setLoading] = useState(true);
-  /** The debounce is for typing. Waiting 250ms to make the FIRST
-      request just adds a quarter second of blank table on reload. */
-  const firstLoad = useRef(true);
-  /** The API's count of everything matching, not of what this page holds. */
-  const [total, setTotal] = useState(0);
-  const [failed, setFailed] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [detailOf, setDetailOf] = useState<ReturnRecord | null>(null);
   const [slipOf, setSlipOf] = useState<ReturnRecord | null>(null);
 
   useEffect(() => {
-    // Debounced and guarded: a request per keystroke let a slow answer for
-    // "RET-1" land after "RET-12" and repopulate the table with the wrong
-    // rows. The day is sent to the API too -- it used to be applied in the
-    // browser over one capped page, so filtering to an older day found
-    // nothing that had not already been fetched.
-    let live = true;
-    const day = date ? toApiDay(date) : undefined;
-    const id = setTimeout(() => {
-      setLoading(true);
+    if (query === term) return;
+    const id = setTimeout(() => setTerm(query), 250);
+    return () => clearTimeout(id);
+  }, [query, term]);
+
+  // The day is sent to the API and is part of the key. It used to be applied
+  // in the browser over one capped page, so filtering to an older day found
+  // nothing that had not already been fetched.
+  const day = date ? toApiDay(date) : undefined;
+  const { data, loading, fetching, error, refetch } = useQuery(
+    queryKey("returns", { page, limit: pageSize, search: term, day }),
+    () =>
       ReturnService.getReturns({
-        search: query,
+        search: term,
         startDate: day,
         endDate: day,
         page,
         limit: pageSize,
       })
-        .then((res) => {
-          if (!live) return;
-          setReturns(res.data);
-          setTotal(res.total);
-          setFailed(false);
-        })
-        .catch(() => live && setFailed(true))
-        .finally(() => live && setLoading(false));
-    }, firstLoad.current ? 0 : 250);
-    firstLoad.current = false;
-    return () => {
-      live = false;
-      clearTimeout(id);
-    };
-  }, [query, date, page, pageSize]);
+  );
 
+  const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const current = Math.min(page, totalPages);
   // The server already filtered and sliced. `rows` is the page.
-  const rows = returns;
+  const rows = data?.data ?? [];
 
   return (
-    <div className="flex w-full flex-col gap-[14px] select-none">
+    <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 45:4118: search left, date + Add New right */}
       <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
         <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
@@ -166,7 +154,8 @@ export default function ReturnPage() {
       </div>
 
       {/* Table card — 48:5494 */}
-      <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+        <RefreshBar active={fetching} />
         {/* Table — 48:5511 */}
         <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="overflow-x-auto">
@@ -184,17 +173,21 @@ export default function ReturnPage() {
               </div>
 
               <div className="mt-[6px]">
-                {rows.length === 0 && loading && (
-                  <TableSkeleton columns={GRID} rows={pageSize} />
-                )}
-                {rows.length === 0 && !loading && (
-                  <p className="py-[40px] text-center text-[14px] text-[#525252]">
-                    {loading
-                      ? "Loading returns…"
-                      : failed
-                        ? "Returns could not be loaded. Refresh to try again."
-                        : "No returns match that search or date."}
-                  </p>
+                <QueryBoundary
+                  loading={loading}
+                  error={error}
+                  hasData={data !== undefined}
+                  skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
+                  errorMessage="Returns could not be loaded."
+                  onRetry={refetch}
+                >
+                {rows.length === 0 && (
+                  <EmptyState
+                    message={
+                      term || date ? "No returns match that search or date." : "No returns yet."
+                    }
+                    hint={term || date ? undefined : "Start one from an invoice."}
+                  />
                 )}
                 {rows.map((r, i) => (
                   <div
@@ -227,6 +220,7 @@ export default function ReturnPage() {
                     </div>
                   </div>
                 ))}
+                </QueryBoundary>
               </div>
             </div>
           </div>
