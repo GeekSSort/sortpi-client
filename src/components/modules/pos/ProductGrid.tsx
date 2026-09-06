@@ -337,19 +337,8 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
                 <p className="w-full truncate text-[14px] leading-[24px] font-normal text-[#525252]">
                   {p.name}
                 </p>
-                {/* Price and stock badge.
-                    Both used to be `whitespace-nowrap` with neither allowed to
-                    shrink, inside a tile that is 150px at its narrowest. Their
-                    combined width exceeds that, so the badge was pushed past
-                    the card's right edge and sliced — "Stock 105" arriving as
-                    "Stock 1", which is not merely ugly but a WRONG NUMBER on a
-                    screen a cashier reads at speed.
-
-                    The price may now shrink and truncate, the badge may not,
-                    and the row wraps rather than overflowing when even that is
-                    not enough. */}
-                <div className="flex w-full flex-wrap items-center justify-between gap-x-[6px] gap-y-[4px]">
-                  <span className="flex min-w-0 items-baseline gap-[6px]">
+                <div className="flex w-full flex-col items-start gap-[4px]">
+                  <span className="flex min-w-0 max-w-full items-baseline gap-[6px]">
                     <span className="min-w-0 truncate text-[16px] leading-[24px] font-medium text-[#f5b800]">
                       {offer ? formatMoney(priceAfter(p.price, offer), { decimals: 2 }) : p.priceFormatted}
                     </span>
