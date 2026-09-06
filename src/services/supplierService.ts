@@ -1,5 +1,4 @@
 import { SupplierRecord, SupplierQueryFilter, CreateSupplierPayload } from "@/types/suppliers";
-import { initialSuppliersData } from "@/lib/services/suppliers.service";
 import { apiFetch, apiList } from "./apiClient";
 import { toSupplierRecord } from "./mappers/supplier";
 
@@ -8,26 +7,6 @@ export class SupplierService {
    * Fetch suppliers with search & filters
    */
   static async getSuppliers(params?: SupplierQueryFilter): Promise<{ data: SupplierRecord[]; total: number }> {
-    const fallback = () => {
-      let list = [...initialSuppliersData];
-      if (params?.search) {
-        const q = params.search.toLowerCase();
-        list = list.filter(
-          (s) =>
-            s.name.toLowerCase().includes(q) ||
-            s.phone.includes(q) ||
-            s.mail.toLowerCase().includes(q)
-        );
-      }
-      if (params?.status) {
-        list = list.filter((s) => s.status.toLowerCase() === params.status?.toLowerCase());
-      }
-      return {
-        data: list,
-        total: list.length,
-      };
-    };
-
     const searchParams = new URLSearchParams();
     if (params?.search) searchParams.set("search", params.search);
     if (params?.status) searchParams.set("status", params.status);
@@ -41,10 +20,7 @@ export class SupplierService {
     // onto the row by the API; this used to fetch the whole purchase list
     // alongside and add it up here, which was both a second full request per
     // page load and wrong past the 200-row cap.
-    const rows = await apiList<any>(`/suppliers/${qs}`, { method: "GET" }, fallback, (r) => r);
-
-    // Already-mapped fallback rows carry `mail`; nothing to map.
-    if (rows.data[0]?.mail !== undefined) return rows as { data: SupplierRecord[]; total: number };
+    const rows = await apiList<any>(`/suppliers/${qs}`, { method: "GET" }, (r) => r);
 
     return {
       data: rows.data.map((row: any, i: number) => toSupplierRecord(row, i + 1)),
@@ -91,7 +67,6 @@ async function nextSupplierCode(): Promise<string> {
   const rows = await apiList<any>(
     "/suppliers/?limit=200",
     { method: "GET" },
-    { data: [], total: 0 },
     (r) => r
   ).catch(() => ({ data: [] as any[] }));
   let highest = 0;
