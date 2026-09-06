@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { SupplierRecord } from "@/types/suppliers";
 import { SupplierService } from "@/services";
@@ -10,6 +10,8 @@ import TablePagination from "@/components/shared/TablePagination";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Avatar from "@/components/shared/Avatar";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
+import { useQuery, queryKey, setQueryData } from "@/lib/query/useQuery";
+import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/QueryBoundary";
 
 /**
  * Suppliers. There is no Figma frame for this screen, so it borrows the
@@ -68,8 +70,11 @@ type StatusFilter = (typeof STATUS_FILTERS)[number];
 type EditDraft = { name: string; phone: string; mail: string; status: SupplierRecord["status"] };
 
 export default function SuppliersPage() {
-  const [suppliers, setSuppliers] = useState<SupplierRecord[]>([]);
   const [query, setQuery] = useState("");
+  /** The debounce settles the term before it reaches the cache key, so typing
+      makes one request rather than one per letter — and a slow answer for "ac"
+      can no longer land on top of the rows for "acme". */
+  const [term, setTerm] = useState("");
   const [status, setStatus] = useState<StatusFilter>("All");
   const [filterOpen, setFilterOpen] = useState(false);
   const [page, setPage] = useState(1);
@@ -87,43 +92,29 @@ export default function SuppliersPage() {
   const [deleteOf, setDeleteOf] = useState<SupplierRecord | null>(null);
 
   const filterRef = useRef<HTMLDivElement>(null);
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
-  /** The debounce is for typing. Waiting 250ms to make the FIRST request
-      just adds a quarter second of blank table on reload. */
-  const firstLoad = useRef(true);
-  /** The API's count of everything matching, not of what this page holds. */
-  const [total, setTotal] = useState(0);
-  const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
-    // Debounced and guarded: a request per keystroke let a slow answer for
-    // "ac" land after "acme" and repopulate the table with the wrong rows.
-    // Status goes to the API too, and so does the page.
-    let live = true;
-    const id = setTimeout(() => {
-      setLoading(true);
-      SupplierService.getSuppliers({
-        search: query,
-        status: status === "All" ? undefined : status,
-        page,
-        limit: pageSize,
-      })
-        .then((res) => {
-          if (!live) return;
-          setSuppliers(res.data);
-          setTotal(res.total);
-          setFailed(false);
-        })
-        .catch(() => live && setFailed(true))
-        .finally(() => live && setLoading(false));
-    }, firstLoad.current ? 0 : 250);
-    firstLoad.current = false;
-    return () => {
-      live = false;
-      clearTimeout(id);
-    };
-  }, [query, status, refresh, page, pageSize]);
+    if (query === term) return;
+    const id = setTimeout(() => setTerm(query), 250);
+    return () => clearTimeout(id);
+  }, [query, term]);
+
+  // Status goes to the API too, and so does the page — so both belong in the
+  // key, or "Active" and "All" would share one cache slot.
+  const key = queryKey("suppliers", {
+    page,
+    limit: pageSize,
+    search: term,
+    status: status === "All" ? undefined : status,
+  });
+  const { data, loading, fetching, error, refetch } = useQuery(key, () =>
+    SupplierService.getSuppliers({
+      search: term,
+      status: status === "All" ? undefined : status,
+      page,
+      limit: pageSize,
+    })
+  );
 
   // The funnel popover closes on an outside click or Escape, like every other
   // popover in the app.
@@ -141,13 +132,27 @@ export default function SuppliersPage() {
     };
   }, [filterOpen]);
 
+  const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const current = Math.min(page, totalPages);
   // The server already filtered and sliced. `rows` is the page.
-  const rows = suppliers;
+  const rows = data?.data ?? [];
+
+  /**
+   * Rewrite this page in the cache.
+   *
+   * Edit, payment, activate and delete have no supplier endpoint yet, so all
+   * four are screen-only — but the rows live in the cache now, and patching
+   * the entry is what keeps the change visible until the next refetch replaces
+   * it with the server's answer.
+   */
+  const patchRows = (fn: (list: SupplierRecord[]) => SupplierRecord[]) => {
+    if (!data) return;
+    setQueryData(key, { ...data, data: fn(data.data) });
+  };
 
   const patch = (id: string, next: Partial<SupplierRecord>) =>
-    setSuppliers((list) => list.map((s) => (s.id === id ? { ...s, ...next } : s)));
+    patchRows((list) => list.map((s) => (s.id === id ? { ...s, ...next } : s)));
 
   const openEdit = (s: SupplierRecord) => {
     setDraft({ name: s.name, phone: s.phone, mail: s.mail, status: s.status });
@@ -170,7 +175,7 @@ export default function SuppliersPage() {
   ];
 
   return (
-    <div className="flex w-full flex-col gap-[14px] select-none">
+    <div className="flex w-full flex-col gap-[14px]">
       {/* Search left, Add New right — the Purchase History header row */}
       <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
         <div className="flex h-[44px] w-full items-center justify-between gap-[12px] rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
@@ -233,7 +238,8 @@ export default function SuppliersPage() {
       </div>
 
       {/* Table card */}
-      <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+        <RefreshBar active={fetching} />
         <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="overflow-x-auto">
             <div className="min-w-[1145px]">
@@ -250,15 +256,23 @@ export default function SuppliersPage() {
               </div>
 
               <div className="mt-[6px]">
-                {rows.length === 0 && loading && (
-                  <TableSkeleton columns={GRID} rows={pageSize} />
-                )}
-                {rows.length === 0 && !loading && (
-                  <p className="py-[40px] text-center text-[14px] text-[#525252]">
-                    {failed
-                      ? "Suppliers could not be loaded. Refresh to try again."
-                      : "No suppliers match that search or filter."}
-                  </p>
+                <QueryBoundary
+                  loading={loading}
+                  error={error}
+                  hasData={data !== undefined}
+                  skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
+                  errorMessage="Suppliers could not be loaded."
+                  onRetry={refetch}
+                >
+                {rows.length === 0 && (
+                  <EmptyState
+                    message={
+                      term || status !== "All"
+                        ? "No suppliers match that search or filter."
+                        : "No suppliers yet."
+                    }
+                    hint={term || status !== "All" ? undefined : "Add one to get started."}
+                  />
                 )}
                 {rows.map((s, i) => (
                   // Not a <button>: the Action cell holds one, and buttons can't nest.
@@ -301,6 +315,7 @@ export default function SuppliersPage() {
                     </div>
                   </div>
                 ))}
+                </QueryBoundary>
               </div>
             </div>
           </div>
@@ -634,7 +649,7 @@ export default function SuppliersPage() {
               className={MODAL_PRIMARY}
               onClick={() => {
                 if (!deleteOf) return;
-                setSuppliers((list) => list.filter((s) => s.id !== deleteOf.id));
+                patchRows((list) => list.filter((s) => s.id !== deleteOf.id));
                 setNote(`${deleteOf.name} deleted`);
                 setDeleteOf(null);
               }}
