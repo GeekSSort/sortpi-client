@@ -1,11 +1,15 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Image from "next/image";
+import ProductImage from "@/components/shared/ProductImage";
+import ChipScroller from "@/components/shared/ChipScroller";
 import { ProductItem } from "@/types/pos";
 import { PosService, SettingsService } from "@/services";
 import { useSession } from "@/services/useSession";
 import TablePagination from "@/components/shared/TablePagination";
+import { useQuery, queryKey } from "@/lib/query/useQuery";
+import { RefreshBar } from "@/components/shared/QueryBoundary";
+import TableSkeleton from "@/components/shared/TableSkeleton";
 import {
   Discount,
   DiscountMap,
@@ -135,41 +139,6 @@ function UndoIcon() {
 
 /* ── Small pieces ──────────────────────────────────────────────────────── */
 
-/** One figure from the offers, in the band across the top. */
-function Stat({
-  label,
-  value,
-  hint,
-  tone = "plain",
-}: {
-  label: string;
-  value: string;
-  hint?: string;
-  tone?: "plain" | "gold";
-}) {
-  return (
-    <div
-      className={`flex min-w-0 flex-col gap-[2px] rounded-[12px] px-[14px] py-[10px] ${
-        tone === "gold"
-          ? "bg-[#fdf7e6] shadow-[inset_0_0_0_1px_#f7e3a1]"
-          : "bg-white shadow-[inset_0_0_0_1px_#eaeaea]"
-      }`}
-    >
-      <span className="truncate text-[11px] font-medium tracking-[0.02em] text-[#8f8d87] uppercase">
-        {label}
-      </span>
-      <span
-        className={`truncate text-[19px] leading-[26px] font-semibold tabular-nums ${
-          tone === "gold" ? "text-[#f5b800]" : "text-[#1e1e1e]"
-        }`}
-      >
-        {value}
-      </span>
-      <span className="truncate text-[11px] text-[#8f8d87]">{hint || " "}</span>
-    </div>
-  );
-}
-
 /** The square that says a product is picked. */
 function Tick({ on }: { on: boolean }) {
   return (
@@ -183,27 +152,38 @@ function Tick({ on }: { on: boolean }) {
   );
 }
 
-/** Rows in outline, so the table does not jump into place. */
-function Skeleton() {
-  return (
-    <div className="flex flex-col">
-      {Array.from({ length: 8 }).map((_, i) => (
-        <div key={i} className="border-b border-solid border-[#f4f4f4] px-[12px] py-[11px] last:border-b-0">
-          <div className="h-[38px] w-full animate-pulse rounded-[8px] bg-[#fafafa]" />
-        </div>
-      ))}
-    </div>
-  );
-}
-
 /* ── The page ──────────────────────────────────────────────────────────── */
 
 export default function PosDiscountPage() {
   const { user, loading: sessionLoading } = useSession();
 
-  const [products, setProducts] = useState<ProductItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
+  // The same catalogue key the till's product wall reads, so opening Discount
+  // after the till costs no request and shows no skeleton.
+  const {
+    data: productRows,
+    loading,
+    fetching,
+    error,
+    // The whole catalogue, not a page of it: this screen sorts by biggest
+    // discount and by stock, and neither can be answered a page at a time. Its
+    // own cache key, because the till's wall is now one page per request and
+    // the two answers are different shapes.
+  } = useQuery(queryKey("pos-products", { all: true }), () => PosService.getAllProducts(), {
+    staleMs: 60_000,
+  });
+  const products = useMemo(() => productRows ?? [], [productRows]);
+  const failed = error !== undefined;
+
+  const { data: shopValues } = useQuery(
+    queryKey("settings", { scope: "values" }),
+    () => SettingsService.getValues(),
+    { staleMs: 5 * 60_000 }
+  );
+  // The shop's ceiling on what a till may give away, as a percentage.
+  const cap = useMemo(() => {
+    const max = Number(shopValues?.["pos.max_discount_percent"]);
+    return Number.isFinite(max) && max > 0 ? Math.round(max * 100) : FALLBACK_CAP;
+  }, [shopValues]);
 
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("All Categories");
@@ -213,7 +193,6 @@ export default function PosDiscountPage() {
   const [pageSize, setPageSize] = useState(16);
 
   const [rates, setRates] = useState<DiscountMap>({});
-  const [cap, setCap] = useState(FALLBACK_CAP);
   const [picked, setPicked] = useState<Set<string>>(new Set());
 
   /** One product or several: what the rate card is about to change. */
@@ -236,18 +215,6 @@ export default function PosDiscountPage() {
     !user.permissions.includes(EDIT_PERMISSION);
 
   useEffect(() => {
-    PosService.getProducts()
-      .then(setProducts)
-      .catch(() => setFailed(true))
-      .finally(() => setLoading(false));
-
-    SettingsService.getValues()
-      .then((v) => {
-        const max = Number(v["pos.max_discount_percent"]);
-        if (Number.isFinite(max) && max > 0) setCap(Math.round(max * 100));
-      })
-      .catch(() => {});
-
     // Read after this render, not during it: the server has no localStorage,
     // so the first paint has to match it and the offers arrive a tick later.
     queueMicrotask(() => setRates(readDiscounts()));
@@ -446,7 +413,8 @@ export default function PosDiscountPage() {
   const HEAD = "text-[12px] leading-[16px] font-medium text-[#8f8d87]";
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col gap-[14px] select-none">
+    <div className="relative flex h-full min-h-0 w-full flex-col gap-[14px]">
+      <RefreshBar active={fetching} />
       {/* ── What the offers add up to ─────────────────────────────────── */}
       <div className="flex shrink-0 flex-col gap-[12px]">
         <div className="flex flex-wrap items-center justify-between gap-[12px]">
@@ -487,35 +455,17 @@ export default function PosDiscountPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-[10px] lg:grid-cols-4">
-          <Stat
-            label="On offer"
-            value={String(summary.count)}
-            hint={`of ${products.length} product${products.length === 1 ? "" : "s"}`}
-            tone={summary.count > 0 ? "gold" : "plain"}
-          />
-          <Stat
-            label="Average off"
-            value={summary.count ? `${summary.average.toFixed(1)}%` : "—"}
-            hint={`shop limit ${cap}%`}
-          />
-          <Stat
-            label="Off per unit sold"
-            value={summary.offSum ? money(summary.offSum) : "—"}
-            hint="if one of each is sold"
-          />
-          <Stat
-            label="Deepest cut"
-            value={summary.deepest ? `${summary.deepest.pct.toFixed(0)}%` : "—"}
-            hint={summary.deepest ? summary.deepest.p.name : "nothing discounted yet"}
-          />
-        </div>
       </div>
 
       {/* ── Finding a product ──────────────────────────────────────────── */}
+      {/* Laid out like every other list screen in the app: a 370px search box
+          on the left of the row, the controls that narrow the list on the
+          right. The search used to be `flex-1`, so on a wide till it ran the
+          whole width of the page and nothing else on the row lined up with
+          the screens beside it. */}
       <div className="flex shrink-0 flex-col gap-[10px]">
-        <div className="flex flex-wrap items-center gap-[10px]">
-          <div className="flex h-[42px] min-w-[220px] flex-1 items-center gap-[8px] rounded-[10px] bg-white px-[12px] shadow-[inset_0_0_0_1px_#eaeaea] focus-within:shadow-[inset_0_0_0_1.5px_#f5b800]">
+        <div className="flex w-full flex-col items-stretch gap-[10px] lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex h-[44px] w-full items-center gap-[8px] rounded-[10px] bg-white px-[12px] shadow-[inset_0_0_0_1px_#eaeaea] focus-within:shadow-[inset_0_0_0_1.5px_#f5b800] lg:w-[370px]">
             <span className="text-[#8f8d87]">
               <SearchIcon />
             </span>
@@ -536,52 +486,67 @@ export default function PosDiscountPage() {
             </kbd>
           </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              setOffersOnly((v) => !v);
-              setPage(1);
-            }}
-            aria-pressed={offersOnly}
-            className={`${CHIP} h-[42px] ${
-              offersOnly
-                ? "bg-[#fdf7e6] text-[#f5b800] shadow-[inset_0_0_0_1px_#f5b800]"
-                : "bg-white text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] hover:text-[#1e1e1e]"
-            }`}
-          >
-            <TagIcon size={15} />
-            On offer
-            <span
-              className={`rounded-[5px] px-[5px] py-[1px] text-[11px] tabular-nums ${
-                offersOnly ? "bg-[#f5b800] text-white" : "bg-[#fafafa] text-[#8f8d87]"
-              }`}
-            >
-              {summary.count}
-            </span>
-          </button>
-
-          <label className="flex h-[42px] shrink-0 items-center gap-[8px] rounded-[10px] bg-white pr-[10px] pl-[12px] shadow-[inset_0_0_0_1px_#eaeaea]">
-            <span className="text-[12px] text-[#8f8d87]">Sort</span>
-            <select
-              value={sort}
-              onChange={(e) => {
-                setSort(e.target.value as SortKey);
+          <div className="flex shrink-0 flex-wrap items-center gap-[10px]">
+            <button
+              type="button"
+              onClick={() => {
+                setOffersOnly((v) => !v);
                 setPage(1);
               }}
-              aria-label="Sort products"
-              className="cursor-pointer bg-transparent text-[13px] font-medium text-[#1e1e1e] outline-none"
+              aria-pressed={offersOnly}
+              className={`${CHIP} h-[44px] ${
+                offersOnly
+                  ? "bg-[#fdf7e6] text-[#f5b800] shadow-[inset_0_0_0_1px_#f5b800]"
+                  : "bg-white text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] hover:text-[#1e1e1e]"
+              }`}
             >
-              {SORTS.map((s) => (
-                <option key={s.key} value={s.key}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </label>
+              <TagIcon size={15} />
+              On offer
+              <span
+                className={`rounded-[5px] px-[5px] py-[1px] text-[11px] tabular-nums ${
+                  offersOnly ? "bg-[#f5b800] text-white" : "bg-[#fafafa] text-[#8f8d87]"
+                }`}
+              >
+                {summary.count}
+              </span>
+            </button>
+
+            <label className="flex h-[44px] shrink-0 items-center gap-[8px] rounded-[10px] bg-white pr-[10px] pl-[12px] shadow-[inset_0_0_0_1px_#eaeaea]">
+              <span className="text-[12px] text-[#8f8d87]">Sort</span>
+              <select
+                value={sort}
+                onChange={(e) => {
+                  setSort(e.target.value as SortKey);
+                  setPage(1);
+                }}
+                aria-label="Sort products"
+                className="cursor-pointer bg-transparent text-[13px] font-medium text-[#1e1e1e] outline-none"
+              >
+                {SORTS.map((s) => (
+                  <option key={s.key} value={s.key}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {activeFilters > 0 && (
+              <button
+                type="button"
+                onClick={resetFilters}
+                className="flex h-[44px] shrink-0 cursor-pointer items-center gap-[5px] rounded-[10px] px-[10px] text-[12px] font-medium text-[#8f8d87] transition-colors hover:text-[#e63946]"
+              >
+                <CloseIcon />
+                Reset filters
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Categories — chips that scroll, not headings spread across the page. */}
-        <div className="flex w-full items-center gap-[8px] overflow-x-auto pb-[2px]">
+        {/* Categories. A bare overflow-x strip is a scrollbar a till's touch
+            screen has no comfortable way to drag and a mouse cannot see, so
+            the arrows do the moving and hide themselves at each end. */}
+        <ChipScroller>
           {categories.map((c) => {
             const on = c === category;
             const n =
@@ -608,20 +573,8 @@ export default function PosDiscountPage() {
               </button>
             );
           })}
-
-          {activeFilters > 0 && (
-            <button
-              type="button"
-              onClick={resetFilters}
-              className="ml-auto flex h-[34px] shrink-0 cursor-pointer items-center gap-[5px] rounded-[9px] px-[10px] text-[12px] font-medium text-[#8f8d87] transition-colors hover:text-[#e63946]"
-            >
-              <CloseIcon />
-              Reset filters
-            </button>
-          )}
-        </div>
+        </ChipScroller>
       </div>
-
       {/* ── The table ──────────────────────────────────────────────────── */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
         {/* What is picked, and what can be done to it — above the head so it
@@ -705,7 +658,13 @@ export default function PosDiscountPage() {
               <span />
             </div>
 
-            {loading && <Skeleton />}
+            {/* Sized to the ROW grid so the columns do not shift when the
+                catalogue lands. */}
+            {loading && (
+              <div className="px-[12px]">
+                <TableSkeleton columns={ROW} rows={Math.min(pageSize, 8)} />
+              </div>
+            )}
 
             {!loading && failed && (
               <p className="py-[48px] text-center text-[14px] text-[#e63946]">
@@ -769,7 +728,7 @@ export default function PosDiscountPage() {
                         }`}
                       >
                         {p.image ? (
-                          <Image src={p.image} alt="" fill sizes="40px" className="object-cover" />
+                          <ProductImage src={p.image} alt="" sizes="40px" />
                         ) : (
                           <span className="flex h-full w-full items-center justify-center text-[14px] font-semibold text-[#d4d4d4]">
                             {p.name.slice(0, 2).toUpperCase()}
@@ -891,7 +850,7 @@ export default function PosDiscountPage() {
                 <>
                   <span className="relative size-[40px] shrink-0 overflow-hidden rounded-[8px] bg-[#fafafa]">
                     {editing[0].image ? (
-                      <Image src={editing[0].image} alt="" fill sizes="40px" className="object-cover" />
+                      <ProductImage src={editing[0].image} alt="" sizes="40px" />
                     ) : (
                       <span className="flex h-full w-full items-center justify-center text-[14px] font-semibold text-[#d4d4d4]">
                         {editing[0].name.slice(0, 2).toUpperCase()}
