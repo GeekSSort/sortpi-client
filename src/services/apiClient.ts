@@ -5,6 +5,8 @@
  * numbers, and sends every path exactly as written.
  */
 
+import { clearCache } from "@/lib/query/store";
+
 /** An error the API sent back. `code` says which one. */
 export class ApiError extends Error {
   readonly status: number;
@@ -215,6 +217,10 @@ let redirecting = false;
 
 function endSession() {
   tokenStore.clear();
+  // Cached rows outlive the token otherwise, and the next account to sign in
+  // on this device would paint the previous one's data for a moment before
+  // its own request landed.
+  clearCache();
   if (typeof window === "undefined" || redirecting) return;
 
   const { pathname, search } = window.location;
@@ -257,8 +263,10 @@ async function request<T>(
   }
   if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
 
-  // Only when the caller asks for another branch. `X-Branch` is not in the
-  // API's allowed CORS headers, so sending it every time breaks every call.
+  // Only when the caller asks for another branch. `x-branch` IS in the API's
+  // CORS_ALLOW_HEADERS — the note that used to sit here said otherwise and was
+  // wrong — but sending it on every request would pin every call to one branch
+  // and take the server's own active-branch cursor out of the picture.
   if (branchId) headers["X-Branch"] = branchId;
 
   let response: Response;
@@ -339,96 +347,45 @@ async function tryRefresh(): Promise<boolean> {
 }
 
 /**
- * One request, envelope removed. `fallbackData` is used only when no API is
- * set up — never to hide a failure. A till showing made-up prices is worse
- * than one that says it is offline.
+ * One request, envelope removed.
+ *
+ * There is no fallback argument any more, by design. It used to accept sample
+ * data to serve when the server could not be reached, and the guard around it
+ * was correct — dev only, network errors only — but three call sites had
+ * grown their own way around the guard, and a till showing made-up prices in
+ * a real shop is worse than one that says it is offline. A failure now
+ * reaches the screen, which is the only place that can honestly report it.
  */
 export async function apiFetch<T>(
   endpoint: string,
   options?: ApiFetchOptions,
-  fallbackData?: T | (() => Promise<T> | T),
   mapper?: (data: any) => T
 ): Promise<T> {
-  if (!apiConfigured()) return resolveFallback(fallbackData);
+  if (!apiConfigured()) throw new ApiError(0, "NO_API_CONFIGURED", "No API is configured.");
 
-  try {
-    const body = await request<T>(endpoint, options || {}, true);
-    const payload = (body && "data" in body ? body.data : body) as T;
-    return mapper ? mapper(payload) : payload;
-  } catch (error) {
-    if (shouldFallBack(error, fallbackData)) return resolveFallback(fallbackData);
-    throw error;
-  }
+  const body = await request<T>(endpoint, options || {}, true);
+  const payload = (body && "data" in body ? body.data : body) as T;
+  return mapper ? mapper(payload) : payload;
 }
-
-/**
- * Sample data only when the server could not be reached at all, and never in
- * production. A 4xx or 5xx means the server answered.
- */
-function shouldFallBack(error: unknown, fallbackData: unknown): boolean {
-  if (fallbackData === undefined) return false;
-  if (process.env.NODE_ENV === "production") return false;
-  if (!(error instanceof ApiError) || error.code !== "NETWORK_ERROR") return false;
-  console.warn(`[api] ${error.message} Falling back to sample data (development only).`);
-  return true;
-}
-
-/**
- * A list flattened for a table. `total` comes from `meta` — read from the top
- * level it is undefined, and the pager stops working.
- */
-export type PagedFallback<T> = { data: T[]; total: number } & Partial<PagedResult<T>>;
 
 export async function apiList<T>(
   endpoint: string,
   options?: ApiFetchOptions,
-  fallbackData?: PagedFallback<T> | (() => Promise<PagedFallback<T>> | PagedFallback<T>),
   mapItem?: (row: any) => T
 ): Promise<PagedResult<T>> {
-  if (!apiConfigured()) {
-    // Old sample data has rows and a total, but no page numbers.
-    const fb = await resolveFallback(fallbackData);
-    return {
-      data: fb?.data ?? [],
-      total: fb?.total ?? fb?.data?.length ?? 0,
-      page: fb?.page ?? 1,
-      limit: fb?.limit ?? fb?.data?.length ?? 0,
-      totalPages: fb?.totalPages ?? 1,
-    };
-  }
+  if (!apiConfigured()) throw new ApiError(0, "NO_API_CONFIGURED", "No API is configured.");
 
-  try {
-    const body = await request<T[]>(endpoint, options || {}, true);
-    const rows = Array.isArray(body?.data) ? body.data : [];
-    const meta = body?.meta || {};
+  const body = await request<T[]>(endpoint, options || {}, true);
+  const rows = Array.isArray(body?.data) ? body.data : [];
+  const meta = body?.meta || {};
 
-    return {
-      data: mapItem ? rows.map(mapItem) : (rows as T[]),
-      total: meta.total ?? rows.length,
-      page: meta.page ?? 1,
-      limit: meta.limit ?? rows.length,
-      totalPages: meta.totalPages ?? 1,
-    };
-  } catch (error) {
-    if (shouldFallBack(error, fallbackData)) {
-      const fb = await resolveFallback(fallbackData);
-      return {
-        data: fb?.data ?? [],
-        total: fb?.total ?? fb?.data?.length ?? 0,
-        page: fb?.page ?? 1,
-        limit: fb?.limit ?? fb?.data?.length ?? 0,
-        totalPages: fb?.totalPages ?? 1,
-      };
-    }
-    throw error;
-  }
-}
-
-function resolveFallback<T>(fallbackData?: T | (() => Promise<T> | T)): Promise<T> {
-  if (typeof fallbackData === "function") {
-    return Promise.resolve((fallbackData as () => Promise<T> | T)());
-  }
-  return Promise.resolve(fallbackData as T);
+  return {
+    data: mapItem ? rows.map(mapItem) : (rows as T[]),
+    total: meta.total ?? rows.length,
+    page: meta.page ?? 1,
+    limit: meta.limit ?? rows.length,
+    totalPages: meta.totalPages ?? 1,
+  };
 }
 
 
@@ -450,7 +407,6 @@ export async function apiListAll<T>(
     const res = await apiList<T>(
       `${endpoint}${joiner}limit=200&page=${page}`,
       { method: "GET" },
-      { data: [], total: 0 },
       mapItem
     );
     out.push(...res.data);
