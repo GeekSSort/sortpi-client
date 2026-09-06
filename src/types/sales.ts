@@ -5,8 +5,10 @@ export interface SaleRecord {
   customerName: string;
   totalAmount: number;
   totalAmountFormatted: string;
-  paymentMethod: "Cash" | "bKash" | "Card" | "Bank Transfer";
+  paymentMethod: "Cash" | "bKash" | "Card" | "Bank Transfer" | string;
   status: "Paid" | "Unpaid" | "Pending" | "Refunded";
+  referenceNo?: string;
+  transactionId?: string;
 }
 
 export interface SalesQueryFilter {
