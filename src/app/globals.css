@@ -196,31 +196,148 @@
   }
 }
 
-/* Receipt printing: only the receipt itself reaches the printer. */
+/* Receipt printing: only the receipt itself reaches the printer, uncropped and cleanly positioned. */
 @media print {
+  @page {
+    margin: 0;
+    size: auto;
+  }
+
+  html,
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    background: #fff !important;
+    overflow: visible !important;
+  }
+
+  /* Reset all overflow restrictions and heights that crop printed receipts */
+  div,
+  main,
+  section,
+  article,
+  [role="dialog"] {
+    overflow: visible !important;
+    max-height: none !important;
+    height: auto !important;
+  }
+
+  /* Strip layout fixed overlays, backdrops, animations, and transforms */
+  .fixed,
+  [role="dialog"],
+  [role="dialog"] > div {
+    position: static !important;
+    inset: auto !important;
+    max-height: none !important;
+    max-width: none !important;
+    width: 100% !important;
+    height: auto !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+    transform: none !important;
+    animation: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Hide everything on the page by default */
   body * {
     visibility: hidden;
   }
-  .print-area,
-  .print-area * {
-    visibility: visible;
-  }
-  .print-area {
-    position: absolute;
-    inset: 0;
-    padding: 24px;
-  }
+
+  /* Hide modal header, close button, footer actions, and screen-only elements */
+  [role="dialog"] > div > div:first-child,
+  [role="dialog"] > div > div:last-child,
+  [role="dialog"] button,
+  button,
   .no-print {
     display: none !important;
+    visibility: hidden !important;
   }
+
+  /* Reveal only .print-area and its contents */
+  .print-area,
+  .print-area * {
+    visibility: visible !important;
+  }
+
+  .print-area {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    width: 100% !important;
+    max-width: 80mm !important;
+    margin: 0 auto !important;
+    padding: 4mm 6mm !important;
+    overflow: visible !important;
+    height: auto !important;
+    min-height: 0 !important;
+    background: #fff !important;
+    box-sizing: border-box !important;
+  }
+}
+
+/* Visible, sleek scrollbars across all browsers and operating systems */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d1d5db transparent;
 }
 
 /* Scrolls horizontally without a visible bar — used by the POS category row,
    which grew from four fixed tabs to however many categories exist. */
 .no-scrollbar {
-  -ms-overflow-style: none;   /* old Edge */
-  scrollbar-width: none;      /* Firefox */
+  -ms-overflow-style: none !important;   /* old Edge */
+  scrollbar-width: none !important;      /* Firefox */
 }
 .no-scrollbar::-webkit-scrollbar {
-  display: none;              /* Chrome, Safari */
+  display: none !important;              /* Chrome, Safari */
+}
+
+/* The indeterminate hairline behind RefreshBar: a band that sweeps left to
+   right while a background refresh runs under content already on screen.
+   Transform-only, so it never triggers layout on a busy table. */
+@keyframes sp-indeterminate {
+  0% {
+    transform: translateX(-100%) scaleX(0.35);
+  }
+  50% {
+    transform: translateX(0%) scaleX(0.55);
+  }
+  100% {
+    transform: translateX(100%) scaleX(0.35);
+  }
+}
+
+/* Someone who has asked for less motion gets the bar as a steady tint rather
+   than a sweep, and the skeletons stop pulsing. Both still communicate "not
+   ready" without anything moving. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-\[sp-indeterminate_1\.1s_ease-in-out_infinite\] {
+    animation: none;
+    transform: none;
+    opacity: 0.5;
+  }
+  .animate-pulse {
+    animation: none;
+  }
 }
