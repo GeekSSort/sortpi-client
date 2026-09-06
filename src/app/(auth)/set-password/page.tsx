@@ -57,8 +57,13 @@ function SetPasswordInner() {
     setBusy(true);
     setError(null);
     try {
-      const res = await RegistrationService.setPassword(ticket, password, realm);
-      setDone(destination(res?.redirectTo));
+      const res = await RegistrationService.setPassword(
+        ticket,
+        password,
+        realm,
+        purpose === "signup" ? "signup" : "reset"
+      );
+      setDone(destination(res?.redirectTo ?? undefined));
     } catch (err) {
       setError(RegistrationService.describeError(err));
       setBusy(false);

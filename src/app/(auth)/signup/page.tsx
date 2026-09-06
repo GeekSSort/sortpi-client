@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AuthShell, { AuthAlert, AuthButton, AuthField } from "@/components/auth/AuthShell";
@@ -32,6 +32,47 @@ export default function SignupPage() {
   const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [addressCheck, setAddressCheck] = useState<{
+    state: "idle" | "checking" | "free" | "taken";
+    reason?: string | null;
+  }>({ state: "idle" });
+
+  /**
+   * Ask whether the address is free, a beat after they stop typing.
+   *
+   * Debounced because this fires per keystroke otherwise, and skipped below
+   * three characters because the server would only tell us what the field's
+   * own minLength already says. The answer is advice: the same rules run
+   * again at sign-up, so a stale "free" cannot get anybody a taken address.
+   */
+  useEffect(() => {
+    const value = subdomain.trim();
+    let cancelled = false;
+    // Every state change happens inside the timer, never in the effect body:
+    // setting state synchronously here would re-render on each keystroke
+    // before the debounce has done anything useful.
+    const timer = window.setTimeout(() => {
+      if (cancelled) return;
+      if (value.length < 3) {
+        setAddressCheck({ state: "idle" });
+        return;
+      }
+      setAddressCheck({ state: "checking" });
+      RegistrationService.checkSubdomain(value)
+        .then((res) => {
+          if (cancelled) return;
+          setAddressCheck(
+            res.available ? { state: "free" } : { state: "taken", reason: res.reason }
+          );
+        })
+        // A failed check must not block the form: sign-up validates anyway.
+        .catch(() => !cancelled && setAddressCheck({ state: "idle" }));
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [subdomain]);
 
   const onCompanyName = (value: string) => {
     setCompanyName(value);
@@ -101,6 +142,17 @@ export default function SignupPage() {
                 {subdomain || "yourname"}.sortpoint.com
               </span>
               . This cannot be changed later.
+              {addressCheck.state === "checking" && (
+                <span className="ml-1 text-[#8a8a8a]">Checking…</span>
+              )}
+              {addressCheck.state === "free" && (
+                <span className="ml-1 font-medium text-[#1a8f4c]">Available.</span>
+              )}
+              {addressCheck.state === "taken" && (
+                <span className="ml-1 font-medium text-[#c0392b]">
+                  {addressCheck.reason || "Taken."}
+                </span>
+              )}
             </>
           }
         />

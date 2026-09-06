@@ -19,6 +19,9 @@ function VerifyCodeInner() {
 
   const email = params.get("email") || "";
   const purpose = params.get("purpose") || "reset";
+  // Anything that is not a sign-up is a reset, so a hand-typed query string
+  // cannot ask the server for a journey that does not exist.
+  const otpPurpose = purpose === "signup" ? "signup" : "reset";
   const subdomain = params.get("subdomain") || "";
   const realm: Realm = params.get("realm") === "platform" ? "platform" : "tenant";
 
@@ -32,7 +35,10 @@ function VerifyCodeInner() {
     setBusy(true);
     setError(null);
     try {
-      const { ticket } = await RegistrationService.verifyCode(email, code, realm);
+      // The purpose travels with the code: sign-up and reset are separate
+      // requests on the server, and a code minted for one is refused by the
+      // other.
+      const { ticket } = await RegistrationService.verifyCode(email, code, realm, otpPurpose);
       const q = new URLSearchParams({ ticket, purpose, realm });
       if (subdomain) q.set("subdomain", subdomain);
       router.push(`/set-password?${q.toString()}`);
@@ -45,7 +51,7 @@ function VerifyCodeInner() {
   const resend = async () => {
     setError(null);
     try {
-      await RegistrationService.requestCode(email, realm);
+      await RegistrationService.resendCode(email, otpPurpose, realm);
       setResent(true);
     } catch (err) {
       setError(RegistrationService.describeError(err));
