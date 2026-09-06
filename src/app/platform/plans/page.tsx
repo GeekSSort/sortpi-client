@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { ApiError } from "@/services/apiClient";
 import { PlatformService, PlanRow } from "@/services/platformService";
+import { invalidate, useQuery } from "@/lib/query/useQuery";
 import ConsoleList, { Column, Stat } from "@/components/platform/ConsoleList";
 import StatusPill from "@/components/shared/StatusPill";
 import { formatMoney } from "@/lib/format";
@@ -18,7 +19,8 @@ import { statGood, statMoney, statTotal, statWait } from "@/components/platform/
 
 const BODY = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
 const FILTERS = ["All plans", "On sale", "Private", "Retired"] as const;
-
+/** The same tracks as `columns` below, as a literal so Tailwind emits the class. */
+const GRID = "grid-cols-[1.4fr_1fr_110px_120px_120px_130px_130px_83px]";
 
 
 function limit(value: number | null): string {
@@ -26,38 +28,25 @@ function limit(value: number | null): string {
 }
 
 export default function PlatformPlansPage() {
-  const [rows, setRows] = useState<PlanRow[]>([]);
   const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("All plans");
-  const [reloadKey, setReloadKey] = useState(0);
 
-  useEffect(() => {
-    let cancelled = false;
-    PlatformService.listPlans()
-      .then((res) => {
-        if (cancelled) return;
-        setRows(res.data);
-        setError(null);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(e instanceof ApiError ? e.message : "Could not load plans.");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [reloadKey]);
+  // Search and filter are applied in the browser over the whole list, so
+  // neither belongs in the key: they do not change what is requested.
+  const { data, loading, fetching, error, refetch } = useQuery("platform-plans", async () => {
+    const res = await PlatformService.listPlans();
+    return res.data;
+  });
+  const rows = data ?? [];
 
   const setPublic = async (row: PlanRow, isPublic: boolean) => {
     try {
       await PlatformService.setPlanPublic(row.code, isPublic);
       setNote(`${row.name} is now ${isPublic ? "on sale" : "private"}.`);
-      setReloadKey((k) => k + 1);
+      // A plan taken off sale must disappear from the Subscriptions "change
+      // plan" list as well, or someone moves a company onto a retired plan.
+      invalidate("platform-plans", "platform-subscriptions", "platform-overview");
     } catch (e) {
       setNote(PlatformService.describeError(e));
     }
@@ -161,7 +150,11 @@ export default function PlatformPlansPage() {
       stats={stats}
       columns={columns}
       loading={loading}
-      error={error}
+      fetching={fetching}
+      hasData={data !== undefined}
+      skeletonGrid={GRID}
+      error={error ? (error instanceof ApiError ? error.message : "Could not load plans.") : null}
+      onRetry={refetch}
       note={note}
       filters={FILTERS}
       onFilter={setFilter}
