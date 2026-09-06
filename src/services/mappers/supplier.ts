@@ -29,20 +29,11 @@ function whenOf(value: unknown): string {
   return Number.isNaN(at.getTime()) ? raw : WHEN.format(at);
 }
 
-export interface PurchaseTotals {
-  total: number;
-  lastDate: string;
-}
-
-export function toSupplierRecord(
-  row: any,
-  index: number,
-  totals?: PurchaseTotals
-): SupplierRecord {
+export function toSupplierRecord(row: any, index: number): SupplierRecord {
   const balance = toAmount(row?.currentBalance ?? row?.current_balance);
-  // The server's own figure. `totals` is a fallback for the bundled sample rows.
-  const annotated = row?.totalPurchases ?? row?.total_purchases;
-  const purchases = annotated != null ? toAmount(annotated) : (totals?.total ?? 0);
+  // Absent on a row the API has not annotated — a supplier nothing has been
+  // bought from, or a create response, both of which are honestly zero.
+  const purchases = toAmount(row?.totalPurchases ?? row?.total_purchases);
   const lastDate = row?.lastPurchaseDate ?? row?.last_purchase_date;
   return {
     id: String(row?.id ?? ""),
@@ -56,22 +47,7 @@ export function toSupplierRecord(
     totalPurchasesFormatted: formatMoney(purchases),
     balance,
     balanceFormatted: formatMoney(balance),
-    lastPurchase: lastDate ? whenOf(lastDate) : totals?.lastDate || "—",
+    lastPurchase: whenOf(lastDate),
     status: row?.isActive === false || row?.is_active === false ? "Inactive" : "Active",
   };
-}
-
-/** Purchases added up per supplier, for those two columns. */
-export function purchaseTotals(purchases: any[]): Map<string, PurchaseTotals> {
-  const out = new Map<string, PurchaseTotals>();
-  for (const p of purchases || []) {
-    const key = String(p?.supplier ?? p?.supplierId ?? "");
-    if (!key) continue;
-    const date = String(p?.purchaseDate ?? p?.purchase_date ?? "");
-    const found = out.get(key) || { total: 0, lastDate: "" };
-    found.total += toAmount(p?.grandTotal ?? p?.grand_total);
-    if (date > found.lastDate) found.lastDate = date;
-    out.set(key, found);
-  }
-  return out;
 }
