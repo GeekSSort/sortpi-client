@@ -32,7 +32,15 @@ export function toProductItem(
   // Only READY rows are ever served; a PENDING one has no bytes behind it yet.
   const ready = images.filter((i) => !i?.status || i.status === "READY");
   const primary = ready.find((i) => i?.isPrimary) ?? ready[0];
-  const raw = String(primary?.url ?? primary ?? "");
+  const raw = String(
+    primary?.url ??
+      primary?.imageUrl ??
+      primary?.image_url ??
+      row?.image ??
+      row?.imageUrl ??
+      row?.image_url ??
+      ""
+  );
   // Some filenames contain spaces. Left unencoded they break the request.
   const image = raw ? safeImageUrl(raw) : "";
 
