@@ -21,21 +21,12 @@ const TYPE: Record<string, CustomerRecord["type"]> = {
   VIP: "VIP",
 };
 
-export interface SalesTotals {
-  orders: number;
-  spent: number;
-}
-
-/**
- * `totals` is a fallback for callers that still have their own figures (the
- * bundled sample data). The server's own annotation wins when it is present.
- */
-export function toCustomerRecord(row: any, totals?: SalesTotals): CustomerRecord {
+export function toCustomerRecord(row: any): CustomerRecord {
   const due = toAmount(row?.currentBalance ?? row?.current_balance);
-  const annotatedSpent = row?.totalSpent ?? row?.total_spent;
-  const annotatedOrders = row?.orderCount ?? row?.order_count;
-  const spent = annotatedSpent != null ? toAmount(annotatedSpent) : (totals?.spent ?? 0);
-  const orders = annotatedOrders != null ? Number(annotatedOrders) || 0 : (totals?.orders ?? 0);
+  // Absent on a row the API has not annotated — a customer who has bought
+  // nothing, or a create response, both of which are honestly zero.
+  const spent = toAmount(row?.totalSpent ?? row?.total_spent);
+  const orders = Number(row?.orderCount ?? row?.order_count ?? 0) || 0;
   return {
     id: String(row?.id ?? ""),
     customerId: String(row?.code || "—"),
@@ -50,18 +41,4 @@ export function toCustomerRecord(row: any, totals?: SalesTotals): CustomerRecord
     dueAmountFormatted: formatMoney(due),
     status: row?.isActive === false || row?.is_active === false ? "Inactive" : "Active",
   };
-}
-
-/** Sales added up per customer, for those two columns. */
-export function salesTotals(sales: any[]): Map<string, SalesTotals> {
-  const out = new Map<string, SalesTotals>();
-  for (const sale of sales || []) {
-    const key = String(sale?.customer ?? sale?.customerId ?? "");
-    if (!key) continue;
-    const found = out.get(key) || { orders: 0, spent: 0 };
-    found.orders += 1;
-    found.spent += toAmount(sale?.grandTotal ?? sale?.grand_total);
-    out.set(key, found);
-  }
-  return out;
 }
