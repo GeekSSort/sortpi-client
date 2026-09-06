@@ -5,6 +5,9 @@ import { useRouter } from "next/navigation";
 import { ReturnService } from "@/services";
 import { ReturnableSale } from "@/types/returns";
 import { formatMoney } from "@/lib/format";
+import { useQuery, queryKey, useMutation } from "@/lib/query/useQuery";
+import { DetailSkeleton } from "@/components/shared/Skeleton";
+import { RefreshBar } from "@/components/shared/QueryBoundary";
 
 /**
  * New Return — find the sale, pick what came back, refund it.
@@ -45,9 +48,9 @@ export default function NewReturnPage() {
   const router = useRouter();
 
   const [invoiceQuery, setInvoiceQuery] = useState("");
-  const [sale, setSale] = useState<ReturnableSale | null>(null);
-  const [looking, setLooking] = useState(false);
-  const [lookupError, setLookupError] = useState<string | null>(null);
+  /** The invoice actually asked for, which is what the cache is keyed on.
+      Typing does not send a request; pressing Find does. */
+  const [lookingUp, setLookingUp] = useState("");
 
   /** Quantity being returned, per sale-item id. */
   const [picked, setPicked] = useState<Record<string, number>>({});
@@ -56,34 +59,53 @@ export default function NewReturnPage() {
   const [referenceNo, setReferenceNo] = useState("");
   const [returnDate, setReturnDate] = useState(today());
 
-  const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
-  const findSale = async () => {
-    setLooking(true);
-    setLookupError(null);
-    setSale(null);
+  // Keyed on the invoice, so looking the same one up twice — a common thing at
+  // a returns desk working through a bag of receipts — answers from cache.
+  const lookup = useQuery(
+    queryKey("sales", { invoice: lookingUp }),
+    () => ReturnService.findSaleByInvoice(lookingUp),
+    { enabled: lookingUp !== "" }
+  );
+
+  const sale: ReturnableSale | null = lookingUp === "" ? null : lookup.data ?? null;
+  const looking = lookup.loading;
+
+  const lookupError = (() => {
+    if (lookingUp === "" || lookup.loading) return null;
+    if (lookup.error) return "The sale could not be looked up. Try again.";
+    if (lookup.data === undefined) return null;
+    if (lookup.data === null) return `No sale found for "${lookingUp}".`;
+    if (lookup.data.items.length === 0) return "That sale has no lines to return.";
+    return null;
+  })();
+
+  const findSale = () => {
+    const wanted = invoiceQuery.trim();
+    if (!wanted) return;
     setPicked({});
-    try {
-      const found = await ReturnService.findSaleByInvoice(invoiceQuery);
-      if (!found) {
-        setLookupError(`No sale found for "${invoiceQuery.trim()}".`);
-      } else if (found.items.length === 0) {
-        setSale(found);
-        setLookupError("That sale has no lines to return.");
-      } else {
-        setSale(found);
-        // A reference the shop can read off the slip, tied to the invoice it
-        // is against rather than to the clock alone.
-        setReferenceNo(`RET-${found.invoiceNo}`.slice(0, 50));
-      }
-    } catch {
-      setLookupError("The sale could not be looked up. Try again.");
-    } finally {
-      setLooking(false);
-    }
+    setLookingUp(wanted);
+    // Asking for the same invoice again is a deliberate re-check, so it goes
+    // back to the server rather than replaying a cached answer.
+    if (wanted === lookingUp) void lookup.refetch();
   };
+
+  // A reference the shop can read off the slip, tied to the invoice it is
+  // against rather than to the clock alone. Derived, so it appears with the
+  // sale rather than a render later, and anything typed over it wins.
+  const suggestedReference =
+    sale && sale.items.length > 0 ? `RET-${sale.invoiceNo}`.slice(0, 50) : "";
+  const reference = referenceNo || suggestedReference;
+
+  const { mutate: createReturn, pending: saving } = useMutation(
+    (args: { saleId: string; payload: Parameters<typeof ReturnService.createReturn>[1] }) =>
+      ReturnService.createReturn(args.saleId, args.payload),
+    // A refund writes a return, reverses part of the sale, puts the goods back
+    // on the shelf and changes the day's takings.
+    { invalidates: ["returns", "sales", "stock", "inventory", "dashboard"] }
+  );
 
   const setQty = (line: { id: string; returnable: number }, next: number) =>
     setPicked((prev) => {
@@ -94,7 +116,9 @@ export default function NewReturnPage() {
       return out;
     });
 
-  const lines = sale?.items ?? [];
+  // Memoised because `?? []` would be a new array each render, and the refund
+  // total below depends on it.
+  const lines = useMemo(() => sale?.items ?? [], [sale]);
 
   const refundTotal = useMemo(
     () => lines.reduce((sum, line) => sum + (picked[line.id] ?? 0) * line.unitPrice, 0),
@@ -103,22 +127,24 @@ export default function NewReturnPage() {
   const pickedCount = Object.values(picked).reduce((n, q) => n + q, 0);
 
   const canSubmit =
-    !!sale && pickedCount > 0 && referenceNo.trim() !== "" && returnDate !== "" && !saving;
+    !!sale && pickedCount > 0 && reference.trim() !== "" && returnDate !== "" && !saving;
 
   const submit = async () => {
     if (!sale || !canSubmit) return;
-    setSaving(true);
     setSaveError(null);
     try {
-      await ReturnService.createReturn(sale.id, {
-        referenceNo: referenceNo.trim(),
-        returnDate,
-        refundMethod,
-        reason: reason.trim(),
-        items: Object.entries(picked).map(([saleItemId, quantity]) => ({
-          saleItemId,
-          quantity,
-        })),
+      await createReturn({
+        saleId: sale.id,
+        payload: {
+          referenceNo: reference.trim(),
+          returnDate,
+          refundMethod,
+          reason: reason.trim(),
+          items: Object.entries(picked).map(([saleItemId, quantity]) => ({
+            saleItemId,
+            quantity,
+          })),
+        },
       });
       setDone(true);
       // Long enough to read, short enough not to feel stuck.
@@ -131,13 +157,11 @@ export default function NewReturnPage() {
           ? error.message
           : "The refund could not be recorded."
       );
-    } finally {
-      setSaving(false);
     }
   };
 
   return (
-    <div className="flex w-full flex-col gap-[20px] pb-[48px] select-none">
+    <div className="flex w-full flex-col gap-[20px] pb-[48px]">
       <div>
         <h2 className="text-[20px] leading-[28px] font-semibold text-[#1e1e1e]">New Return</h2>
         <p className="mt-[2px] text-[13px] text-[#8f8d87]">
@@ -147,7 +171,8 @@ export default function NewReturnPage() {
 
       <div className="mx-auto flex w-full max-w-[640px] flex-col gap-[16px]">
         {/* 1 — the sale */}
-        <div className="flex flex-col gap-[10px] rounded-[12px] bg-white p-[16px] shadow-[inset_0_0_0_1px_#eaeaea]">
+        <div className="relative flex flex-col gap-[10px] rounded-[12px] bg-white p-[16px] shadow-[inset_0_0_0_1px_#eaeaea]">
+          <RefreshBar active={lookup.fetching} />
           <label htmlFor="invoice" className={LABEL}>
             Invoice number
           </label>
@@ -175,6 +200,14 @@ export default function NewReturnPage() {
           </div>
 
           {lookupError && <p className="text-[13px] text-[#e63946]">{lookupError}</p>}
+
+          {/* The sale's own summary, at the size it will be, so the panel does
+              not jump when the lookup lands. */}
+          {looking && (
+            <div className="mt-[4px] rounded-[10px] bg-[#fafafa] px-[12px] py-[10px]">
+              <DetailSkeleton rows={2} />
+            </div>
+          )}
 
           {sale && (
             <div className="mt-[4px] flex flex-wrap items-center justify-between gap-[8px] rounded-[10px] bg-[#fafafa] px-[12px] py-[10px] text-[13px]">
@@ -276,7 +309,7 @@ export default function NewReturnPage() {
               </label>
               <input
                 id="reference"
-                value={referenceNo}
+                value={reference}
                 onChange={(e) => setReferenceNo(e.target.value)}
                 maxLength={50}
                 placeholder="RET-000123"
