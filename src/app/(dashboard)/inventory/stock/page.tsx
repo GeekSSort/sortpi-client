@@ -1,7 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import Image from "next/image";
+import React, { useEffect, useState } from "react";
 import { StockItem } from "@/types/stock";
 import { StockService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
@@ -9,6 +8,10 @@ import RowActionMenu from "@/components/shared/RowActionMenu";
 import TablePagination from "@/components/shared/TablePagination";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
+import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/QueryBoundary";
+import ProductImage from "@/components/shared/ProductImage";
+import { isRowClick } from "@/lib/rowClick";
 
 /**
  * Figma: SORTPoint — Stock 57:13117.
@@ -22,6 +25,12 @@ import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/s
  * already knows its variant and its warehouse, which is everything an
  * adjustment needs, so the count is typed where the number already is.
  */
+
+/** A unique reference for one adjustment. Module scope, because reading the
+    clock is a side effect and does not belong in a component body. */
+function adjustmentRef(): string {
+  return `ADJ-${Date.now()}`;
+}
 
 const STATUS_TONE: Record<StockItem["status"], Tone> = {
   "In Stock": "green",
@@ -51,7 +60,10 @@ function FilterIcon() {
 const GRID = "grid-cols-[205fr_170fr_135fr_100fr_100fr_100fr_170fr_130fr_83fr]";
 const CELL = "flex min-w-0 items-center p-[12px]";
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e]";
-const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
+// `cursor-text` on the data itself: the ROW is clickable and shows a pointer,
+// but the text inside it is text — an I-beam is how a person knows they can
+// drag across a SKU and copy it.
+const TEXT = "cursor-text text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
 
 /**
  * Counting a line, in the row.
@@ -71,15 +83,18 @@ function CountCell({
   onApply: (next: number) => void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
+  // A refetch after applying brings a new `available`; drop the draft so the
+  // row shows the server's number rather than the one just typed. Adjusted
+  // during render rather than in an effect — an effect would paint the stale
+  // draft once before clearing it.
+  const [seenAvailable, setSeenAvailable] = useState(row.available);
+  if (seenAvailable !== row.available) {
+    setSeenAvailable(row.available);
+    setDraft(null);
+  }
   const shown = draft ?? String(row.available);
   const next = Number(shown);
   const dirty = draft !== null && Number.isFinite(next) && next >= 0 && next !== row.available;
-
-  // A refetch after applying brings a new `available`; drop the draft so the
-  // row shows the server's number rather than the one just typed.
-  useEffect(() => {
-    setDraft(null);
-  }, [row.available]);
 
   const step = (by: number) => setDraft(String(Math.max(0, (Number(shown) || 0) + by)));
 
@@ -153,52 +168,45 @@ function CountCell({
 }
 
 export default function StockPage() {
-  const [stock, setStock] = useState<StockItem[]>([]);
   const [query, setQuery] = useState("");
+  /** The debounce settles the term before it reaches the cache key: one
+      request for a word instead of one per letter, and a slow answer for "so"
+      can no longer overwrite the rows for "sony" — it belongs to a key that is
+      no longer on screen. */
+  const [term, setTerm] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
-  /** The debounce is for typing. Waiting 250ms to make the FIRST request
-      just adds a quarter second of blank table on reload. */
-  const firstLoad = useRef(true);
-  /** The API's count of everything matching, not of what this page holds. */
-  const [total, setTotal] = useState(0);
   const [adjusting, setAdjusting] = useState(false);
   /** Which row is mid-write, so only that one's control locks. */
   const [countingId, setCountingId] = useState<string | null>(null);
-  const [refresh, setRefresh] = useState(0);
   const [note, setNote] = useState<string | null>(null);
   const [detailOf, setDetailOf] = useState<StockItem | null>(null);
   const [adjustOf, setAdjustOf] = useState<StockItem | null>(null);
+  /** A count that is stocking an EMPTY line, waiting for what the units cost.
+      An empty line has no weighted average for the new units to inherit, so the
+      API refuses the apply — see `needsCost`. */
+  const [costOf, setCostOf] = useState<{ row: StockItem; next: number } | null>(null);
+  const [costDraft, setCostDraft] = useState("");
+  const [costError, setCostError] = useState<string | null>(null);
   const [adjustBy, setAdjustBy] = useState("");
   const [adjustError, setAdjustError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Debounced and guarded: a request per keystroke let a slow answer for
-    // "so" land after "sony" and repopulate the table with the wrong rows.
-    let live = true;
-    const id = setTimeout(() => {
-      setLoading(true);
-      // One page at a time. The whole list used to be requested and sliced in
-      // the browser, but the API caps a page at 200, so anything past that was
-      // silently truncated and the pager called 200 the total.
-      StockService.getStock({ search: query, page, limit: pageSize })
-        .then((res) => {
-          if (!live) return;
-          setStock(res.data);
-          setTotal(res.total);
-          setFailed(false);
-        })
-        .catch(() => live && setFailed(true))
-        .finally(() => live && setLoading(false));
-    }, firstLoad.current ? 0 : 250);
-    firstLoad.current = false;
-    return () => {
-      live = false;
-      clearTimeout(id);
-    };
-  }, [query, refresh, page, pageSize]);
+    if (query === term) return;
+    const id = setTimeout(() => setTerm(query), 250);
+    return () => clearTimeout(id);
+  }, [query, term]);
+
+  // One page at a time, and the WHOLE catalogue against this branch's shelf —
+  // in stock, low, or none at all. The list was Stock ledger rows, and a
+  // product the warehouse has never held has no row, so 207 of a 514-product
+  // catalogue were unreachable from the one screen that can count them in.
+  // Being at zero is exactly when somebody comes looking for a product.
+  const { data, loading, fetching, error, refetch } = useQuery(
+    queryKey("stock", { page, limit: pageSize, search: term, all: true }),
+    () =>
+      StockService.getStock({ search: term, page, limit: pageSize, includeUnstocked: true })
+  );
 
   /**
    * Count one line to a new quantity, from the row.
@@ -207,10 +215,27 @@ export default function StockPage() {
    * the server works out the movement against the balance at that moment. The
    * table is refetched rather than patched, because the ledger owns the number.
    */
-  const applyCount = async (row: StockItem, next: number) => {
+  /**
+   * Whether counting this line UP has to state a unit cost.
+   *
+   * Weighted-average costing: units joining a line inherit the line's average,
+   * and an empty line has none — so the API refuses the apply with
+   * `ADJUSTMENT_COST_REQUIRED` rather than let the first sale compute COGS
+   * against zero. Asked for up front instead of after a failed round trip.
+   */
+  const needsCost = (row: StockItem, next: number) =>
+    next > row.available && row.averageCost <= 0;
+
+  const applyCount = async (row: StockItem, next: number, unitCost?: number) => {
     if (countingId) return;
     if (!row.variantId || !row.warehouseId) {
       return setNote(`${row.name}: that line is missing its variant or warehouse.`);
+    }
+    if (unitCost == null && needsCost(row, next)) {
+      setCostDraft("");
+      setCostError(null);
+      setCostOf({ row, next });
+      return;
     }
     setCountingId(row.id);
     setNote(null);
@@ -219,12 +244,18 @@ export default function StockPage() {
         warehouseId: row.warehouseId,
         variantId: row.variantId,
         newQuantity: next,
-        referenceNo: `ADJ-${Date.now()}`,
-        reason: next > row.available ? "STOCK_IN" : "STOCK_OUT",
+        referenceNo: adjustmentRef(),
+        // COUNT — this IS a shelf count. "STOCK_IN"/"STOCK_OUT" were not
+        // AdjustmentReason choices at all, so every count 400'd on `reason`
+        // and the row put its old number back with only a toast to say why.
+        reason: "COUNT",
+        unitCost,
         note: `Counted ${row.available} to ${next}`,
       });
       setNote(`${row.name}: ${row.available} → ${next}`);
-      setRefresh((n) => n + 1);
+      // A movement changes this table, the product list's stock column, the
+      // transfers screen's availability and the dashboard's stock figures.
+      invalidate("stock", "inventory", "transfers", "dashboard", "pos-products");
     } catch (err) {
       setNote(
         err instanceof Error && err.message
@@ -236,13 +267,14 @@ export default function StockPage() {
     }
   };
 
+  const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const current = Math.min(page, totalPages);
   // The server already sliced. `rows` is the page.
-  const rows = stock;
+  const rows = data?.data ?? [];
 
   return (
-    <div className="flex w-full flex-col gap-[14px] select-none">
+    <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 57:13119 */}
       <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
         <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
@@ -272,7 +304,8 @@ export default function StockPage() {
       </div>
 
       {/* Table card — 57:13151 */}
-      <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+        <RefreshBar active={fetching} />
         <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="overflow-x-auto">
             <div className="min-w-[1128px]">
@@ -289,25 +322,51 @@ export default function StockPage() {
               </div>
 
               <div className="mt-[6px]">
-                {rows.length === 0 && loading && (
-                  <TableSkeleton columns={GRID} rows={pageSize} />
-                )}
-                {rows.length === 0 && !loading && (
-                  <p className="py-[40px] text-center text-[14px] text-[#525252]">
-                    {failed
-                      ? "Stock could not be loaded. Refresh to try again."
-                      : "No stock matches that search."}
-                  </p>
+                <QueryBoundary
+                  loading={loading}
+                  error={error}
+                  hasData={data !== undefined}
+                  skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
+                  // The server names the real problem — most often that no
+                  // branch is active, so there is no one shelf to report zero
+                  // against — and that is more use than "try again".
+                  errorMessage={
+                    error instanceof Error && error.message
+                      ? error.message
+                      : "Stock could not be loaded."
+                  }
+                  onRetry={refetch}
+                >
+                {rows.length === 0 && (
+                  <EmptyState
+                    message={term ? "No stock matches that search." : "No stock lines yet."}
+                    hint={term ? undefined : "Add a product to get started."}
+                  />
                 )}
                 {rows.map((r, i) => (
                   <div
                     key={r.id}
-                    className={`grid ${GRID} h-[54px] items-center ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`View stock for ${r.name}`}
+                    onClick={(e) => {
+                      if (isRowClick(e.target)) setDetailOf(r);
+                    }}
+                    onKeyDown={(e) => {
+                      // Only when the ROW itself has focus. Enter inside the
+                      // count input already means "apply this count".
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setDetailOf(r);
+                      }
+                    }}
+                    className={`grid ${GRID} h-[54px] cursor-pointer items-center transition-colors hover:bg-[#fafafa] focus-visible:bg-[#fafafa] focus-visible:outline-none ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}
                   >
                     {/* 28px thumbnail, 8px from the name — 57:13233 */}
                     <div className={`${CELL} gap-[8px]`}>
                       <span className="relative size-[28px] shrink-0 overflow-hidden rounded-[6px]">
-                        <Image src={r.image || "/placeholder-product.svg"} alt="" fill sizes="28px" className="object-cover" />
+                        <ProductImage src={r.image} alt="" sizes="28px" />
                       </span>
                       <span className={`${TEXT} truncate`}>{r.name}</span>
                     </div>
@@ -344,6 +403,7 @@ export default function StockPage() {
                     </div>
                   </div>
                 ))}
+                </QueryBoundary>
               </div>
             </div>
           </div>
@@ -352,11 +412,27 @@ export default function StockPage() {
         {/* Stacked cards below md */}
         <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
           {rows.map((r) => (
-            <div key={r.id} className="rounded-[10px] border border-solid border-[#eaeaea] p-[12px]">
+            <div
+              key={r.id}
+              role="button"
+              tabIndex={0}
+              aria-label={`View stock for ${r.name}`}
+              onClick={(e) => {
+                if (isRowClick(e.target)) setDetailOf(r);
+              }}
+              onKeyDown={(e) => {
+                if (e.target !== e.currentTarget) return;
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setDetailOf(r);
+                }
+              }}
+              className="cursor-pointer rounded-[10px] border border-solid border-[#eaeaea] p-[12px] transition-colors hover:bg-[#fafafa] focus-visible:bg-[#fafafa] focus-visible:outline-none"
+            >
               <div className="flex items-start justify-between gap-[10px]">
                 <div className="flex min-w-0 items-center gap-[8px]">
                   <span className="relative size-[28px] shrink-0 overflow-hidden rounded-[6px]">
-                    <Image src={r.image || "/placeholder-product.svg"} alt="" fill sizes="28px" className="object-cover" />
+                    <ProductImage src={r.image} alt="" sizes="28px" />
                   </span>
                   <div className="min-w-0">
                     <p className={`${TEXT} truncate !text-[#1e1e1e]`}>{r.name}</p>
@@ -429,7 +505,7 @@ export default function StockPage() {
           <div className="flex flex-col gap-[16px]">
             <div className="flex items-center gap-[12px]">
               <span className="relative size-[56px] shrink-0 overflow-hidden rounded-[10px] border border-solid border-[#eaeaea]">
-                <Image src={detailOf.image || "/placeholder-product.svg"} alt="" fill sizes="56px" className="object-cover" />
+                <ProductImage src={detailOf.image} alt="" sizes="56px" />
               </span>
               <div className="min-w-0">
                 <p className="truncate text-[16px] font-medium text-[#1e1e1e]">{detailOf.name}</p>
@@ -455,6 +531,70 @@ export default function StockPage() {
                 </dd>
               </div>
             </dl>
+          </div>
+        )}
+      </Modal>
+
+      {/* First stock on an empty line — what did the units cost? */}
+      <Modal
+        open={costOf !== null}
+        onClose={() => setCostOf(null)}
+        title="What did these cost?"
+        width={420}
+        footer={
+          <>
+            <button type="button" className={MODAL_GHOST} onClick={() => setCostOf(null)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              style={{ backgroundImage: GOLD_GRADIENT }}
+              className={MODAL_PRIMARY}
+              onClick={() => {
+                if (!costOf) return;
+                const cost = Number(costDraft);
+                if (!costDraft.trim() || Number.isNaN(cost) || cost <= 0) {
+                  return setCostError("Enter what one unit cost, greater than zero.");
+                }
+                const { row, next } = costOf;
+                setCostOf(null);
+                void applyCount(row, next, cost);
+              }}
+            >
+              Count it in
+            </button>
+          </>
+        }
+      >
+        {costOf && (
+          <div className="flex flex-col gap-[12px]">
+            <p className="text-[14px] leading-[1.6] text-[#525252]">
+              <span className="font-medium text-[#1e1e1e]">{costOf.row.name}</span> has never been
+              stocked in {costOf.row.warehouse}, so there is no cost for these{" "}
+              <span className="font-medium text-[#1e1e1e]">{costOf.next}</span> units to inherit.
+            </p>
+            <label className="flex flex-col gap-[6px]">
+              <span className="text-[14px] font-medium tracking-[-0.28px] text-[#525252]">
+                Cost per unit
+              </span>
+              <input
+                autoFocus
+                value={costDraft}
+                onChange={(e) => {
+                  setCostDraft(e.target.value.replace(/[^\d.]/g, ""));
+                  setCostError(null);
+                }}
+                inputMode="decimal"
+                placeholder="৳ 0.00"
+                aria-label="Cost per unit"
+                className="flex h-[44px] items-center rounded-[10px] bg-white px-[12px] text-[14px] tracking-[-0.28px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] outline-none placeholder:text-[rgba(82,82,82,0.6)]"
+              />
+            </label>
+            <p className="text-[12px] leading-[1.5] text-[#8a8a8a]">
+              This is what the shop PAID, and it becomes the line&rsquo;s weighted average — the
+              figure profit is measured against. It is not the selling price.
+            </p>
+            {costError && <p className="text-[13px] text-[#ef4444]">{costError}</p>}
           </div>
         )}
       </Modal>
@@ -486,6 +626,16 @@ export default function StockPage() {
                 if (!adjustOf.variantId || !adjustOf.warehouseId) {
                   return setAdjustError("That line is missing its variant or warehouse.");
                 }
+                // Same rule as the row counter: stock joining an EMPTY line has
+                // no average to inherit, so the cost is asked for first.
+                if (needsCost(adjustOf, next)) {
+                  const row = adjustOf;
+                  setAdjustOf(null);
+                  setCostDraft("");
+                  setCostError(null);
+                  setCostOf({ row, next });
+                  return;
+                }
                 // Drafted and applied against the ledger, not edited on screen.
                 // This used to change the row and nothing else.
                 setAdjusting(true);
@@ -496,14 +646,18 @@ export default function StockPage() {
                     variantId: adjustOf.variantId,
                     // A count, not a delta — the service works out the movement.
                     newQuantity: next,
-                    referenceNo: `ADJ-${Date.now()}`,
-                    reason: delta > 0 ? "STOCK_IN" : "STOCK_OUT",
+                    referenceNo: adjustmentRef(),
+                    // CORRECTION, not COUNT: nobody counted the shelf here,
+                    // they typed a difference against what the screen showed.
+                    reason: "CORRECTION",
                     note: `Adjusted by ${delta > 0 ? "+" : ""}${delta}`,
                   });
                   setNote(`${adjustOf.name}: available ${adjustOf.available} → ${next}`);
                   setAdjustOf(null);
-                  // Refetch rather than patch: the ledger owns the balance.
-                  setRefresh((n) => n + 1);
+                  // Refetch rather than patch: the ledger owns the balance,
+                  // and the same movement is what Products and the dashboard
+                  // are counting.
+                  invalidate("stock", "inventory", "transfers", "dashboard", "pos-products");
                 } catch (err) {
                   setAdjustError(
                     err instanceof Error && err.message
