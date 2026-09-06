@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo } from "react";
 import { OverviewService } from "@/services";
+import { useQuery, queryKey } from "@/lib/query/useQuery";
 import { OrderListItem } from "@/types/overview";
 import StatusPill from "@/components/shared/StatusPill";
 import OverviewPanel, { PANEL_CELL, PANEL_HEAD, PANEL_TEXT } from "./OverviewPanel";
@@ -13,23 +14,27 @@ const FILTERS = ["All orders", "Received", "Pending"] as const;
 const taka = (n: number) => `৳ ${n.toLocaleString("en-IN")}`;
 
 export default function OrderListModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
-  const [orders, setOrders] = useState<OrderListItem[]>([]);
+  // Only asks while the panel is open, and the answer is shared with every
+  // other screen reading this key — reopening the panel repaints from cache
+  // instead of blanking the table for the length of a round trip.
+  const {
+    data: orders,
+    loading,
+    error,
+    refetch,
+  } = useQuery(queryKey("overview-orders"), () => OverviewService.getOrders(), { enabled: isOpen });
 
-  useEffect(() => {
-    OverviewService.getOrders()
-      .then(setOrders)
-      .catch(() => {});
-  }, []);
+  const rows = useMemo(() => orders ?? [], [orders]);
 
   const stats = useMemo(() => {
-    const pending = orders.filter((o) => o.status === "Pending");
-    const due = orders.filter((o) => o.paymentStatus === "Due");
+    const pending = rows.filter((o) => o.status === "Pending");
+    const due = rows.filter((o) => o.paymentStatus === "Due");
     return [
-      { label: "Orders", value: String(orders.length) },
-      { label: "Order value", value: taka(orders.reduce((s, o) => s + o.totalAmount, 0)) },
+      { label: "Orders", value: String(rows.length) },
+      { label: "Order value", value: taka(rows.reduce((s, o) => s + o.totalAmount, 0)) },
       { label: "Pending / Due", value: `${pending.length} · ${due.length}` },
     ];
-  }, [orders]);
+  }, [rows]);
 
   return (
     <OverviewPanel<OrderListItem>
@@ -38,12 +43,15 @@ export default function OrderListModal({ isOpen, onClose }: { isOpen: boolean; o
       title="Order List"
       subtitle="Purchase orders behind today’s order count."
       searchPlaceholder="Search by purchase ID or supplier..."
-      rows={orders}
+      rows={rows}
       searchable={(r) => `${r.purchaseId} ${r.supplier.name}`}
       filters={FILTERS}
       matchesFilter={(r, f) => r.status === f}
       stats={stats}
       grid={GRID}
+      loading={loading}
+      error={error}
+      onRetry={refetch}
       emptyText="No orders match that search."
       head={
         <>
