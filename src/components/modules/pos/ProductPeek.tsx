@@ -1,10 +1,10 @@
 "use client";
 
 import React from "react";
-import Image from "next/image";
 import { createPortal } from "react-dom";
 import { ProductItem } from "@/types/pos";
 import { formatMoney } from "@/lib/format";
+import ProductImage from "@/components/shared/ProductImage";
 
 /**
  * What a product is, without leaving the grid.
@@ -59,7 +59,7 @@ export default function ProductPeek({ anchor }: { anchor: PeekAnchor | null }) {
         style={{ height: Math.max(90, Math.min(CARD_W - 28, maxHeight - BELOW_IMAGE)) }}
       >
         {product.image ? (
-          <Image src={product.image} alt="" fill sizes="260px" className="object-cover" />
+          <ProductImage src={product.image} alt="" sizes="260px" />
         ) : (
           <span className="flex h-full w-full items-center justify-center text-[34px] font-semibold text-[#d4d4d4]">
             {product.name.slice(0, 2).toUpperCase()}
