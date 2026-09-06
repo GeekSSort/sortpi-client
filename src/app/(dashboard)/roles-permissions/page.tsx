@@ -13,12 +13,21 @@ import TablePagination from "@/components/shared/TablePagination";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Avatar from "@/components/shared/Avatar";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
+import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { ListSkeleton } from "@/components/shared/Skeleton";
+import { QueryBoundary, RefreshBar, EmptyState, ErrorState } from "@/components/shared/QueryBoundary";
 
 /**
  * User List — Figma 59:18134.
  *
- * Eight columns: # 50, User Name 170, Phone and Mail share, Role 135, Last
- * Login shares, Status 100, Action 83. Rows 54 tall with 12px cells. Below md
+ * Nine columns: # 44, User Name 160, Phone 110, Mail takes the slack, Role
+ * 130, Branches 170, Last Login 120, Status 92, Action 60. Tightened from the
+ * eight-column layout to make room for Branches without pushing Status off the
+ * edge of the scroll container at a common laptop width. Rows 54 tall with 12px cells.
+ *
+ * Branches answers "where may this person sign in", which the screen could not
+ * say at all before — a Branch Manager and a company Accountant looked
+ * identical in every column. Below md
  * the grid cannot hold them, so each row becomes a card.
  *
  * This screen is a staff directory, so it is the one most worth getting the
@@ -36,7 +45,13 @@ import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "
  * its own kind of bug.
  */
 
-const GRID = "grid-cols-[50px_170px_1fr_1fr_135px_1fr_100px_83px]";
+// fr units, not pixels — the same rule the Products and Stock tables follow.
+// Eight fixed columns beside a single `1fr` meant every pixel a wide screen had
+// to spare went to Mail alone: the gaps between the other columns stayed at
+// their minimum while one column grew, which is the unevenness this fixes. The
+// numbers are the design's own widths, so at the table's 1120px minimum the
+// layout is unchanged and only the spare width is now shared.
+const GRID = "grid-cols-[44fr_160fr_110fr_234fr_130fr_170fr_120fr_92fr_60fr]";
 const CELL = "flex items-center px-[12px]";
 const HEAD =
   "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e] whitespace-nowrap";
@@ -97,32 +112,23 @@ function AddIcon() {
 
 export default function RolesPermissionsPage() {
   const { user, loading: sessionLoading } = useSession();
-  const [rows, setRows] = useState<SystemUserRecord[]>([]);
-  const [roles, setRoles] = useState<RoleOption[]>([]);
-  const [total, setTotal] = useState(0);
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("All Users");
   const [filterOpen, setFilterOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
-  const [loading, setLoading] = useState(true);
   // Two different things, and merging them ate one of them: `note` is what an
-  // action just did ("Rahim deactivated."), `loadError` is why the list on
-  // screen is empty. Sharing one state meant the refetch an action triggers
-  // cleared the confirmation that action had just set.
+  // action just did ("Rahim deactivated."), the query's `error` is why the
+  // list on screen is empty. Sharing one state meant the refetch an action
+  // triggers cleared the confirmation that action had just set.
   const [note, setNote] = useState<string | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [reloadKey, setReloadKey] = useState(0);
   const [roleOf, setRoleOf] = useState<SystemUserRecord | null>(null);
   const [nextRole, setNextRole] = useState("");
   const [dropOf, setDropOf] = useState<SystemUserRecord | null>(null);
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState<"users" | "roles">("users");
-  const [roleRecords, setRoleRecords] = useState<RoleRecord[]>([]);
-  const [rolesLoading, setRolesLoading] = useState(false);
   const [editing, setEditing] = useState<RoleRecord | null | undefined>(undefined);
-  const [rolesKey, setRolesKey] = useState(0);
   const filterRef = useRef<HTMLDivElement>(null);
 
   const can = useMemo(() => {
@@ -150,65 +156,48 @@ export default function RolesPermissionsPage() {
     return () => clearTimeout(timer);
   }, [query]);
 
-  useEffect(() => {
-    if (sessionLoading) return;
-    if (!can.view) {
-      setLoading(false);
-      return;
-    }
+  // `enabled` is what stops a request going out before the session says
+  // whether this person may read the directory at all — the old effect had to
+  // return early and then remember to clear its own loading flag.
+  const usersQuery = useQuery(
+    queryKey("roles", {
+      part: "users",
+      page,
+      limit: pageSize,
+      search,
+      status: filter === "All Users" ? undefined : filter,
+    }),
+    () =>
+      RoleService.getUsers({
+        search: search || undefined,
+        status: filter === "All Users" ? undefined : filter,
+        page,
+        limit: pageSize,
+      }),
+    { enabled: !sessionLoading && can.view }
+  );
+  const rows: SystemUserRecord[] = usersQuery.data?.data ?? [];
+  const total = usersQuery.data?.total ?? 0;
+  const loading = usersQuery.loading;
+  // A failed read must not leave the previous branch's rows on screen, which
+  // is why the banner is rendered from the query's own error rather than a
+  // separate flag that could outlive it.
+  const loadError = usersQuery.error ? RoleService.describeError(usersQuery.error) : null;
 
-    let cancelled = false;
-    setLoading(true);
-    (async () => {
-      try {
-        const res = await RoleService.getUsers({
-          search: search || undefined,
-          status: filter === "All Users" ? undefined : filter,
-          page,
-          limit: pageSize,
-        });
-        if (cancelled) return;
-        setRows(res.data);
-        setTotal(res.total);
-        setLoadError(null);
-      } catch (e) {
-        if (cancelled) return;
-        // A failed read must not leave the previous branch's rows on screen.
-        setRows([]);
-        setTotal(0);
-        setLoadError(RoleService.describeError(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [search, filter, page, pageSize, reloadKey, sessionLoading, can.view]);
+  // The role names the Change-role dialog offers.
+  const roleOptionsQuery = useQuery(
+    queryKey("roles", { part: "options" }),
+    () => RoleService.getRoles(),
+    { enabled: !sessionLoading && can.view }
+  );
+  const roles: RoleOption[] = roleOptionsQuery.data ?? [];
 
-  useEffect(() => {
-    if (sessionLoading || !can.view) return;
-    let cancelled = false;
-    RoleService.getRoles()
-      .then((r) => !cancelled && setRoles(r))
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionLoading, can.view]);
-
-  useEffect(() => {
-    if (tab !== "roles" || !can.viewRoles) return;
-    let cancelled = false;
-    setRolesLoading(true);
-    RoleService.getRoleRecords()
-      .then((r) => !cancelled && setRoleRecords(r))
-      .catch((e) => !cancelled && setNote(RoleService.describeError(e)))
-      .finally(() => !cancelled && setRolesLoading(false));
-    return () => {
-      cancelled = true;
-    };
-  }, [tab, can.viewRoles, rolesKey]);
+  const roleRecordsQuery = useQuery(
+    queryKey("roles", { part: "records" }),
+    () => RoleService.getRoleRecords(),
+    { enabled: tab === "roles" && can.viewRoles }
+  );
+  const roleRecords: RoleRecord[] = roleRecordsQuery.data ?? [];
 
   useEffect(() => {
     if (!filterOpen) return;
@@ -231,7 +220,9 @@ export default function RolesPermissionsPage() {
       setNote(done);
       setRoleOf(null);
       setDropOf(null);
-      setReloadKey((k) => k + 1);
+      // Changing somebody's role or deactivating them changes the directory
+      // and what the role list reports, so both go stale.
+      invalidate("roles");
     } catch (e) {
       setNote(RoleService.describeError(e));
     } finally {
@@ -283,7 +274,7 @@ export default function RolesPermissionsPage() {
   }
 
   return (
-    <div className="flex w-full flex-col gap-[14px] select-none">
+    <div className="flex w-full flex-col gap-[14px]">
       {/* Two things live on this screen and they are different kinds of thing:
           the people, and the jobs those people hold. */}
       {can.viewRoles && (
@@ -307,7 +298,11 @@ export default function RolesPermissionsPage() {
       {tab === "roles" ? (
         <RolesPanel
           roles={roleRecords}
-          loading={rolesLoading}
+          loading={roleRecordsQuery.loading}
+          fetching={roleRecordsQuery.fetching}
+          error={roleRecordsQuery.error}
+          hasData={roleRecordsQuery.data !== undefined}
+          onRetry={roleRecordsQuery.refetch}
           note={note}
           can={can}
           onNew={() => setEditing(null)}
@@ -316,7 +311,9 @@ export default function RolesPermissionsPage() {
             try {
               await RoleService.deleteRole(r.id);
               setNote(`${r.name} deleted.`);
-              setRolesKey((k) => k + 1);
+              // Deleting a role changes the list AND what the user dialog can
+              // offer, and both read the "roles" prefix.
+              invalidate("roles");
             } catch (e) {
               setNote(RoleService.describeError(e));
             }
@@ -419,7 +416,8 @@ export default function RolesPermissionsPage() {
       </p>
 
       {/* Table card — 59:18163 */}
-      <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+        <RefreshBar active={usersQuery.fetching} />
         {loadError && (
           <p role="alert" className="mx-[16px] mt-[16px] rounded-[8px] bg-[#ffdfe2] px-[12px] py-[8px] text-[13px] text-[#a02620]">
             {loadError}
@@ -433,31 +431,46 @@ export default function RolesPermissionsPage() {
 
         <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="overflow-x-auto">
-            <div className="min-w-[1050px]">
+            <div className="min-w-[1120px]">
               <div className={`grid ${GRID} items-start overflow-clip`}>
                 <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>#</span></div>
                 <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>User Name</span></div>
                 <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Phone</span></div>
                 <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Mail</span></div>
                 <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Role</span></div>
+                <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Branches</span></div>
                 <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Last Login</span></div>
                 <div className={`${CELL} h-[40px] justify-center border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Status</span></div>
                 <div className={`${CELL} h-[40px] justify-center border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Action</span></div>
 
                 {/* One indicator, not two: the skeleton was rendered under a
                     "Loading users..." line on every first load. */}
-                {loading && <TableSkeleton columns={GRID} rows={pageSize} />}
-
-                {!loading && rows.length === 0 && (
-                  <div className="col-span-8 px-[12px] py-[28px] text-center text-[14px] text-[#525252]">
-                    {scope
-                      ? "Nobody matches this view in this branch."
-                      : "No users match this view."}
+                <QueryBoundary
+                  loading={loading}
+                  error={usersQuery.error}
+                  hasData={usersQuery.data !== undefined}
+                  skeleton={
+                    <div className="col-span-9">
+                      <TableSkeleton columns={GRID} rows={pageSize} />
+                    </div>
+                  }
+                  errorMessage={loadError ?? "Users could not be loaded."}
+                  onRetry={usersQuery.refetch}
+                >
+                {rows.length === 0 && (
+                  <div className="col-span-9">
+                    <EmptyState
+                      message={
+                        scope
+                          ? "Nobody matches this view in this branch."
+                          : "No users match this view."
+                      }
+                      compact
+                    />
                   </div>
                 )}
 
-                {!loading &&
-                  rows.map((u) => (
+                {rows.map((u) => (
                     <React.Fragment key={u.id}>
                       <div className={`${CELL} h-[54px] border-b border-solid border-[#eaeaea]`}>
                         <span className={BODY}>{u.index}</span>
@@ -476,6 +489,19 @@ export default function RolesPermissionsPage() {
                         <span className={`${BODY} truncate`}>{u.role}</span>
                       </div>
                       <div className={`${CELL} h-[54px] border-b border-solid border-[#eaeaea]`}>
+                        {/* `title` because the cell truncates: three branch
+                            names do not fit in 190px, and the full answer is
+                            what somebody opened this screen for. */}
+                        <span
+                          className={`${BODY} truncate ${
+                            u.branchIds.length === 0 ? "!text-[#1e1e1e]" : ""
+                          }`}
+                          title={u.branchLabel}
+                        >
+                          {u.branchLabel}
+                        </span>
+                      </div>
+                      <div className={`${CELL} h-[54px] border-b border-solid border-[#eaeaea]`}>
                         <span className={BODY}>{u.lastLogin}</span>
                       </div>
                       <div className={`${CELL} h-[54px] justify-center border-b border-solid border-[#eaeaea]`}>
@@ -488,16 +514,15 @@ export default function RolesPermissionsPage() {
                       </div>
                     </React.Fragment>
                   ))}
+                </QueryBoundary>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Below md the grid cannot hold eight columns; each row becomes a card. */}
+        {/* Below md the grid cannot hold nine columns; each row becomes a card. */}
         <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
-          {loading && (
-            <p className="py-[20px] text-center text-[14px] text-[#525252]">Loading users...</p>
-          )}
+          {loading && <ListSkeleton rows={4} />}
           {!loading &&
             rows.map((u) => (
               <div key={u.id} className="rounded-[10px] p-[12px] shadow-[inset_0_0_0_1px_#eaeaea]">
@@ -519,6 +544,9 @@ export default function RolesPermissionsPage() {
                 <div className="mt-[8px] grid grid-cols-2 gap-x-[12px] gap-y-[4px] text-[13px] text-[#525252]">
                   <span className="truncate">{u.phone}</span>
                   <span className="truncate text-right">{u.role}</span>
+                  <span className="col-span-2 truncate" title={u.branchLabel}>
+                    Branches: {u.branchLabel}
+                  </span>
                   <span className="col-span-2">Last login {u.lastLogin}</span>
                 </div>
               </div>
@@ -547,10 +575,10 @@ export default function RolesPermissionsPage() {
           onSaved={(message) => {
             setEditing(undefined);
             setNote(message);
-            setRolesKey((k) => k + 1);
             // A role's codes or branches changing can change what THIS person
-            // may do, so the roles the user dialog offers are refetched too.
-            RoleService.getRoles().then(setRoles).catch(() => undefined);
+            // may do, so the role list, the names the user dialog offers and
+            // the directory itself all go stale together.
+            invalidate("roles");
           }}
         />
       )}
@@ -667,6 +695,10 @@ export default function RolesPermissionsPage() {
 function RolesPanel({
   roles,
   loading,
+  fetching,
+  error,
+  hasData,
+  onRetry,
   note,
   can,
   onNew,
@@ -675,6 +707,10 @@ function RolesPanel({
 }: {
   roles: RoleRecord[];
   loading: boolean;
+  fetching: boolean;
+  error: unknown;
+  hasData: boolean;
+  onRetry: () => void;
   note: string | null;
   can: { createRole: boolean; updateRole: boolean; deleteRole: boolean };
   onNew: () => void;
@@ -700,21 +736,26 @@ function RolesPanel({
         )}
       </div>
 
-      <div className="w-full overflow-hidden rounded-[12px] bg-white p-[16px] shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className="relative w-full overflow-hidden rounded-[12px] bg-white p-[16px] shadow-[inset_0_0_0_1px_#eaeaea]">
+        <RefreshBar active={fetching} />
         {note && (
           <p role="status" className="mb-[12px] rounded-[8px] bg-[#fdf7e6] px-[12px] py-[8px] text-[13px] text-[#6d5b46]">
             {note}
           </p>
         )}
 
-        {loading && <p className="py-[24px] text-center text-[14px] text-[#525252]">Loading roles...</p>}
+        {loading && !hasData && <ListSkeleton rows={4} />}
 
-        {!loading && roles.length === 0 && (
-          <p className="py-[24px] text-center text-[14px] text-[#525252]">No roles defined yet.</p>
+        {error !== undefined && !hasData && (
+          <ErrorState message="Roles could not be loaded." onRetry={onRetry} compact />
+        )}
+
+        {hasData && roles.length === 0 && (
+          <EmptyState message="No roles defined yet." compact />
         )}
 
         <ul className="flex flex-col gap-[10px]">
-          {!loading &&
+          {hasData &&
             roles.map((r) => (
               <li
                 key={r.id}
