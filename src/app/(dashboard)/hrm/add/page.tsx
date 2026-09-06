@@ -5,6 +5,9 @@ import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { HrmService, Lookup } from "@/services/hrmService";
 import { GOLD_GRADIENT } from "@/components/shared/Modal";
+import { useQuery, queryKey, useMutation } from "@/lib/query/useQuery";
+import { FormSkeleton } from "@/components/shared/Skeleton";
+import { QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 
 /**
  * Add Employees — Figma 74:4463.
@@ -136,39 +139,37 @@ export default function AddEmployeePage() {
   const [department, setDepartment] = useState("");
   const [designation, setDesignation] = useState("");
   const [photo, setPhoto] = useState<string | null>(null);
-  const [lookups, setLookups] = useState<{ departments: Lookup[]; designations: Lookup[] }>({
-    departments: [],
-    designations: [],
-  });
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  // The department and designation lists come from the server and change
+  // rarely, so they are read through the shared cache: a second visit to this
+  // form paints its pickers instead of re-asking.
+  const lookupQuery = useQuery(queryKey("employees", { part: "lookups" }), () =>
     HrmService.getLookups()
-      .then((l) => !cancelled && setLookups(l))
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  );
+  const lookups: { departments: Lookup[]; designations: Lookup[] } =
+    lookupQuery.data ?? { departments: [], designations: [] };
+
+  const { mutate: createEmployee, pending: saving } = useMutation(
+    (payload: Parameters<typeof HrmService.createEmployee>[0]) =>
+      HrmService.createEmployee(payload),
+    // The roster and the payroll run both count employees.
+    { invalidates: ["employees", "payroll"] }
+  );
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setSaving(true);
     try {
-      await HrmService.createEmployee({ name, email, phone, department, designation });
+      await createEmployee({ name, email, phone, department, designation });
       router.push("/hrm");
     } catch (err) {
       setError(HrmService.describeError(err));
-    } finally {
-      setSaving(false);
     }
   };
 
   return (
-    <form onSubmit={submit} className="flex w-full flex-col items-center select-none">
+    <form onSubmit={submit} className="flex w-full flex-col items-center">
       <div className="flex w-full max-w-[565px] flex-col gap-[24px]">
         {/* Card — 74:5325 */}
         <div className="flex w-full flex-col items-center gap-[9px] overflow-hidden rounded-[10px] border border-solid border-[#eaeaea] bg-white pb-[16px]">
@@ -178,7 +179,16 @@ export default function AddEmployeePage() {
             </p>
           </div>
 
-          <div className="flex w-full flex-col gap-[12px] px-[16px]">
+          <div className="relative flex w-full flex-col gap-[12px] px-[16px]">
+            <RefreshBar active={lookupQuery.fetching} />
+            <QueryBoundary
+              loading={lookupQuery.loading}
+              error={lookupQuery.error}
+              hasData={lookupQuery.data !== undefined}
+              skeleton={<FormSkeleton fields={5} columns={1} />}
+              errorMessage="The department and designation lists could not be loaded."
+              onRetry={lookupQuery.refetch}
+            >
             {error && (
               <p role="alert" className="rounded-[8px] bg-[#ffdfe2] px-[12px] py-[8px] text-[13px] text-[#e63946]">
                 {error}
@@ -272,6 +282,7 @@ export default function AddEmployeePage() {
                 Preview only — the employee API has no photo field yet, so this image is not saved.
               </p>
             )}
+            </QueryBoundary>
           </div>
         </div>
 
