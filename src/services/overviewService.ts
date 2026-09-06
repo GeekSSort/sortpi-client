@@ -24,7 +24,6 @@ export class OverviewService {
     const res = await apiList<SalesOverviewItem>(
       `/sales/?limit=${PANEL_SIZE}`,
       { method: "GET" },
-      undefined,
       toSalesOverviewItem
     );
     return res.data;
@@ -35,7 +34,6 @@ export class OverviewService {
     const res = await apiList<OrderListItem>(
       `/purchases/?limit=${PANEL_SIZE}`,
       { method: "GET" },
-      undefined,
       toOrderListItem
     );
     return res.data;
@@ -45,7 +43,6 @@ export class OverviewService {
     const res = await apiList<CustomerListItem>(
       `/customers/?limit=${PANEL_SIZE}`,
       { method: "GET" },
-      undefined,
       toCustomerListItem
     );
     return res.data;
