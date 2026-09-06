@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { SupplierService } from "@/services";
 import { GOLD_GRADIENT } from "@/components/shared/Modal";
 import UploadIcon from "@/components/shared/UploadIcon";
+import { useMutation } from "@/lib/query/useQuery";
 
 /**
  * Add Supplier — Figma 73:3279.
@@ -31,7 +32,14 @@ export default function AddSupplierPage() {
   const [image, setImage] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+
+  // The supplier list is mounted behind this form more often than not, and a
+  // new supplier is also a new name in the purchase order picker.
+  const { mutate: createSupplier, pending: saving } = useMutation(
+    (payload: Parameters<typeof SupplierService.createSupplier>[0]) =>
+      SupplierService.createSupplier(payload),
+    { invalidates: ["suppliers", "purchases"] }
+  );
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,10 +49,9 @@ export default function AddSupplierPage() {
     if (mail.trim() && !/^\S+@\S+\.\S+$/.test(mail.trim()))
       return setError("That email address doesn’t look right.");
 
-    setSaving(true);
     setError(null);
     try {
-      await SupplierService.createSupplier({
+      await createSupplier({
         name: name.trim(),
         phone: phone.trim(),
         mail: mail.trim() || "—",
@@ -52,14 +59,17 @@ export default function AddSupplierPage() {
       });
       setNote(`${name.trim()} added. Returning to the supplier list…`);
       window.setTimeout(() => router.push("/purchases/suppliers"), 900);
-    } catch {
-      setError("Could not save the supplier. Try again.");
-      setSaving(false);
+    } catch (err) {
+      // The server names the real problem — a duplicate code, a missing
+      // permission — and that is more use than "try again".
+      setError(
+        err instanceof Error && err.message ? err.message : "Could not save the supplier. Try again."
+      );
     }
   };
 
   return (
-    <div className="flex w-full flex-col gap-[14px] select-none">
+    <div className="flex w-full flex-col gap-[14px]">
       <form onSubmit={save} className="mx-auto flex w-full max-w-[565px] flex-col gap-[24px]">
         {/* Card — 73:3853 */}
         <div className="w-full overflow-hidden rounded-[10px] bg-white pb-[16px] shadow-[inset_0_0_0_1px_#eaeaea]">
