@@ -24,6 +24,32 @@ const nextConfig: NextConfig = {
      * Revisit once upstream fixes the size calculation.
      */
     maximumDiskCacheSize: 0,
+
+    /**
+     * Where product photographs are allowed to come from.
+     *
+     * `next/image` refuses any remote host that is not listed here, so with an
+     * empty list every uploaded product shot rendered as a broken image while
+     * the bundled placeholder kept working — which made it look as though
+     * nothing had been uploaded.
+     *
+     * Locally that host is MinIO on :9000. In a deployment it is whatever
+     * `AWS_S3_PUBLIC_URL` points at, so it is read from the environment rather
+     * than hard-coded; set `NEXT_PUBLIC_MEDIA_HOST` to the bare hostname.
+     */
+    remotePatterns: [
+      { protocol: "http", hostname: "localhost", port: "9000", pathname: "/**" },
+      { protocol: "http", hostname: "127.0.0.1", port: "9000", pathname: "/**" },
+      ...(process.env.NEXT_PUBLIC_MEDIA_HOST
+        ? ([
+            {
+              protocol: "https" as const,
+              hostname: process.env.NEXT_PUBLIC_MEDIA_HOST,
+              pathname: "/**",
+            },
+          ])
+        : []),
+    ],
   },
 };
 
