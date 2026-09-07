@@ -47,7 +47,7 @@ export default function AuthShell({
       >
         <Image
           src="/auth/logo.png"
-          alt="SortPoint"
+          alt="SortPi"
           width={106}
           height={100}
           priority

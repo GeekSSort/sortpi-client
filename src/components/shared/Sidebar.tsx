@@ -172,7 +172,7 @@ export default function Sidebar() {
           <Link href="/dashboard" className="block h-[54px] w-[208px] shrink-0">
             <Image
               src="/sidebar/logo.png"
-              alt="SORTPoint — Smart POS · Simply Business"
+              alt="SortPi — Smart POS · Simply Business"
               width={208}
               height={54}
               priority

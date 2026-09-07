@@ -12,7 +12,7 @@ import { FormSkeleton } from "@/components/shared/Skeleton";
 import { QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 
 /**
- * Figma: SORTPoint — Add Stock 57:13954.
+ * Figma: SortPi — Add Stock 57:13954.
  *
  * A 565-wide card centred in the 1160 page: 48px head, then a 533-wide form of
  * 88px field blocks (18px label, 8px gap, 56px input) 12px apart, and a

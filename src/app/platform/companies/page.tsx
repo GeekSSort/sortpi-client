@@ -37,7 +37,7 @@ const GRID = "grid-cols-[1.4fr_1fr_110px_110px_1fr_150px_83px]";
 /** A shop account reaching the console is a different problem from a dead API. */
 function describe(e: unknown): string {
   if (e instanceof ApiError && e.code === "REALM_MISMATCH")
-    return "This is a shop account. The console needs a SORTPoint staff sign-in.";
+    return "This is a shop account. The console needs a SortPi staff sign-in.";
   if (e instanceof ApiError) return e.message;
   return "Could not load companies.";
 }
@@ -87,7 +87,7 @@ export default function PlatformCompaniesPage() {
         >
           <span className="truncate text-[14px] font-medium text-[#1e1e1e]">{r.name}</span>
           <span className="truncate text-[12px] text-[#8f8d87]">
-            {r.subdomain ? `${r.subdomain}.sortpoint` : "no address yet"}
+            {r.subdomain ? `${r.subdomain}.sortpi` : "no address yet"}
           </span>
         </button>
       ),
@@ -207,7 +207,7 @@ export default function PlatformCompaniesPage() {
           <dl className="flex flex-col gap-[10px] text-[14px]">
             {(
               [
-                ["Web address", detailOf?.subdomain ? `${detailOf.subdomain}.sortpoint` : "Not set"],
+                ["Web address", detailOf?.subdomain ? `${detailOf.subdomain}.sortpi` : "Not set"],
                 ["Plan", toLabel(detailOf?.plan ?? null)],
                 ["People", String(detailOf?.userCount ?? 0)],
                 ["Branches", String(detailOf?.branchCount ?? 0)],

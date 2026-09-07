@@ -36,7 +36,7 @@ const TITLES: Record<string, { title: string; note: string }> = {
   },
   "/platform/staff": {
     title: "Staff",
-    note: "The SORTPoint people who can sign in to this console.",
+    note: "The SortPi people who can sign in to this console.",
   },
 };
 
@@ -58,7 +58,7 @@ export default function PlatformLayout({ children }: { children: React.ReactNode
 
   const page = TITLES[pathname] ?? {
     title: "Console",
-    note: "SORTPoint staff only.",
+    note: "SortPi staff only.",
   };
 
   return (
@@ -87,7 +87,7 @@ export default function PlatformLayout({ children }: { children: React.ReactNode
           <div className="flex shrink-0 items-center gap-[12px]">
             <span className="hidden text-right sm:flex sm:flex-col">
               <span className="text-[14px] font-medium text-[#1e1e1e]">
-                {user?.name || "SORTPoint staff"}
+                {user?.name || "SortPi staff"}
               </span>
               <span className="text-[12px] text-[#525252]">Platform console</span>
             </span>

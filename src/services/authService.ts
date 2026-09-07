@@ -202,7 +202,7 @@ export class AuthService {
         case "REALM_MISMATCH":
           return resolveRealm() === "platform"
             ? "That is a shop account. Sign in at your company address instead."
-            : "That is a SORTPoint staff account. Use the console sign-in.";
+            : "That is a SortPi staff account. Use the console sign-in.";
         case "NETWORK_ERROR":
           return "Cannot reach the server. Check it is running and try again.";
         case "THROTTLED":

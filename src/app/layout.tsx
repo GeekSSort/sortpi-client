@@ -10,10 +10,10 @@ const geist = Geist({
 
 export const metadata: Metadata = {
   // The tab text, and what a bookmark or a shared link is named.
-  title: "SortPoint",
+  title: "SortPi",
   description:
     "Smart POS for retail — sell, track stock, manage purchases and customers across every branch.",
-  applicationName: "SortPoint",
+  applicationName: "SortPi",
 };
 
 export default function RootLayout({

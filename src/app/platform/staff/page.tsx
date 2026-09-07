@@ -12,7 +12,7 @@ import RowActionMenu from "@/components/shared/RowActionMenu";
 import { statGood, statRisk, statTotal, statWait } from "@/components/platform/stats";
 
 /**
- * The SORTPoint people who can sign in to this console.
+ * The SortPi people who can sign in to this console.
  *
  * These accounts belong to no company, which is what keeps them out of every
  * shop's data.

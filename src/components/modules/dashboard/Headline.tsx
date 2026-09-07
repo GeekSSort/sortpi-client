@@ -5,7 +5,7 @@ import React from "react";
 import DateField from "@/components/shared/DateField";
 
 /**
- * Figma: SORTPoint — Headline 30:15372.
+ * Figma: SortPi — Headline 30:15372.
  *
  * The dashboard's own 54px headline row: greeting on the left, gold date pill
  * (48 tall, centred in the row) on the right. The pill reuses the Sign In

@@ -13,7 +13,7 @@ import { amountOff } from "@/services/discountService";
 import { usePosDraft, patchPosDraft } from "@/components/modules/pos/posCart";
 
 /**
- * Figma: SORTPoint — POS invoice column 45:2333.
+ * Figma: SortPi — POS invoice column 45:2333.
  *
  * 565-wide column, 958 tall in the frame: the invoice header, cart table and
  * customer summary sit at the top, the order summary and pay buttons at the
@@ -1486,7 +1486,7 @@ export default function CartPanel({
                 `Thank you for shopping with ${shopProfile.name}`,
                 ...(shopProfile.phone ? [`Any queries or complaints, please call ${shopProfile.phone}`] : []),
               ]}
-              system={{ name: "SORTPoint", url: "www.sortpoint.com" }}
+              system={{ name: "SortPi", url: "www.sortpi.com" }}
             />
           </div>
         )}

@@ -6,7 +6,7 @@ import { formatPercent } from "@/lib/format";
 import { RANGE_OPTIONS, type RangeOption } from "@/lib/range";
 
 /**
- * Figma: SORTPoint — Profit & Loss 30:16864.
+ * Figma: SortPi — Profit & Loss 30:16864.
  *
  * 383x332 card, 20px padding, a 42px header row and a 210px donut beside a
  * 121px legend column. The ring is drawn from the data: revenue and expenses

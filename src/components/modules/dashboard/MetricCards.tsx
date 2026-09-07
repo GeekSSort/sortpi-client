@@ -5,7 +5,7 @@ import { MetricCardData } from "@/types/dashboard";
 import { CustomersIcon, OrdersIcon, RevenueIcon, SalesIcon } from "./MetricIcons";
 
 /**
- * Figma: SORTPoint — KPI row 30:15392.
+ * Figma: SortPi — KPI row 30:15392.
  *
  * Each card is 278x143 at the 1160 desktop width: 24px padding, a 40px ringed
  * icon, then a column of label / value / trend pill 10px apart. The row is

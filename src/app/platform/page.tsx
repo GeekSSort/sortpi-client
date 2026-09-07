@@ -122,7 +122,7 @@ const VIEWS = ["Revenue", "Sign-ups", "Plan mix"] as const;
 /** A shop account reaching the console is a different problem from a dead API. */
 function describe(e: unknown): string {
   if (e instanceof ApiError && e.code === "REALM_MISMATCH")
-    return "This is a shop account. The console needs a SORTPoint staff sign-in.";
+    return "This is a shop account. The console needs a SortPi staff sign-in.";
   if (e instanceof ApiError) return e.message;
   return "Could not load the console.";
 }

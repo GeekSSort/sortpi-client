@@ -621,7 +621,7 @@ export default function SalesPage() {
         {receiptOf && (
           <div className="print-area">
             {/* The same slip the till prints, from the same component. This
-                used to be a hand-rolled block headed "SORTPoint" — the
+                used to be a hand-rolled block headed "SortPi" — the
                 software's name on the customer's receipt, with no line items
                 and none of the shop's own details. */}
             {saleDetailLoading && !saleDetail ? (
@@ -685,7 +685,7 @@ export default function SalesPage() {
                     : []),
                 ]}
                 footerNotes={["Thank you for your purchase.", "Goods once sold are exchangeable within 7 days with this receipt."]}
-                system={{ name: "SORTPoint" }}
+                system={{ name: "SortPi" }}
               />
             ) : (
               <ErrorState message="Could not load this receipt." onRetry={refetchSale} compact />

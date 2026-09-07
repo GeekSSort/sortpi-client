@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile.prod
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://13.140.141.131:4500/api/v1}
-    container_name: sortpoint-client
+    container_name: sortpi-client
     restart: unless-stopped
     ports:
       - "${CLIENT_PORT:-3500}:3500"

@@ -112,7 +112,7 @@ export default function PosRail() {
           <Link href="/pos" className="block h-[54px] w-[208px] shrink-0">
             <Image
               src="/sidebar/logo.png"
-              alt="SortPoint"
+              alt="SortPi"
               width={208}
               height={54}
               priority

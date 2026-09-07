@@ -134,7 +134,7 @@ export default function LoginPage() {
         {/* image 6 — 106x100, radius 24 */}
         <Image
           src="/auth/logo.png"
-          alt="SortPoint"
+          alt="SortPi"
           width={106}
           height={100}
           priority
@@ -148,10 +148,10 @@ export default function LoginPage() {
           </h1>
           <p className="text-[14px] leading-[1.5] font-normal tracking-[-0.28px] text-[#525252]">
             {isConsole
-              ? "For SORTPoint staff. Shop accounts sign in at their own company address."
+              ? "For SortPi staff. Shop accounts sign in at their own company address."
               : shop
                 ? `Sign in to ${shop}.`
-                : "Sign in to continue to your SortPoint workspace."}
+                : "Sign in to continue to your SortPi workspace."}
           </p>
         </div>
 

@@ -16,7 +16,7 @@ import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/s
 import { toApiDay } from "@/lib/dateFilter";
 
 /**
- * Figma: SORTPoint — Transfers 57:14237.
+ * Figma: SortPi — Transfers 57:14237.
  *
  * Search left, date field + Add New right; an 898px card with the 1128-wide
  * seven-column table (40px head, 54px rows) over the 64px pagination bar.

@@ -10,7 +10,7 @@ import { RegistrationService, Realm } from "@/services/registrationService";
  *
  * Where the person lands afterwards is the interesting part:
  *
- *   new company  → their brand new address, e.g. rahman.sortpoint.com/login
+ *   new company  → their brand new address, e.g. rahman.sortpi.com/login
  *   forgot pass  → back to the login page they came from (already the right one)
  *   platform     → the console login, NEVER a company address
  */

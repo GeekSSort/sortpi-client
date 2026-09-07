@@ -42,7 +42,7 @@ export default function PlatformForgotPasswordPage() {
   return (
     <AuthShell
       title="Console password reset"
-      subtitle="For SORTPoint staff only. Customers should use their own company address."
+      subtitle="For SortPi staff only. Customers should use their own company address."
       onSubmit={submit}
       footer={
         <>
@@ -54,7 +54,7 @@ export default function PlatformForgotPasswordPage() {
       }
     >
       <AuthAlert tone="info">
-        This resets a SORTPoint staff account, not a customer account. It works only
+        This resets a SortPi staff account, not a customer account. It works only
         on the console address.
       </AuthAlert>
 
@@ -63,7 +63,7 @@ export default function PlatformForgotPasswordPage() {
         type="email"
         value={email}
         onChange={(e) => setEmail(e.target.value)}
-        placeholder="you@sortpoint.com"
+        placeholder="you@sortpi.com"
         required
         autoComplete="email"
       />

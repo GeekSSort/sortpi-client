@@ -20,7 +20,7 @@ import { useShopProfile } from "@/components/shared/useShopProfile";
 import { formatMoney } from "@/lib/format";
 
 /**
- * Figma: SORTPoint — Purchase History 59:15218.
+ * Figma: SortPi — Purchase History 59:15218.
  *
  * Search left, date field and Add New right; an 898px card
  * with the 1128-wide eight-column table (40px head, 54px rows) over the 64px
@@ -1021,7 +1021,7 @@ export default function PurchasesPage() {
                     : []),
                 ]}
                 footerNotes={["Authorised signature ____________________"]}
-                system={{ name: "SORTPoint" }}
+                system={{ name: "SortPi" }}
               />
             ) : (
               <ErrorState message="Could not load this order." onRetry={refetchPurchase} compact />

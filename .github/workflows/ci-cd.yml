@@ -124,7 +124,7 @@ jobs:
           port: 22
           script: |
             echo "Deploying Client on Contabo (13.140.141.131)..."
-            cd /opt/apps/sortpoint/client
+            cd /opt/apps/sortpi/client
             git pull origin main
             docker compose -f docker-compose.prod.yml up -d --build
             echo "Client Deployment Completed Successfully!"

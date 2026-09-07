@@ -139,7 +139,7 @@ export default function SignupPage() {
             <>
               Your staff will sign in at{" "}
               <span className="font-medium text-[#1e1e1e]">
-                {subdomain || "yourname"}.sortpoint.com
+                {subdomain || "yourname"}.sortpi.com
               </span>
               . This cannot be changed later.
               {addressCheck.state === "checking" && (

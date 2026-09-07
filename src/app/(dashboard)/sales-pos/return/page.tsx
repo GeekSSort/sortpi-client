@@ -481,7 +481,7 @@ export default function ReturnPage() {
       >
         {slipOf && (
           <div className="print-area flex flex-col gap-[10px] text-[13px] text-[#525252]">
-            <p className="text-center text-[16px] font-semibold text-[#1e1e1e]">SORTPoint</p>
+            <p className="text-center text-[16px] font-semibold text-[#1e1e1e]">SortPi</p>
             <p className="text-center text-[12px]">Return / Refund slip</p>
             <div className="my-[6px] h-px w-full bg-[#eaeaea]" />
             <p className="flex justify-between"><span>Return</span><span className="font-medium text-[#1e1e1e]">{slipOf.returnNo}</span></p>

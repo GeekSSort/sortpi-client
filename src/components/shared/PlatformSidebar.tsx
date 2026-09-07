@@ -127,7 +127,7 @@ export default function PlatformSidebar({
             <Link href="/platform" className="block h-[54px] w-[208px] shrink-0">
               <Image
                 src="/sidebar/logo.png"
-                alt="SORTPoint"
+                alt="SortPi"
                 width={208}
                 height={54}
                 priority
@@ -201,7 +201,7 @@ export default function PlatformSidebar({
               </span>
               <span className="flex min-w-0 flex-col">
                 <span className="truncate text-[14px] font-medium text-[#1e1e1e]">
-                  {user?.name || "SORTPoint staff"}
+                  {user?.name || "SortPi staff"}
                 </span>
                 <span className="truncate text-[12px] text-[#525252]">{user?.email || "console"}</span>
               </span>

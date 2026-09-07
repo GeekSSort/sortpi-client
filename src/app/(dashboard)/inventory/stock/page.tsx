@@ -14,7 +14,7 @@ import ProductImage from "@/components/shared/ProductImage";
 import { isRowClick } from "@/lib/rowClick";
 
 /**
- * Figma: SORTPoint — Stock 57:13117.
+ * Figma: SortPi — Stock 57:13117.
  *
  * Search left; a card holding the 1128-wide table (40px head, 54px rows) over
  * the 64px pagination bar. Column tracks are the design widths as fr units so

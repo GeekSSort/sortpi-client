@@ -14,7 +14,7 @@ import { DiscountService } from "@/services/discountService";
 import { useSession } from "@/services/useSession";
 
 /**
- * Figma: SORTPoint — Add New Product 57:12014.
+ * Figma: SortPi — Add New Product 57:12014.
  *
  * A 565-wide card centred in the 1160 page: 48px head, then a 533-wide form of
  * 88px field blocks (18px label, 8px gap, 56px input) 12px apart, and a
