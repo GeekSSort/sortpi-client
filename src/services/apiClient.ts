@@ -34,6 +34,25 @@ export class ApiError extends Error {
  * Where the API lives. Taken from the page address: one build serves every
  * company, and a token only works on its own address.
  * `NEXT_PUBLIC_API_URL` points it somewhere else.
+ *
+ * The PORT is the part that has to be got right in both directions.
+ *
+ * In development the API is a separate process on :8000 while the pages are on
+ * :3500, so a port has to be added. In production nginx serves both on the
+ * page's own port — `nusrat.sortpi.com/api/v1` is same-origin with
+ * `nusrat.sortpi.com/pos`, which is what makes CORS unnecessary there rather
+ * than merely configured.
+ *
+ * `docker-compose.prod.yml` sets `NEXT_PUBLIC_API_PORT: ""` for exactly that,
+ * and the old `process.env.NEXT_PUBLIC_API_PORT || "8000"` turned the empty
+ * string straight back into 8000 — so every production request would have gone
+ * to `https://nusrat.sortpi.com:8000/api/v1`, a port nginx does not listen on,
+ * and the whole app would have failed with NETWORK_ERROR on the first call.
+ * The `port ? … : …` beneath it could never take its false branch.
+ *
+ * So: undefined means "not configured", and takes the development default.
+ * An explicit empty string means "the page's own port", and `window.location.host`
+ * already carries that — including a non-standard one, and omitting it on 443.
  */
 export function resolveBaseUrl(): string {
   const configured = process.env.NEXT_PUBLIC_API_URL;
@@ -41,9 +60,10 @@ export function resolveBaseUrl(): string {
 
   if (typeof window === "undefined") return "";
 
-  const port = process.env.NEXT_PUBLIC_API_PORT || "8000";
-  const { protocol, hostname } = window.location;
-  const host = port ? `${hostname}:${port}` : hostname;
+  const configuredPort = process.env.NEXT_PUBLIC_API_PORT;
+  const port = configuredPort === undefined ? "8000" : configuredPort;
+  const { protocol, hostname, host: pageHost } = window.location;
+  const host = port ? `${hostname}:${port}` : pageHost;
   return `${protocol}//${host}/api/v1`;
 }
 
