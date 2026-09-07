@@ -3,8 +3,26 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.prod
+      # NEXT_PUBLIC_* are BUILD args: Next inlines them into the bundle, so a
+      # change here needs a rebuild, not a restart.
+      #
+      # NEXT_PUBLIC_API_URL is deliberately EMPTY. It used to default to
+      # `http://13.140.141.131:4500/api/v1` — one hardcoded address baked into
+      # the bundle every tenant is served, so every browser called the platform
+      # host whatever address it had loaded from, and the API answered
+      # TENANT_MISMATCH. It was also plain HTTP, which an HTTPS page blocks as
+      # mixed content. Empty, the client reads its API off `window.location`,
+      # so `nusrat.sortpi.com` calls `nusrat.sortpi.com/api/v1` and the token
+      # matches the host it was issued for.
+      #
+      # NEXT_PUBLIC_API_PORT is EMPTY for the same reason: behind the proxy the
+      # API is on the page's own port, and the development default of 8000
+      # would send every production request to a port nothing listens on.
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://13.140.141.131:4500/api/v1}
+        NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL:-}"
+        NEXT_PUBLIC_API_PORT: "${NEXT_PUBLIC_API_PORT:-}"
+        NEXT_PUBLIC_PLATFORM_BASE_DOMAIN: "${NEXT_PUBLIC_PLATFORM_BASE_DOMAIN:-}"
+        NEXT_PUBLIC_PLATFORM_HOSTS: "${NEXT_PUBLIC_PLATFORM_HOSTS:-}"
     container_name: sortpi-client
     restart: unless-stopped
     ports:
@@ -13,4 +31,3 @@ services:
       - NODE_ENV=production
       - PORT=3500
       - HOSTNAME=0.0.0.0
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://13.140.141.131:4500/api/v1}
