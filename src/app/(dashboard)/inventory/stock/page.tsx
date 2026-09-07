@@ -223,8 +223,10 @@ export default function StockPage() {
    * `ADJUSTMENT_COST_REQUIRED` rather than let the first sale compute COGS
    * against zero. Asked for up front instead of after a failed round trip.
    */
+  // Against what is on the shelf, not what is sellable: a count says how many
+  // units are there, reserved or not.
   const needsCost = (row: StockItem, next: number) =>
-    next > row.available && row.averageCost <= 0;
+    next > row.quantity && row.averageCost <= 0;
 
   const applyCount = async (row: StockItem, next: number, unitCost?: number) => {
     if (countingId) return;
@@ -250,9 +252,9 @@ export default function StockPage() {
         // and the row put its old number back with only a toast to say why.
         reason: "COUNT",
         unitCost,
-        note: `Counted ${row.available} to ${next}`,
+        note: `Counted ${row.quantity} to ${next}`,
       });
-      setNote(`${row.name}: ${row.available} → ${next}`);
+      setNote(`${row.name}: ${row.quantity} → ${next}`);
       // A movement changes this table, the product list's stock column, the
       // transfers screen's availability and the dashboard's stock figures.
       invalidate("stock", "inventory", "transfers", "dashboard", "pos-products");

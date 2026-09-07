@@ -154,6 +154,26 @@ export const tokenStore = {
   clear() {
     if (typeof window === "undefined") return;
     [TOKEN_KEY, REFRESH_KEY, BRANCH_KEY, "token"].forEach((k) => localStorage.removeItem(k));
+    /**
+     * The parked till drafts go too.
+     *
+     * A cart is a sale in progress carrying a customer's name, and a till is
+     * shared hardware — on a subdomain deployment the next person to sign in
+     * on this browser can belong to a different company. Swept here rather
+     * than only in `AuthService.logout` because a session also ends on a 401,
+     * and `endSession()` comes through this method.
+     *
+     * By prefix, not by name: the key carries the branch id and a signed-out
+     * browser no longer knows which branch it was standing in.
+     */
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith("sp_pos_draft")) localStorage.removeItem(k);
+      }
+    } catch {
+      // A browser that refuses storage has nothing to sweep.
+    }
     writeCookie(SESSION_COOKIE, null);
     writeCookie(SCOPE_COOKIE, null);
   },

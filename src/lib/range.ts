@@ -23,31 +23,68 @@ function apiDay(d: Date): string {
 
 export type DateRange = { fromDate: string; toDate: string };
 
+/** How many days back each option reaches, today included. */
+const WINDOW_DAYS: Record<RangeOption, number> = {
+  Today: 1,
+  "This Week": 7,
+  "This Month": 30,
+  "This Year": 365,
+};
+
 /**
  * `today` is injected rather than read from the clock so callers can resolve a
  * range without an impure read during render.
  *
- * The week runs Monday to today, not the last seven days: a shopkeeper asking
- * for "this week" means the week they are in. Month and year are likewise
- * calendar-to-date, which is what every figure they compare against will be.
+ * Rolling windows, not calendar-to-date.
+ *
+ * The week used to run Monday to today, on the reasoning that a shopkeeper
+ * asking for "this week" means the week they are in. That is true, and it made
+ * the control useless for most of the week: on a Monday "This Week" resolves
+ * to Monday-to-Monday, so it returned one day — the same single day as
+ * "Today", drawing the same flat graph — and on Tuesday it returned two. Same
+ * on the 1st of a month and the 1st of January.
+ *
+ * A range picker whose options collapse into each other for the first days of
+ * every period is not a range picker. Seven days back always spans a week of
+ * trading, always differs from today, and always has a curve in it.
  */
 export function resolveRange(option: RangeOption, today: Date): DateRange {
   const to = apiDay(today);
 
-  if (option === "Today") return { fromDate: to, toDate: to };
+  const from = new Date(today);
+  from.setDate(today.getDate() - (WINDOW_DAYS[option] - 1));
+  return { fromDate: apiDay(from), toDate: to };
+}
 
-  if (option === "This Week") {
-    const monday = new Date(today);
-    // getDay() is 0 on Sunday, which belongs to the week that started six days
-    // earlier rather than to the one starting tomorrow.
-    const back = (today.getDay() + 6) % 7;
-    monday.setDate(today.getDate() - back);
-    return { fromDate: apiDay(monday), toDate: to };
-  }
+/**
+ * The window immediately before `range`, of the same length.
+ *
+ * A trend needs something to be a trend against. "↑ 18.6% vs. last month" was
+ * a constant in the page source — the same figure whatever the shop had done —
+ * so the comparison window is resolved here and the caller asks the server for
+ * it like any other range.
+ *
+ * Same length, ending the day before `from`: "This Week" on a Wednesday
+ * compares three days against the three before them, not against a full week
+ * that would always look larger.
+ */
+export function previousRange(range: DateRange): DateRange {
+  const from = new Date(`${range.fromDate}T00:00:00`);
+  const to = new Date(`${range.toDate}T00:00:00`);
+  const days = Math.max(1, Math.round((to.getTime() - from.getTime()) / 86_400_000) + 1);
 
-  if (option === "This Month") {
-    return { fromDate: apiDay(new Date(today.getFullYear(), today.getMonth(), 1)), toDate: to };
-  }
+  const prevTo = new Date(from);
+  prevTo.setDate(from.getDate() - 1);
+  const prevFrom = new Date(prevTo);
+  prevFrom.setDate(prevTo.getDate() - (days - 1));
 
-  return { fromDate: apiDay(new Date(today.getFullYear(), 0, 1)), toDate: to };
+  return { fromDate: apiDay(prevFrom), toDate: apiDay(prevTo) };
+}
+
+/** What to call the window a trend is measured against. */
+export function previousLabel(option: RangeOption): string {
+  if (option === "Today") return "vs. yesterday";
+  if (option === "This Week") return "vs. previous 7 days";
+  if (option === "This Month") return "vs. previous 30 days";
+  return "vs. previous year";
 }

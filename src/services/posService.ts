@@ -1,11 +1,12 @@
 import {
   ProductItem,
   Customer,
+  CartItem,
   CheckoutPayload,
   OrderResponse,
   HeldCart,
 } from "@/types/pos";
-import { apiFetch, apiList, apiListAll, ApiError, tokenStore } from "./apiClient";
+import { apiFetch, apiList, apiListAll, ApiError, toAmount, tokenStore } from "./apiClient";
 import { toProductItem } from "./mappers/product";
 
 export class PosService {
@@ -201,11 +202,28 @@ export class PosService {
      */
     const tendered = Number(payload.totalAmount).toFixed(2);
 
+    /**
+     * One key for this CHECKOUT, not one per HTTP attempt.
+     *
+     * It used to be minted inside `post()`, so every attempt carried a
+     * different key and the server's at-most-once guarantee was inert: a
+     * double-tap on PAY, a retry after a timeout, or a re-mounted panel each
+     * rang the sale again, and the second one is a real duplicate — a second
+     * invoice, a second stock movement, a second row in the drawer.
+     *
+     * `checkoutKey` is handed in by the till and survives every attempt for
+     * the same cart; it is only replaced once a sale comes back. Without one
+     * a key is derived here, which still covers the two attempts this method
+     * makes on its own.
+     */
+    const key =
+      payload.idempotencyKey ||
+      `pos-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
     const post = (amount: string) =>
       apiFetch<any>("/sales/", {
         method: "POST",
-        // One key per attempt: a retry after a timeout must not ring twice.
-        idempotencyKey: `pos-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        idempotencyKey: key,
         body: buildBody(amount),
       });
 
@@ -281,7 +299,17 @@ export class PosService {
         error.code === "PAYMENT_EXCEEDS_TOTAL" &&
         detail?.grand_total
       ) {
-        sale = await post(Number(detail.grand_total).toFixed(2));
+        /**
+         * A different body under the same key is a 409 by design, so the
+         * re-priced attempt gets its own key. Safe: the first attempt was
+         * refused with a 400 before anything was written, so there is no sale
+         * for this one to duplicate.
+         */
+        sale = await apiFetch<any>("/sales/", {
+          method: "POST",
+          idempotencyKey: `${key}-repriced`,
+          body: buildBody(Number(detail.grand_total).toFixed(2)),
+        });
       } else {
         throw error;
       }
@@ -293,7 +321,47 @@ export class PosService {
       invoiceNo: String(sale?.invoiceNumber ?? sale?.invoice_number ?? ""),
       message: "Sale recorded.",
       timestamp: String(sale?.saleDate ?? sale?.sale_date ?? new Date().toISOString()),
+      // Carried back so the receipt prints the recorded sale, not the till's
+      // own working. Decimal crosses the API as a string; `toAmount` is the
+      // one place that turns those into numbers.
+      totals: {
+        subtotal: toAmount(sale?.subtotal),
+        discount: toAmount(sale?.discountAmount ?? sale?.discount_amount),
+        tax: toAmount(sale?.taxAmount ?? sale?.tax_amount),
+        grandTotal: toAmount(sale?.grandTotal ?? sale?.grand_total),
+        paid: toAmount(sale?.paidAmount ?? sale?.paid_amount),
+        due: toAmount(sale?.dueAmount ?? sale?.due_amount),
+      },
     };
+  }
+
+  /**
+   * Re-price a cart against the server.
+   *
+   * A cart line holds a SNAPSHOT of the product — its price, its name, what the
+   * shelf held — taken when it was added. That is right for a sale being rung
+   * up over a minute or two, and wrong for one restored from this device's
+   * storage after a reload, which can be hours later and across a price change.
+   * The till would show the old figure while the server priced the sale at the
+   * new one, so the cashier quotes one number and the receipt carries another —
+   * and the customer is standing there for both.
+   *
+   * Lines are re-read by barcode, which is the same authoritative lookup a scan
+   * uses. A line whose product cannot be re-read keeps what it had: a cart is a
+   * sale in progress, and dropping a line because one request failed loses work
+   * a cashier would have to redo from memory.
+   *
+   * Quantities are never touched. Those are the cashier's, not the server's.
+   */
+  static async repriceCart(items: CartItem[]): Promise<CartItem[]> {
+    if (items.length === 0) return items;
+    return Promise.all(
+      items.map(async (item) => {
+        if (!item.product.barcode) return item;
+        const fresh = await PosService.lookupBarcode(item.product.barcode).catch(() => null);
+        return fresh ? { ...item, product: fresh } : item;
+      })
+    );
   }
 
   /**
@@ -399,12 +467,12 @@ function heldItems(rows: any): HeldCart["items"] {
  * does not know where it is standing is to pick a branch: the POS header
  * carries the switcher.
  */
-async function sellingBranch(): Promise<string> {
+export async function sellingBranch(): Promise<string> {
   return tokenStore.branch() ?? "";
 }
 
 /** That branch's main warehouse — the shelf the till sells off. */
-async function sellingWarehouse(branchId: string): Promise<string> {
+export async function sellingWarehouse(branchId: string): Promise<string> {
   // No branch, no shelf. `/warehouses/` lists every branch the caller can
   // reach, so falling through to "the first MAIN in the list" would sell off
   // whichever branch sorted first — the same guess `sellingBranch` used to

@@ -226,7 +226,16 @@ export class SalesService {
       method: "POST",
       body: JSON.stringify({ reason }),
     });
-    invalidate("sales");
+    /**
+     * A cancellation is not only a sale changing status.
+     *
+     * The server restores the stock, reverses the customer's debt, and writes a
+     * SaleReturn so the refund is visible on the returns screen. This
+     * invalidated `sales` alone, so the Returns page went on showing a list
+     * with no row for a refund that had just been made — and the shelf figures
+     * went on showing goods that were back on it.
+     */
+    invalidate("sales", "returns", "stock", "inventory", "customers", "pos-products");
     return toSaleRecord(row);
   }
 }

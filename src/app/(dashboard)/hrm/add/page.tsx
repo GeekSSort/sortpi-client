@@ -170,13 +170,13 @@ export default function AddEmployeePage() {
 
   return (
     <form onSubmit={submit} className="flex w-full flex-col items-center">
-      <div className="flex w-full max-w-[565px] flex-col gap-[24px]">
+      <div className="flex w-full max-w-[720px] flex-col gap-[24px]">
         {/* Card — 74:5325 */}
         <div className="flex w-full flex-col items-center gap-[9px] overflow-hidden rounded-[10px] border border-solid border-[#eaeaea] bg-white pb-[16px]">
           <div className="flex w-full items-center justify-center border-b border-solid border-[#eaeaea] px-[16px] pt-[16px] pb-[8px]">
-            <p className="text-[16px] leading-[1.5] tracking-[-0.32px] whitespace-nowrap text-[#1e1e1e]">
+            <h1 className="text-[20px] leading-[28px] font-semibold tracking-[-0.4px] text-[#1e1e1e]">
               Add Employee
-            </p>
+            </h1>
           </div>
 
           <div className="relative flex w-full flex-col gap-[12px] px-[16px]">

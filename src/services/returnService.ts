@@ -6,6 +6,7 @@ import {
 } from "@/types/returns";
 import { apiFetch, apiList, toAmount } from "./apiClient";
 import { toReturnRecord } from "./mappers/returns";
+import { invalidate } from "@/lib/query/useQuery";
 
 /**
  * Returns, against the endpoints that exist.
@@ -104,5 +105,35 @@ export class ReturnService {
       { method: "POST", body: JSON.stringify(body) },
       toReturnRecord
     );
+  }
+
+  /**
+   * Undo a refund.
+   *
+   * The goods come back off the shelf and the money goes back on the books. A
+   * return written against a still-completed sale has its own credit reversed;
+   * the auto-return of a cancelled sale reinstates that sale instead — the
+   * server decides which from the books, not from the sale's status.
+   *
+   * Refused when the goods have since been sold to somebody else. The error
+   * names every SKU that is short, which is the only thing the operator can
+   * act on.
+   */
+  static async withdrawReturn(id: string, reason = ""): Promise<ReturnRecord> {
+    const row = await apiFetch<any>(`/returns/${id}/withdraw/`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+    // The goods came back off the shelf and the money went back on the books,
+    // so the stock screens and the customer's balance moved with it — not just
+    // these two lists.
+    invalidate("returns", "sales", "stock", "inventory", "customers", "pos-products");
+    return toReturnRecord(row);
+  }
+
+  /** The refunds recorded against one invoice, newest first. */
+  static async getReturnsForInvoice(invoiceNo: string): Promise<ReturnRecord[]> {
+    const page = await ReturnService.getReturns({ search: invoiceNo, limit: 20 });
+    return page.data.filter((r) => r.invoiceNo === invoiceNo);
   }
 }

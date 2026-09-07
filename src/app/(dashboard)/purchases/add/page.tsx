@@ -79,6 +79,23 @@ interface Line {
   /** Kept as typed, not as a number: "12." is a state a person passes through
       on the way to 12.50, and coercing every keystroke fights them. */
   unitCost: string;
+  /**
+   * INPUT VAT on this line, as a percentage the buyer types.
+   *
+   * The VAT a shop PAYS its supplier and the VAT it CHARGES a customer are
+   * different money: the first is recoverable and posts to VAT Receivable, the
+   * second is output tax on a receipt. `PurchaseItem.tax_rate` has existed
+   * since purchasing was written, `PurchaseService` allocates it and
+   * `_post_confirm_finance` posts it to 1130 as a recoverable asset — and no
+   * screen ever sent one, so every delivery was recorded as if the supplier
+   * had charged no VAT at all. The only VAT box in the whole product flow was
+   * on the PRODUCT form, which is the selling rate, and typing the purchase
+   * VAT there charged it to the customer instead.
+   *
+   * Purchase tax is always EXCLUSIVE — a supplier invoice quotes a net price
+   * and adds VAT — which is what `_line_total` assumes.
+   */
+  taxPercent: string;
 }
 
 export default function AddPurchasePage() {
@@ -179,6 +196,7 @@ export default function AddPurchasePage() {
         // NOT the cost — leaving the box empty would be honest and make every
         // line a retype, so it is offered and clearly labelled.
         unitCost: "",
+        taxPercent: "",
       },
     ]);
     setPickQuery("");
@@ -242,6 +260,7 @@ export default function AddPurchasePage() {
           sku: created.sku,
           quantity: 1,
           unitCost: "",
+          taxPercent: "",
         },
       ]);
       // It is in the catalogue now, so every screen that reads the catalogue is
@@ -265,12 +284,24 @@ export default function AddPurchasePage() {
   const removeLine = (variantId: string) =>
     setLines((current) => current.filter((l) => l.variantId !== variantId));
 
-  /** The buyer's running total. The server recomputes what actually gets
-      saved — this is here so nobody has to add it up on paper. */
-  const total = useMemo(
+  /** The buyer's running totals. The server recomputes what actually gets
+      saved — these are here so nobody has to add it up on paper. */
+  const net = useMemo(
     () => lines.reduce((n, l) => n + l.quantity * (Number(l.unitCost) || 0), 0),
     [lines]
   );
+  const vat = useMemo(
+    () =>
+      lines.reduce(
+        (n, l) =>
+          n +
+          (l.quantity * (Number(l.unitCost) || 0) * Math.max(0, Number(l.taxPercent) || 0)) / 100,
+        0
+      ),
+    [lines]
+  );
+  /** What the supplier will invoice: goods plus the VAT they add on top. */
+  const total = net + vat;
 
   const save = async () => {
     if (saving) return;
@@ -303,6 +334,23 @@ export default function AddPurchasePage() {
 
     setSaving(true);
     setError(null);
+
+    /**
+     * Which step got there, so a failure can say what DID happen.
+     *
+     * Saving with an advance payment is three requests — create, confirm, pay —
+     * and one `catch` reported all three as "the order could not be saved". If
+     * the payment failed, the order existed and the supplier was already owed
+     * for it; the obvious response to that message is to fill the form in
+     * again, and that raises a SECOND order and a SECOND payable to the same
+     * supplier for the same goods.
+     *
+     * They cannot be made one transaction from here — three endpoints, three
+     * commits — so the honest thing is to report the boundary crossed.
+     */
+    let stage: "drafting" | "confirming" | "paying" = "drafting";
+    let reference = "";
+
     try {
       const created = await PurchaseService.createPurchase({
         referenceNo: purchaseRef(),
@@ -316,15 +364,22 @@ export default function AddPurchasePage() {
           variantId: l.variantId,
           quantity: l.quantity,
           unitCost: Number(l.unitCost),
+          // A FRACTION, which is what `PurchaseItem.tax_rate` stores. The box
+          // takes a percentage because that is what a supplier invoice quotes.
+          taxRate: Math.max(0, Number(l.taxPercent) || 0) / 100,
         })),
       });
+
+      reference = created.purchaseId;
 
       if (advance > 0) {
         // Confirm FIRST. Nothing is owed on a draft, so the API refuses a
         // payment against one — `PURCHASE_NOT_CONFIRMED`. Handing a supplier
         // money when you place the order is placing the order, so this is the
         // honest reading of what the person just did rather than a workaround.
+        stage = "confirming";
         await PurchaseService.confirm(created.id);
+        stage = "paying";
         await PurchaseService.recordPayment(created.id, advance, paymentMethod, "", purchaseDate);
         setSaved(
           `${created.purchaseId} confirmed with ${formatMoney(advance)} paid — receive the goods when they arrive`
@@ -337,7 +392,26 @@ export default function AddPurchasePage() {
     } catch (err) {
       // The server names the real problem — a duplicate reference, a supplier
       // that is not this organization's — and that is more use than "try again".
-      setError(err instanceof Error && err.message ? err.message : "The order could not be saved.");
+      const said = err instanceof Error && err.message ? err.message : "";
+
+      if (stage === "drafting") {
+        setError(said || "The order could not be saved.");
+      } else {
+        // The order EXISTS. Say so first and say it plainly, because the next
+        // thing this person does is decide whether to fill the form in again.
+        const owed =
+          stage === "confirming"
+            ? `${reference} was saved as a draft, but confirming it failed, so the supplier is not owed for it yet.`
+            : `${reference} was saved and confirmed — the supplier is owed for it — but the ${formatMoney(
+                advance
+              )} payment was not recorded.`;
+        setError(
+          `${owed}${said ? ` ${said}` : ""} Do not enter this order again: finish it from the purchases list.`
+        );
+        // The list is where they finish it, and it has to be current when they
+        // get there.
+        invalidate("purchases", "suppliers", "dashboard");
+      }
     } finally {
       setSaving(false);
     }
@@ -354,10 +428,10 @@ export default function AddPurchasePage() {
       >
         <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
           <RefreshBar active={suppliers.fetching || warehouseQuery.fetching} />
-          <div className="flex h-[48px] items-center justify-center px-[16px]">
-            <p className="text-[16px] leading-[1.5] font-medium tracking-[-0.32px] text-[#1e1e1e]">
+          <div className="flex h-[60px] items-center justify-center px-[16px]">
+            <h1 className="text-[20px] leading-[28px] font-semibold tracking-[-0.4px] text-[#1e1e1e]">
               New Purchase Order
-            </p>
+            </h1>
           </div>
 
           <div className="flex flex-col gap-[14px] px-[16px] pt-[8px] pb-[16px]">
@@ -541,6 +615,11 @@ export default function AddPurchasePage() {
                     <span className="w-[96px] shrink-0 text-center text-[12px] font-medium text-[#8a8a8a]">
                       Unit cost
                     </span>
+                    {/* The VAT the SUPPLIER charges. Recoverable, and not the
+                        rate on the customer's receipt. */}
+                    <span className="w-[64px] shrink-0 text-center text-[12px] font-medium text-[#8a8a8a]">
+                      VAT %
+                    </span>
                     <span className="w-[92px] shrink-0 text-right text-[12px] font-medium text-[#8a8a8a]">
                       Line
                     </span>
@@ -583,8 +662,25 @@ export default function AddPurchasePage() {
                           aria-label={`Unit cost of ${l.name}`}
                           className="h-[34px] w-[96px] shrink-0 rounded-[8px] bg-white text-center text-[13px] tabular-nums text-[#1e1e1e] shadow-[inset_0_0_0_1px_#eaeaea] outline-none focus:shadow-[inset_0_0_0_1.5px_#f5b800]"
                         />
+                        <input
+                          value={l.taxPercent}
+                          onChange={(e) => {
+                            patchLine(l.variantId, {
+                              taxPercent: e.target.value.replace(/[^\d.]/g, ""),
+                            });
+                            setError(null);
+                          }}
+                          inputMode="decimal"
+                          placeholder="0"
+                          aria-label={`VAT percent charged by the supplier on ${l.name}`}
+                          className="h-[34px] w-[64px] shrink-0 rounded-[8px] bg-white text-center text-[13px] tabular-nums text-[#1e1e1e] shadow-[inset_0_0_0_1px_#eaeaea] outline-none focus:shadow-[inset_0_0_0_1.5px_#f5b800]"
+                        />
                         <span className="w-[92px] shrink-0 truncate text-right text-[13px] tabular-nums text-[#525252]">
-                          {formatMoney(l.quantity * (Number(l.unitCost) || 0))}
+                          {formatMoney(
+                            l.quantity *
+                              (Number(l.unitCost) || 0) *
+                              (1 + Math.max(0, Number(l.taxPercent) || 0) / 100)
+                          )}
                         </span>
                         <button
                           type="button"
@@ -601,6 +697,12 @@ export default function AddPurchasePage() {
                   <div className="flex items-center gap-[8px] border-t border-solid border-[#eaeaea] bg-[#fafafa] px-[12px] py-[9px]">
                     <span className="min-w-0 flex-1 text-[13px] font-medium text-[#525252]">
                       {lines.length} product{lines.length === 1 ? "" : "s"}
+                      {vat > 0 && (
+                        <span className="text-[#8f8d87]">
+                          {" "}
+                          &middot; {formatMoney(net)} goods + {formatMoney(vat)} VAT
+                        </span>
+                      )}
                     </span>
                     <span className="text-[14px] font-semibold tabular-nums text-[#1e1e1e]">
                       {formatMoney(total)}

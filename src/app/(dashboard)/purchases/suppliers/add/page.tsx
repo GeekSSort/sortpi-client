@@ -70,14 +70,14 @@ export default function AddSupplierPage() {
 
   return (
     <div className="flex w-full flex-col gap-[14px]">
-      <form onSubmit={save} className="mx-auto flex w-full max-w-[565px] flex-col gap-[24px]">
+      <form onSubmit={save} className="mx-auto flex w-full max-w-[720px] flex-col gap-[24px]">
         {/* Card — 73:3853 */}
         <div className="w-full overflow-hidden rounded-[10px] bg-white pb-[16px] shadow-[inset_0_0_0_1px_#eaeaea]">
           {/* Head — 73:3854 */}
           <div className="flex w-full items-center justify-center bg-white px-[16px] pt-[16px] pb-[8px] shadow-[inset_0_0_0_1px_#eaeaea]">
-            <p className="text-[16px] leading-[1.5] font-normal tracking-[-0.32px] whitespace-nowrap text-[#1e1e1e]">
+            <h1 className="text-[20px] leading-[28px] font-semibold tracking-[-0.4px] text-[#1e1e1e]">
               Add Supplier
-            </p>
+            </h1>
           </div>
 
           {/* Fields — 73:3857, 533 wide inside the 565 card */}

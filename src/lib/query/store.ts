@@ -121,6 +121,76 @@ export function fetchQuery<T>(
 }
 
 /**
+ * Screens whose figures are DERIVED from another screen's data.
+ *
+ * A sale is written by the till, and it changes the till's own list — and also
+ * the dashboard's takings, the CEO overview's charts, the best-seller table and
+ * the notification badge. None of those knew, because a write invalidates the
+ * prefix it knows about and nothing else, so every one of them sat on a figure
+ * from before the sale until somebody reloaded the page by hand. That is the
+ * "I have to refresh to see it" this table removes.
+ *
+ * Kept HERE rather than at each write site on purpose: the alternative is every
+ * `invalidate("sales")` call in the codebase listing six more prefixes, and the
+ * one somebody forgets is a screen that is quietly wrong. A key is added to this
+ * map once, and every existing write starts refreshing it.
+ *
+ * Only real derivations. Cascading too widely turns one write into a dozen
+ * requests, and a till on a slow connection pays for that on every sale.
+ */
+const DERIVED: Record<string, string[]> = {
+  // Takings, order counts, best sellers, the customer's own history — and the
+  // shelf, because every sale takes goods off it.
+  sales: [
+    "dashboard",
+    "overview-sales",
+    "overview-orders",
+    "overview-customers",
+    "top-sellers",
+    "customers",
+    "stock",
+    "inventory",
+    "pos-products",
+  ],
+  // A return is a sale moving backwards: the same figures move, and the goods
+  // go back on the shelf.
+  returns: [
+    "dashboard",
+    "overview-sales",
+    "overview-orders",
+    "top-sellers",
+    "sales",
+    "stock",
+    "inventory",
+    "pos-products",
+    "customers",
+  ],
+  // Stock value and the low-stock counts.
+  stock: ["dashboard", "inventory", "pos-products"],
+  inventory: ["dashboard", "pos-products"],
+  // Both ends of a transfer are stock.
+  transfers: ["stock", "inventory", "pos-products"],
+  // What is owed, and what it was spent on.
+  purchases: ["dashboard", "suppliers"],
+  customers: ["overview-customers"],
+  // The unread badge is a different key from the list, and prefix matching
+  // does not reach it: "notifications-unread" does not start with
+  // "notifications:".
+  notifications: ["notifications-unread"],
+  // A price or a product edit reaches the till's wall and its lookup.
+  products: ["inventory", "pos-products"],
+};
+
+/** The prefixes to clear for a write, the named ones plus what they feed. */
+function withDerived(prefixes: string[]): string[] {
+  const out = new Set(prefixes);
+  for (const prefix of prefixes) {
+    for (const derived of DERIVED[prefix] ?? []) out.add(derived);
+  }
+  return Array.from(out);
+}
+
+/**
  * Drop cached answers so the next read goes to the server, and wake anything
  * already on screen so it refetches now.
  *
@@ -130,7 +200,23 @@ export function fetchQuery<T>(
  * makes a new customer appear in the table the moment the modal closes.
  */
 export function invalidate(...prefixes: string[]): void {
-  const hit = (key: string) => prefixes.some((p) => key === p || key.startsWith(`${p}:`));
+  invalidateLocal(prefixes);
+  broadcast(prefixes);
+}
+
+/**
+ * The same invalidation, from another tab.
+ *
+ * A shop keeps the back office open beside the till. Each tab has its own cache
+ * — they are separate JavaScript worlds — so a price edited in one left the
+ * other showing the old figure until somebody reloaded it by hand. This is the
+ * bridge, and it is why `invalidate` and `invalidateLocal` are two functions:
+ * an arriving message must NOT be re-broadcast, or two tabs bounce the same
+ * invalidation off each other forever.
+ */
+function invalidateLocal(prefixes: string[]): void {
+  const all = withDerived(prefixes);
+  const hit = (key: string) => all.some((p) => key === p || key.startsWith(`${p}:`));
 
   for (const key of Array.from(entries.keys())) {
     if (!hit(key)) continue;
@@ -142,6 +228,48 @@ export function invalidate(...prefixes: string[]): void {
     if (hit(key)) emit(key);
   }
 }
+
+/**
+ * Tell the other tabs of this origin.
+ *
+ * BroadcastChannel is same-origin by construction, so a message can only reach
+ * this shop's own tabs — and each tenant is its own subdomain, so one company's
+ * writes cannot wake another's screens even on a shared machine.
+ *
+ * Everything is wrapped: a browser without BroadcastChannel (or one refusing it
+ * in a private window) must lose the cross-tab refresh, not the write.
+ */
+let channel: BroadcastChannel | null = null;
+
+function getChannel(): BroadcastChannel | null {
+  if (typeof window === "undefined" || typeof BroadcastChannel === "undefined") return null;
+  if (channel) return channel;
+  try {
+    channel = new BroadcastChannel("sp-cache");
+    channel.onmessage = (event: MessageEvent) => {
+      const prefixes = event.data?.prefixes;
+      if (Array.isArray(prefixes)) invalidateLocal(prefixes);
+    };
+  } catch {
+    channel = null;
+  }
+  return channel;
+}
+
+function broadcast(prefixes: string[]): void {
+  try {
+    getChannel()?.postMessage({ prefixes });
+  } catch {
+    // The tab that made the write is already correct; the others will catch up
+    // when they are next focused.
+  }
+}
+
+// Opened eagerly so a tab that only READS still hears about other tabs' writes.
+// A listener attached on the first local invalidation would never exist on a
+// screen that never writes — which is exactly the screen left showing stale
+// figures.
+getChannel();
 
 /** Forget everything. Used on sign-out so the next account sees no trace. */
 export function clearCache(): void {

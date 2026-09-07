@@ -358,7 +358,9 @@ export default function PurchasesPage() {
     try {
       await PurchaseService.confirm(row.id);
       setNote(`${row.purchaseId} confirmed`);
-      // Placing the order changes its status only; nothing has arrived yet.
+      // No stock has arrived, but the supplier is owed the money from this
+      // moment — so the supplier balances and the dashboard's purchase totals
+      // move with it. Both ride the cascade in lib/query/store.ts.
       invalidate("purchases");
     } catch (err) {
       setNote(

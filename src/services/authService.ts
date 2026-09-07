@@ -1,4 +1,5 @@
 import { apiFetch, tokenStore, ApiError, resolveRealm } from "./apiClient";
+import { clearAllPosDrafts } from "@/components/modules/pos/posCart";
 
 export interface UserSession {
   id: string;
@@ -167,6 +168,10 @@ export class AuthService {
   static async logout(): Promise<void> {
     const refresh = tokenStore.refresh();
     tokenStore.clear();
+    // A half-rung sale is not this device's to keep. A till is shared
+    // hardware, and on a subdomain deployment the next person to sign in can
+    // belong to a different company entirely.
+    clearAllPosDrafts();
 
     if (!refresh) return;
     try {

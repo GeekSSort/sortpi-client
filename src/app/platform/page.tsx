@@ -22,7 +22,7 @@ import { QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import StatCard from "@/components/platform/StatCard";
 import { statGood, statMoney, statRisk, statWait } from "@/components/platform/stats";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
-import { formatMoney, formatMoneyCompact } from "@/lib/format";
+import { formatMoney } from "@/lib/format";
 
 /**
  * The console home.
@@ -98,7 +98,7 @@ function revenueByPlan(plans: PlanRow[], subs: SubscriptionRow[]): Bar[] {
         label: p.name,
         value: paying.length * p.price,
         colour: GOLD,
-        display: formatMoneyCompact(paying.length * p.price),
+        display: formatMoney(paying.length * p.price),
       };
     })
     .filter((b) => b.value > 0);
@@ -222,8 +222,8 @@ export default function PlatformDashboardPage() {
           <StatCard
             {...statMoney({
               label: "Monthly revenue",
-              value: formatMoneyCompact(monthly),
-              note: `${formatMoneyCompact(monthly * 12)} a year at this rate`,
+              value: formatMoney(monthly),
+              note: `${formatMoney(monthly * 12)} a year at this rate`,
               href: "/platform/subscriptions",
             })}
           />
@@ -241,7 +241,7 @@ export default function PlatformDashboardPage() {
               value: trialing.length,
               note: endingSoon.length
                 ? `${endingSoon.length} ending this week`
-                : `${formatMoneyCompact(trialValue)} if they convert`,
+                : `${formatMoney(trialValue)} if they convert`,
               href: "/platform/subscriptions",
             })}
           />

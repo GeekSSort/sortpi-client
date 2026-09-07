@@ -6,7 +6,7 @@ import {
   SalesDataPoint,
 } from "@/types/dashboard";
 import { toAmount } from "../apiClient";
-import { formatCount, formatMoney, formatMoneyCompact } from "@/lib/format";
+import { formatCount, formatMoney } from "@/lib/format";
 
 /**
  * The dashboard reply -> what the screen shows.
@@ -28,11 +28,14 @@ function metrics(sales: any, purchases: any, pnl: any): MetricCardData[] {
   // than invented. A made-up "+12%" on a real dashboard is worse than none.
   const flat = { trend: "—", trendType: "up" as const, vsText: "no comparison yet" };
 
+  // The amount in full, not "৳ 41.5 L". A card reporting money the shop took
+  // should say how much: an abbreviation rounds 41,53,907 to the same string as
+  // 41,49,001, and the two are a different day's trading.
   return [
-    { id: "revenue", title: "Total Revenue", value: formatMoneyCompact(revenue), icon: "revenue", ...flat },
+    { id: "revenue", title: "Total Revenue", value: formatMoney(revenue), icon: "revenue", ...flat },
     { id: "sales", title: "Total Sales", value: formatCount(saleCount), icon: "sales", ...flat },
     { id: "orders", title: "Total Orders", value: formatCount(orders), icon: "orders", ...flat },
-    { id: "customers", title: "Net Profit", value: formatMoneyCompact(profit), icon: "customers", ...flat },
+    { id: "customers", title: "Net Profit", value: formatMoney(profit), icon: "customers", ...flat },
   ];
 }
 

@@ -49,8 +49,32 @@ export function toProductItem(
   // Null when nobody has priced the product yet.
   const price = toAmount(variant?.price);
 
+  /**
+   * What this product is taxed at, as the SERVER resolved it.
+   *
+   * The till used to tax every line at the shop's default rate, because `tax`
+   * on the payload is only an id and there was nothing else to price with. The
+   * server taxes each line at the PRODUCT's own rate and falls back to the
+   * shop's only where a product has none — so a product carrying its own rate
+   * was quoted at one figure on the screen and booked at another, with the
+   * customer standing there for both.
+   *
+   * `tax_rate` and `tax_inclusive` are the resolved values, fallback already
+   * applied, so the two sides cannot disagree about the fallback either.
+   * Undefined for a payload from an older server; the cart falls back to the
+   * shop setting exactly as it used to.
+   */
+  const taxRate = row?.taxRate === undefined || row?.taxRate === null
+    ? undefined
+    : toAmount(row.taxRate);
+  const taxInclusive =
+    row?.taxInclusive === undefined || row?.taxInclusive === null
+      ? undefined
+      : Boolean(row.taxInclusive);
+
   return {
     id: String(variant?.id ?? row?.id ?? ""),
+    productId: String(row?.id ?? ""),
     name: String(row?.name ?? ""),
     sku,
     barcode,
@@ -61,6 +85,8 @@ export function toProductItem(
     priceFormatted: price > 0 ? formatMoney(price, { decimals: 2 }) : "No price",
     stock: toAmount(opts?.stockBySku?.get(sku) ?? 0),
     image,
+    taxRate,
+    taxInclusive,
   };
 }
 

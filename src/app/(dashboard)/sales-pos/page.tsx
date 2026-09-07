@@ -1,9 +1,10 @@
 import { redirect } from "next/navigation";
 
 /**
- * The till moved out of the dashboard into its own environment at /pos.
- * This keeps every bookmark, link and typed URL working.
+ * /sales-pos was the till, before it moved into its own environment. The
+ * section is Sales & Return now, so the bare path lands on Sales; the till
+ * itself is at /pos.
  */
 export default function SalesPosRedirect() {
-  redirect("/pos");
+  redirect("/sales-pos/sales");
 }

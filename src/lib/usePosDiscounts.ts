@@ -1,61 +1,27 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
-import { DiscountMap, discountStoreKey, readDiscounts } from "./posDiscounts";
-
-/** The event the writer fires, because `storage` never reaches its own tab. */
-export const DISCOUNTS_CHANGED = "sp:discounts-changed";
-
-const EMPTY: DiscountMap = {};
-
-// The parsed map, cached against the raw string it came from. `getSnapshot`
-// must return the SAME object until something actually changes — parsing on
-// every call hands React a new reference each render and it re-renders
-// forever.
-let cachedKey = "";
-let cachedRaw: string | null = null;
-let cached: DiscountMap = EMPTY;
-
-function getSnapshot(): DiscountMap {
-  try {
-    const key = discountStoreKey();
-    const raw = window.localStorage.getItem(key);
-    if (key !== cachedKey || raw !== cachedRaw) {
-      cachedKey = key;
-      cachedRaw = raw;
-      cached = readDiscounts();
-    }
-    return cached;
-  } catch {
-    // A browser that refuses storage simply has no offers.
-    return EMPTY;
-  }
-}
-
-/** The server has no localStorage, so it renders the no-offers case. */
-function getServerSnapshot(): DiscountMap {
-  return EMPTY;
-}
-
-function subscribe(onChange: () => void): () => void {
-  // `storage` covers the second till on the shop floor and a second tab on this
-  // machine; the custom event covers the tab that did the writing, which the
-  // platform deliberately does not notify.
-  window.addEventListener("storage", onChange);
-  window.addEventListener(DISCOUNTS_CHANGED, onChange);
-  return () => {
-    window.removeEventListener("storage", onChange);
-    window.removeEventListener(DISCOUNTS_CHANGED, onChange);
-  };
-}
+import { DiscountMap, DiscountService } from "@/services/discountService";
+import { queryKey, useQuery } from "@/lib/query/useQuery";
 
 /**
- * The branch's product offers, kept in step with the screen that sets them.
+ * The shop's product offers, as every screen reads them.
  *
- * `useSyncExternalStore` rather than an effect: localStorage is exactly the
- * "external system" it exists for, and it gets the server pass right by
- * construction instead of by painting the wrong thing and correcting it.
+ * This used to be a `useSyncExternalStore` over localStorage, and that is the
+ * whole defect it replaces: the offers lived in ONE browser. An offer set in
+ * the back office was one the till had never heard of, a second till sold at
+ * full price, and clearing site data deleted the shop's pricing.
+ *
+ * Now it is one cached request, shared by the product wall, the invoice column,
+ * the selected-items list and the discounts screen — so all four agree, and a
+ * rate changed on any of them refreshes the rest through the same cascade every
+ * other write uses.
  */
 export function useProductDiscounts(): DiscountMap {
-  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const { data } = useQuery(queryKey("discounts"), () => DiscountService.map(), {
+    // Offers change about as often as prices do, and the till reads this on
+    // every render of the wall. The cache key is invalidated on a write, so
+    // this window only governs how long an untouched tab keeps an old rate.
+    staleMs: 60_000,
+  });
+  return data ?? {};
 }

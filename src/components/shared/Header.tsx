@@ -9,6 +9,7 @@ import { useQuery, queryKey, setQueryData } from "@/lib/query/useQuery";
 import { AuthService, NotificationService } from "@/services";
 import { useSession, clearSessionCache } from "@/services/useSession";
 import BranchSwitcher from "./BranchSwitcher";
+import PosViewToggle from "@/components/modules/pos/PosViewToggle";
 import { NotificationItem } from "@/types/notifications";
 import { useSidebar } from "./SidebarContext";
 import { ListSkeleton } from "./Skeleton";
@@ -66,6 +67,9 @@ function MenuIcon() {
 
 /** Which line sits under the title, for each page. */
 function subtitleForPath(pathname: string): string | null {
+  if (pathname === "/pos") return "Ring up a sale, take payment, and print the receipt.";
+  if (pathname.startsWith("/reports")) return "Sales, payments and stock movement over a period you choose.";
+  if (pathname.startsWith("/discount")) return "Create and manage discounts, offers and coupon codes.";
   if (pathname.startsWith("/sales-pos/sales")) return "View & manage all sales, invoice or order";
   if (pathname.startsWith("/sales-pos/return")) return "View & manage all returns and refunds";
   if (pathname.startsWith("/customers")) return "Manage all customers, transactions, and outstanding balances.";
@@ -103,7 +107,7 @@ function subtitleForPath(pathname: string): string | null {
 
 /** The title for each page, using the sidebar's own names. */
 function titleForPath(pathname: string): string {
-  if (pathname.startsWith("/pos")) return "POS";
+  if (pathname === "/pos") return "POS";
   if (pathname.startsWith("/sales-pos/sales")) return "Sales";
   if (pathname.startsWith("/sales-pos/return")) return "Returns";
 
@@ -122,6 +126,8 @@ function titleForPath(pathname: string): string {
   if (pathname.startsWith("/roles-permissions/add")) return "Add User";
   if (pathname.startsWith("/roles-permissions")) return "User List";
   if (pathname.startsWith("/settings")) return "Settings";
+  if (pathname.startsWith("/reports")) return "Reports";
+  if (pathname.startsWith("/discount")) return "Discount";
   if (pathname.startsWith("/ceo-overview")) return "CEO Overview";
   return "Dashboard";
 }
@@ -256,6 +262,13 @@ export default function Header({ title, subtitle, user }: HeaderProps) {
 
       {/* Menu — 30:15362 */}
       <div ref={menuRef} className="relative flex shrink-0 items-center gap-[12px]">
+        {/* The till is the one page here with two layouts, and it is the same
+            control the cashier's own top bar carries. */}
+        {pathname === "/pos" && (
+          <div className="hidden sm:block">
+            <PosViewToggle />
+          </div>
+        )}
         {/* The branch cursor lives here rather than on one page because it is
             not a filter on one screen: it is server-side state, and every
             branch-scoped list in the app answers differently once it moves.

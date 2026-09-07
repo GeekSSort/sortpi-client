@@ -1,15 +1,18 @@
 /**
- * The till's product discounts — what comes off which product.
+ * The arithmetic of a product discount, and nothing else.
  *
- * Kept per branch on the device: a Dhaka offer is not a Chattogram offer. The
- * catalogue has nowhere to store a product discount yet, so this is the one
- * place that owns the shape, the migration and the arithmetic. When the API
- * grows a field, only the two readers below change.
+ * This module used to OWN the offers: it read and wrote them to localStorage,
+ * per device, per branch. That is the defect the discount table replaced — an
+ * offer set in the back office was one the till had never heard of, and a
+ * second till sold at full price. Storage now lives on the server
+ * (`services/discountService.ts`), and the server decides what a customer is
+ * charged.
+ *
+ * What stays here is the pure arithmetic the SCREENS need to show a rate card:
+ * what a given rate takes off a given price, what the shop's ceiling allows,
+ * and how a flat amount reads as a percentage. None of it decides money — it
+ * decides what a shopkeeper sees while they type.
  */
-
-import { tokenStore } from "@/services/apiClient";
-
-const KEY = "sp_pos_discounts";
 
 /** Off the price: a share of it, or a fixed number of taka. */
 export type DiscountMode = "percent" | "flat";
@@ -21,60 +24,6 @@ export interface Discount {
 }
 
 export type DiscountMap = Record<string, Discount>;
-
-/** One store per branch, so switching branch does not carry offers across. */
-export function discountStoreKey(): string {
-  return `${KEY}_${tokenStore.branch() || "all"}`;
-}
-
-/**
- * The saved offers, or none.
- *
- * The first version wrote a bare percent (`{"7": 15}`). Those are read as
- * percents rather than dropped, so a shop that set its offers last week still
- * has them today.
- */
-export function readDiscounts(): DiscountMap {
-  try {
-    const raw = window.localStorage.getItem(discountStoreKey());
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const out: DiscountMap = {};
-    for (const [id, entry] of Object.entries(parsed)) {
-      if (typeof entry === "number") {
-        if (entry > 0) out[id] = { mode: "percent", value: entry };
-      } else if (entry && typeof entry === "object") {
-        const { mode, value } = entry as Partial<Discount>;
-        const n = Number(value);
-        if (Number.isFinite(n) && n > 0) {
-          out[id] = { mode: mode === "flat" ? "flat" : "percent", value: n };
-        }
-      }
-    }
-    return out;
-  } catch {
-    // A browser that refuses storage simply starts with none.
-    return {};
-  }
-}
-
-/** Write the whole set, so a removal is saved as surely as a rate. */
-export function writeDiscounts(next: DiscountMap): void {
-  try {
-    window.localStorage.setItem(discountStoreKey(), JSON.stringify(next));
-  } catch {
-    // The offers still apply for this session.
-  }
-  // `storage` fires in every OTHER tab and never in this one, so the till's
-  // product wall and the products table would keep the old rate until they
-  // were remounted. Dispatched outside the try: a browser that refused the
-  // write still has the new map in memory for this session.
-  try {
-    window.dispatchEvent(new Event("sp:discounts-changed"));
-  } catch {
-    // Nothing is listening in a non-DOM environment.
-  }
-}
 
 /** What comes off one unit, never more than the price itself. */
 export function amountOff(price: number, d: Discount | undefined): number {

@@ -92,6 +92,10 @@ export default function ProfitLossChart({
 
   const total = Math.max(1, data.totalRevenue + data.totalExpenses);
   const revenueSweep = (data.totalRevenue / total) * 360;
+  // No money either way. `Math.max(1, 0)` made the ring a full red circle at
+  // 0.0% margin — a picture of a shop that spent and earned nothing, which is
+  // not what an empty window means.
+  const empty = data.totalRevenue === 0 && data.totalExpenses === 0;
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-[16px] rounded-[12px] bg-white p-[20px] shadow-[inset_0_0_0_1px_#eaeaea]">
@@ -135,6 +139,16 @@ export default function ProfitLossChart({
       </div>
 
       {/* Body — 30:16874. Stacks below sm, side by side from sm up. */}
+      {empty ? (
+        <div className="flex w-full flex-1 flex-col items-center justify-center gap-[6px] text-center">
+          <p className="text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]">
+            Nothing recorded in this range.
+          </p>
+          <p className="text-[13px] leading-[1.5] tracking-[-0.26px] text-[#9e9e9e]">
+            Pick a wider range to see earlier trading.
+          </p>
+        </div>
+      ) : (
       <div className="flex w-full flex-1 flex-col items-center justify-center gap-[12px] sm:flex-row">
         <div className="relative size-[210px] max-w-full shrink-0">
           <svg viewBox={`0 0 ${SIZE} ${SIZE}`} className="block size-full" role="img" aria-label="Revenue versus expenses">
@@ -185,6 +199,7 @@ export default function ProfitLossChart({
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

@@ -16,3 +16,5 @@ export * from "./payrollService";
 export * from "./roleService";
 export * from "./settingsService";
 export * from "./notificationService";
+export * from "./reportService";
+export * from "./discountService";

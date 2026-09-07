@@ -9,7 +9,8 @@ import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/s
 import Receipt from "@/components/shared/Receipt";
 import ProductImage from "@/components/shared/ProductImage";
 import { useProductDiscounts } from "@/lib/usePosDiscounts";
-import { amountOff } from "@/lib/posDiscounts";
+import { amountOff } from "@/services/discountService";
+import { usePosDraft, patchPosDraft } from "@/components/modules/pos/posCart";
 
 /**
  * Figma: SORTPoint — POS invoice column 45:2333.
@@ -106,10 +107,15 @@ function Stepper({
   value,
   onDec,
   onInc,
+  atCap = false,
+  stock,
 }: {
   value: number;
   onDec: () => void;
   onInc: () => void;
+  /** The shelf cannot cover another one. */
+  atCap?: boolean;
+  stock?: number;
 }) {
   const end =
     "flex h-[30px] w-[44px] shrink-0 cursor-pointer flex-col items-center justify-center border-[0.4px] border-solid border-[#525252] px-[8px] py-[4px] text-[#525252] transition-colors hover:bg-[#fafafa]";
@@ -123,7 +129,16 @@ function Stepper({
       <span className="flex h-[30px] w-[44px] shrink-0 flex-col items-center justify-center border-y-[0.4px] border-solid border-[#525252] px-[8px] py-[4px] text-center text-[12px] leading-[16px] font-medium text-[#525252]">
         {value}
       </span>
-      <button type="button" aria-label="Increase quantity" onClick={onInc} className={`${end} rounded-r-[4px]`}>
+      <button
+        type="button"
+        aria-label="Increase quantity"
+        onClick={onInc}
+        disabled={atCap}
+        title={atCap ? `Only ${stock} in stock` : undefined}
+        className={`${end} rounded-r-[4px] ${
+          atCap ? "cursor-not-allowed text-[#d4d4d4] hover:bg-white" : ""
+        }`}
+      >
         <svg className="block size-[16px]" viewBox="0 0 16 16" fill="none" aria-hidden>
           <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
         </svg>
@@ -189,12 +204,20 @@ export default function CartPanel({
   );
   const held = useMemo(() => heldRows ?? [], [heldRows]);
 
-  const [pickedCustomer, setCustomer] = useState<Customer | null>(null);
+  // Who the invoice is for and what comes off it belong to the sale, not to
+  // this panel: they are kept beside the cart lines so that stepping over to
+  // another screen mid-sale leaves the whole invoice standing. See posCart.ts.
+  const sale = usePosDraft();
+  const pickedCustomer = sale.customer;
+  const setCustomer = (next: Customer | null) => patchPosDraft({ customer: next });
+  const discount = sale.discount;
+  const setDiscount = (next: string) => patchPosDraft({ discount: next });
+  const discountMode = sale.discountMode;
+  const setDiscountMode = (next: "percent" | "flat") => patchPosDraft({ discountMode: next });
+
   const [customerQuery, setCustomerQuery] = useState("");
   const [listOpen, setListOpen] = useState(false);
   const [selectOpen, setSelectOpen] = useState(false);
-  const [discount, setDiscount] = useState("");
-  const [discountMode, setDiscountMode] = useState<"percent" | "flat">("percent");
   const [heldOpen, setHeldOpen] = useState(false);
   // How this shop charges VAT, and how much may come off a bill. Both are set
   // once in Settings; the till only reads them.
@@ -234,7 +257,8 @@ export default function CartPanel({
    * express "no VAT on this one" short of typing a zero. Empty now means zero,
    * and the reset link below is what restores the shop rate.
    */
-  const [vat, setVat] = useState<string | null>(null);
+  const vat = sale.vat;
+  const setVat = (next: string | null) => patchPosDraft({ vat: next });
   // Whose shop this is. The receipt is headed by the customer's company, not
   // by the software that printed it.
   const shopProfile = useMemo(
@@ -399,6 +423,25 @@ export default function CartPanel({
       (s, i) => s + amountOff(i.product.price, rates[i.product.id]) * i.quantity,
       0
     );
+    /**
+     * How ONE line is taxed, resolved the way the server resolves it.
+     *
+     * Every line used to be taxed at the shop's default rate, because the
+     * product payload carried only a tax id. The server taxes each line at the
+     * PRODUCT's own rate and inclusivity and only falls back to the shop's
+     * where a product has none — so a product with its own rate was quoted at
+     * one figure here and booked at another. The server now sends both
+     * resolved values with each product and this reads them.
+     *
+     * A rate typed into the VAT box overrides the rate for every line, which
+     * is what `tax_rate` on the request body does on the server; it does NOT
+     * override inclusivity, because whether a shelf price contains tax is a
+     * bookkeeping rule and not a per-sale decision.
+     */
+    const lineTax = (item: CartItem) => ({
+      rate: vat !== null ? vatRate : item.product.taxRate ?? shop.vatRate,
+      inclusive: item.product.taxInclusive ?? shop.vatIncluded,
+    });
     // No delivery charge on a till sale. It used to add a flat 60 the server
     // has no field for, so the tender came to more than the bill and the sale
     // was refused with PAYMENT_EXCEEDS_TOTAL.
@@ -412,35 +455,72 @@ export default function CartPanel({
     // the literal string "SAVE10", client-side, and sent the reduced figure on
     // to the sale — money off with no authority behind it. Until a coupon
     // resource exists the field below stays disabled and takes nothing off.
-    // The shop's ceiling on what a till may give away, from Settings. Applied
-    // here as well as at the till roll, so the figure on screen is the figure
-    // the server will accept.
+    /**
+     * The shop's ceiling on what a TILL may give away, from Settings.
+     *
+     * It bounds the manual discount alone. A shop offer is the shop's own
+     * decision about what a product sells for this week — it is not a cashier
+     * giving money away at the counter, and holding it to the cashier's limit
+     * would mean a 30% promotion could not be run through a till whose limit is
+     * 20%. The server enforces the same split.
+     */
     const ceiling = subtotal * shop.maxDiscount;
-    // Both kinds of discount come off the same subtotal and share one ceiling:
-    // the shop's limit is on what a till may give away, not on the route the
-    // giveaway took.
-    const wanted = offersOff + manualOff;
-    const off = Math.round(Math.min(subtotal, ceiling, wanted));
-    const taxable = Math.max(0, subtotal - off);
+    const manualCapped = Math.min(manualOff, ceiling);
+    const off = Math.round(Math.min(subtotal, offersOff + manualCapped));
 
-    // Two ways to charge VAT, and they are not interchangeable. Bangladeshi
-    // shelf prices normally include it, so it is taken OUT of the price rather
-    // than added: the customer pays the same either way and the books differ.
-    const tax = shop.vatIncluded
-      ? taxable - taxable / (1 + vatRate)
-      : taxable * vatRate;
-    const total = shop.vatIncluded ? taxable : taxable + tax;
+    /**
+     * Tax, per LINE, on that line's post-discount share.
+     *
+     * Two ways to charge VAT and they are not interchangeable. Bangladeshi
+     * shelf prices normally include it, so it is taken OUT of the price rather
+     * than added: the customer pays the same either way and only the books
+     * differ. Both live in one cart when products carry different taxes, which
+     * is why this is summed per line rather than applied to the total.
+     *
+     * The discount is spread across the lines in proportion to what each is
+     * worth, which is what `PricingEngine.allocate` does on the server. A
+     * single-rate cart comes out identical to the old whole-cart arithmetic.
+     */
+    const gross = subtotal || 1;
+    let tax = 0;
+    let total = 0;
+    let inclusiveTax = 0;
+    let addedTax = 0;
+    for (const item of cart) {
+      const lineGross = item.product.price * item.quantity;
+      const lineTaxable = Math.max(0, lineGross - (off * lineGross) / gross);
+      const { rate, inclusive } = lineTax(item);
+      if (inclusive) {
+        const t = lineTaxable - lineTaxable / (1 + rate);
+        tax += t;
+        inclusiveTax += t;
+        total += lineTaxable;
+      } else {
+        const t = lineTaxable * rate;
+        tax += t;
+        addedTax += t;
+        total += lineTaxable + t;
+      }
+    }
 
     return {
       subtotal,
       shipping,
       discount: off,
-      offersOff: Math.round(Math.min(subtotal, ceiling, offersOff)),
+      offersOff: Math.round(Math.min(subtotal, offersOff)),
+      // What the till may still send as an invoice discount. The OFFERS are no
+      // longer sent — the server holds them and applies each to its own line —
+      // so sending them here as well would take them off twice.
+      manualDiscount: Math.round(manualCapped),
       tax,
+      // Split out so the summary can say which half is in the price and which
+      // is added on top. A cart can hold both.
+      inclusiveTax,
+      addedTax,
       total,
-      capped: wanted > ceiling,
+      capped: manualOff > ceiling,
     };
-  }, [cart, discount, discountMode, shop, vatRate, rates]);
+  }, [cart, discount, discountMode, shop, vat, vatRate, rates]);
 
   /**
    * Name OR phone. A cashier facing a returning customer has their number far
@@ -488,12 +568,63 @@ export default function CartPanel({
   const [selectedOnlineMethod, setSelectedOnlineMethod] = useState<string>("Card");
   const [referenceNo, setReferenceNo] = useState("");
 
+  /**
+   * The key this cart is rung up under.
+   *
+   * The server guarantees at-most-once execution per `Idempotency-Key`, and
+   * that guarantee is only worth anything if the key STAYS THE SAME across
+   * attempts. A key minted per request — which is what this used to send —
+   * turns a double-tap on PAY, or a cashier retrying after a timeout, into two
+   * invoices, two stock movements and two rows in the drawer.
+   *
+   * It must also CHANGE when the basket does. The server answers 409 to the
+   * same key carrying a different body, deliberately: that is a real second
+   * sale, not a replay. So the key is tied to a signature of what is being
+   * sent — edit a line and the next attempt is a new sale; press PAY twice on
+   * the same basket and the second is a replay of the first.
+   *
+   * The nonce keeps two identical baskets apart: a customer buying the same
+   * thing twice in a row is two sales, and a signature alone cannot tell that
+   * from a double-tap.
+   */
+  const checkoutKey = useRef<{ signature: string; key: string } | null>(null);
+
+  /** One key per (basket, nonce). Same basket, same key; edited basket, new one. */
+  const keyForSignature = (signature: string): string => {
+    if (checkoutKey.current?.signature === signature) return checkoutKey.current.key;
+    const key = `pos-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    checkoutKey.current = { signature, key };
+    return key;
+  };
+
+  /**
+   * A latch, not the `busy` flag.
+   *
+   * `busy` is React state: two clicks landing in one tick both read `false`
+   * and both call through. A ref is written synchronously, so the second one
+   * sees the first.
+   */
+  const paying = useRef(false);
+
   const pay = async (method: string = paymentMethod, refNo?: string) => {
-    if (!cart.length || busy) return;
+    if (!cart.length || paying.current || busy) return;
+    paying.current = true;
+    // Everything the request body is built from. Two attempts that would post
+    // the same body share a key; anything else gets its own.
+    const signature = JSON.stringify([
+      cart.map((i) => [i.product.id, i.quantity, i.product.price]),
+      customer?.id ?? "walk-in",
+      totals.manualDiscount,
+      vat,
+      method,
+      refNo ?? referenceNo ?? "",
+      totals.total,
+    ]);
     setBusy(true);
     setStatus(null);
     try {
       const res = await PosService.checkout({
+        idempotencyKey: keyForSignature(signature),
         customerId: customer?.id ?? "walk-in",
         items: cart.map((i) => ({
           productId: i.product.id,
@@ -502,7 +633,17 @@ export default function CartPanel({
         })),
         paymentMethod: method,
         ...(refNo ? { referenceNo: refNo } : {}),
-        discountAmount: totals.discount,
+        /**
+         * The MANUAL discount only.
+         *
+         * Shop offers used to be lumped in here, because the server could not
+         * see them — and the pricing engine spreads an invoice discount across
+         * every line, so a full-price product carried part of another product's
+         * offer. The server now holds the offers and applies each to its own
+         * line, so sending them again would take them off twice: once by the
+         * server and once by this figure.
+         */
+        discountAmount: totals.manualDiscount,
         // Only when it was changed here. The shop's own rate needs no saying,
         // and sending it would need a permission a cashier does not hold.
         ...(vat !== null ? { taxRate: vatRate } : {}),
@@ -510,16 +651,32 @@ export default function CartPanel({
         // what the server will have priced it at.
         totalAmount: totals.total,
       });
+      /**
+       * The RECORDED sale, not this screen's arithmetic.
+       *
+       * The server prices every line itself and works the totals out from them,
+       * and where it disagrees with the till the till pays the server's figure —
+       * `checkout` retries with `grand_total` when a tender is refused for
+       * exceeding it. The receipt was still printed from `totals`, so the
+       * customer could be handed a slip whose subtotal, discount and total were
+       * not the ones in the books, and the difference only ever surfaced at a
+       * reconciliation weeks later.
+       *
+       * The till's own figures remain the fallback for a response that carries
+       * none — a receipt with approximately the right numbers beats no receipt
+       * at all with a customer waiting.
+       */
+      const booked = res?.totals;
       setReceipt({
         invoiceNo: res?.invoiceNo ?? `INV-${Date.now().toString().slice(-8)}`,
         method: method,
         items: cart.length,
         units: cart.reduce((n, i) => n + i.quantity, 0),
-        subtotal: totals.subtotal,
+        subtotal: booked?.subtotal ?? totals.subtotal,
         shipping: totals.shipping,
-        discount: totals.discount,
-        tax: Math.round(totals.tax),
-        total: totals.total,
+        discount: booked?.discount ?? totals.discount,
+        tax: Math.round(booked?.tax ?? totals.tax),
+        total: booked?.grandTotal ?? totals.total,
         lines: cart.map((i) => ({
           name: i.product.name,
           price: i.product.price.toLocaleString("en-IN"),
@@ -538,6 +695,11 @@ export default function CartPanel({
       // shelf, the inventory valuation, the day's figures, and the stock badge
       // on every tile of the product wall behind this panel.
       invalidate("sales", "stock", "inventory", "dashboard", "pos-products");
+      // This cart is booked. The next one is a new sale and needs a new key —
+      // reusing this one would make the server replay the sale just made and
+      // hand back its receipt instead of ringing the new basket.
+      checkoutKey.current = null;
+
       onClearCart();
       setDiscount("");
       setVat(null);
@@ -556,6 +718,7 @@ export default function CartPanel({
         err instanceof Error && err.message ? err.message : "Payment failed. Try again."
       );
     } finally {
+      paying.current = false;
       setBusy(false);
     }
   };
@@ -702,6 +865,8 @@ export default function CartPanel({
                             value={item.quantity}
                             onDec={() => onUpdateQuantity(item.product.id, -1)}
                             onInc={() => onUpdateQuantity(item.product.id, 1)}
+                            atCap={item.product.stock > 0 && item.quantity >= item.product.stock}
+                            stock={item.product.stock}
                           />
                         </div>
                       </div>
@@ -947,11 +1112,30 @@ export default function CartPanel({
                     </span>
                   )}
                   <span className="text-[12px] text-[#a3a3a3]">
-                    {shop.vatIncluded ? "in price" : "added"}
+                    {totals.addedTax > 0 && totals.inclusiveTax > 0
+                      ? "part in price"
+                      : totals.addedTax > 0
+                        ? "added to total"
+                        : "already in the price"}
                   </span>
                 </span>
-                <span>{shop.vatIncluded ? "" : "+"}{money(Math.round(totals.tax))}</span>
+                <span>
+                  {totals.addedTax > 0 && totals.inclusiveTax === 0 ? "+" : ""}
+                  {money(Math.round(totals.tax))}
+                </span>
               </p>
+              {/* Said in words, because the figure on its own reads as an
+                  addition and is not one. A shopkeeper looking at a 515.22
+                  line, a 67 VAT line and a 515.22 total has every reason to
+                  think the VAT was dropped — it was not, it is inside the
+                  shelf price, and only this sentence says so. */}
+              {totals.inclusiveTax > 0 && (
+                <span className="text-[12px] text-[#8f8d87]">
+                  {totals.addedTax > 0
+                    ? `${money(Math.round(totals.inclusiveTax))} of the VAT is already inside the shelf price; the rest is added.`
+                    : "VAT is already inside the shelf price, so the total does not change."}
+                </span>
+              )}
               {vat !== null && (
                 <button
                   type="button"

@@ -2,7 +2,7 @@
 
 import React, { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { InventoryService } from "@/services";
+import { InventoryService, SettingsService, StockService, TransferService } from "@/services";
 import type { CatalogOption, CatalogOptions } from "@/services/inventoryService";
 import { GOLD_GRADIENT } from "@/components/shared/Modal";
 import UploadIcon from "@/components/shared/UploadIcon";
@@ -10,7 +10,8 @@ import { useQuery, queryKey, useMutation, invalidate } from "@/lib/query/useQuer
 import { FormSkeleton } from "@/components/shared/Skeleton";
 import { QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import ProductImage from "@/components/shared/ProductImage";
-import { readDiscounts, writeDiscounts } from "@/lib/posDiscounts";
+import { DiscountService } from "@/services/discountService";
+import { useSession } from "@/services/useSession";
 
 /**
  * Figma: SORTPoint — Add New Product 57:12014.
@@ -51,6 +52,7 @@ const blank = {
   barcode: "",
   purchasePrice: "",
   sellingPrice: "",
+  openingStock: "",
   discount: "",
   tax: "",
   image: "",
@@ -190,7 +192,29 @@ function Select({
 
 export default function AddProductPage() {
   const router = useRouter();
+  const session = useSession();
   const [form, setForm] = useState({ ...blank });
+
+  /**
+   * The shelf opening stock is counted onto: the ACTIVE branch's own warehouse.
+   *
+   * `/warehouses/` lists every branch the user can reach, so taking the first
+   * would count a Dhaka delivery into Chattogram whenever the list happened to
+   * sort that way. MAIN is preferred, since that is where a shop's goods live
+   * and where the till sells from. With no active branch there is no answer,
+   * and the field says so rather than guessing.
+   */
+  const { data: warehouseRows } = useQuery(queryKey("warehouses"), () =>
+    TransferService.getWarehouses()
+  );
+  const openingShelf = useMemo(() => {
+    const here = (warehouseRows ?? []).filter(
+      (w) => w.branchId === session.user?.activeBranch?.id
+    );
+    return here.find((w) => w.type === "MAIN") ?? here[0] ?? null;
+  }, [warehouseRows, session.user?.activeBranch?.id]);
+  const openingWarehouse = openingShelf?.id ?? "";
+  const openingWarehouseName = openingShelf?.name ?? "";
   const [rates, setRates] = useState({ ...blankRates });
   const [open, setOpen] = useState<SelectKind | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -203,6 +227,14 @@ export default function AddProductPage() {
   const catalog = useQuery(queryKey("inventory", { part: "catalog" }), () =>
     InventoryService.getCatalogOptions()
   );
+
+  // How this shop quotes prices, so the preview below says what the till will
+  // actually charge rather than a figure no screen agrees with.
+  const { data: shopValues } = useQuery(queryKey("settings", { part: "values" }), () =>
+    SettingsService.getValues()
+  );
+  const vatIncluded =
+    String(shopValues?.["tax.inclusive_by_default"] ?? "true") !== "false";
   const options: CatalogOptions = catalog.data ?? {
     categories: [],
     brands: [],
@@ -228,12 +260,18 @@ export default function AddProductPage() {
     setError(null);
   };
 
-  /** Selling price less the discount, plus tax on the remainder.
+  /** What the customer will actually pay, priced the way the till prices it.
    *
-   * Each of the two is a percentage or a flat number of taka, so the switch
-   * beside the box decides the arithmetic. `form.tax` used to hold a tax row's
-   * UUID and this read `Number(form.tax)` — always NaN, so the preview never
-   * once included tax. */
+   * Each of discount and tax is a percentage or a flat number of taka, so the
+   * switch beside the box decides the arithmetic. `form.tax` used to hold a tax
+   * row's UUID and this read `Number(form.tax)` — always NaN, so the preview
+   * never once included tax.
+   *
+   * Whether the VAT is ADDED depends on how the shop quotes prices. With
+   * tax-inclusive pricing — the Bangladeshi retail default, and the shop's
+   * `tax.inclusive_by_default` setting — the shelf price already contains the
+   * VAT, so adding it again quoted a "final price" 15% above what the till
+   * would ever charge and the two screens disagreed about the same product. */
   const finalPrice = useMemo(() => {
     const sell = Number(form.sellingPrice) || 0;
     const discEntered = Math.max(0, Number(form.discount) || 0);
@@ -244,10 +282,11 @@ export default function AddProductPage() {
         ? (sell * Math.min(100, discEntered)) / 100
         : Math.min(sell, discEntered);
     const afterDiscount = Math.max(0, sell - discountOff);
+    if (vatIncluded) return afterDiscount;
     const taxOn =
       rates.tax === "percent" ? (afterDiscount * taxEntered) / 100 : taxEntered;
     return afterDiscount + taxOn;
-  }, [form.sellingPrice, form.discount, form.tax, rates]);
+  }, [form.sellingPrice, form.discount, form.tax, rates, vatIncluded]);
 
   /**
    * The FILE is kept, not just a preview URL of it.
@@ -270,6 +309,18 @@ export default function AddProductPage() {
     // Brand is optional on the API, so it is optional here. Unit is not.
     if (!unit) return setError("Pick a unit.");
     if (!Number(form.sellingPrice)) return setError("Selling price must be greater than zero.");
+    const opening = Number(form.openingStock) || 0;
+    if (opening > 0 && !(Number(form.purchasePrice) > 0)) {
+      return setError(
+        "Enter the purchase price before the opening stock. Stock counted in at nothing makes the " +
+          "first sale of it look like pure profit, and that cost is stamped once and never recomputed."
+      );
+    }
+    if (opening > 0 && !openingWarehouse) {
+      return setError(
+        "There is no warehouse to count this into. Switch to a branch from the header first."
+      );
+    }
     try {
       // A typed percentage has to become a Tax row before it can be a foreign
       // key. A flat tax has no column on this API at all — `Tax.rate` is a
@@ -297,6 +348,40 @@ export default function AddProductPage() {
         sku: form.sku.trim() || undefined,
         barcode: form.barcode.trim() || undefined,
       });
+      /**
+       * The opening stock, as a counted movement.
+       *
+       * After the create, because a movement names the VARIANT and the variant
+       * does not exist until then — and reported without pretending the product
+       * was not saved if it fails, because it was. The alternative, refusing the
+       * whole thing, would lose a filled-in form over a permission.
+       */
+      if (opening > 0 && openingWarehouse && created.variantId) {
+        try {
+          await StockService.adjustStock({
+            warehouseId: openingWarehouse,
+            variantId: created.variantId,
+            newQuantity: opening,
+            unitCost: Number(form.purchasePrice),
+            // A brand new variant holds nothing, so this is what the shelf
+            // must be at for the count to mean what was typed.
+            expectUnchanged: true,
+            expectedQuantity: 0,
+            referenceNo: `OPEN-${Date.now().toString().slice(-8)}`,
+            reason: "CORRECTION",
+            note: `Opening stock for ${created.name}`,
+          });
+          invalidate("stock", "inventory", "dashboard", "pos-products");
+        } catch (stockErr) {
+          setError(
+            stockErr instanceof Error && stockErr.message
+              ? `${created.name} was saved, but the opening stock was not counted in: ${stockErr.message}`
+              : `${created.name} was saved, but the opening stock was not counted in.`
+          );
+          return;
+        }
+      }
+
       // The image can only be attached once the product has an id, so it goes
       // after the create rather than in the same request. A failure here is
       // reported without pretending the product was not saved — it was.
@@ -318,11 +403,24 @@ export default function AddProductPage() {
       // Discounts screen writes and the POS prices its tiles by. Keyed by the
       // variant, which is what everything at the till is keyed by.
       const discountValue = Math.max(0, Number(form.discount) || 0);
-      if (discountValue > 0 && created.variantId) {
-        writeDiscounts({
-          ...readDiscounts(),
-          [created.variantId]: { mode: rates.discount, value: discountValue },
-        });
+      if (discountValue > 0) {
+        try {
+          await DiscountService.set(created.id, {
+            mode: rates.discount === "flat" ? "FLAT" : "PERCENT",
+            value: discountValue,
+            variantId: created.variantId || undefined,
+          });
+          invalidate("discounts", "pos-products", "inventory");
+        } catch (offerErr) {
+          // Not fatal: the product exists and sells at its full price until
+          // somebody sets the offer again. Saying it failed to save would send
+          // this person to create it a second time.
+          setNote(
+            offerErr instanceof Error && offerErr.message
+              ? `${created.name} saved, but the discount was not: ${offerErr.message}`
+              : `${created.name} saved, but the discount was not.`
+          );
+        }
       }
 
       setNote(`${created.name} saved`);
@@ -339,12 +437,12 @@ export default function AddProductPage() {
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Centred 565 column — 57:12578 */}
-      <form onSubmit={save} className="mx-auto flex w-full max-w-[565px] flex-col gap-[24px]">
+      <form onSubmit={save} className="mx-auto flex w-full max-w-[720px] flex-col gap-[24px]">
         <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
-          <div className="flex h-[48px] items-center justify-center px-[16px]">
-            <p className="text-[16px] leading-[1.5] font-medium tracking-[-0.32px] text-[#1e1e1e]">
+          <div className="flex h-[60px] items-center justify-center px-[16px]">
+            <h1 className="text-[20px] leading-[28px] font-semibold tracking-[-0.4px] text-[#1e1e1e]">
               Add New Product
-            </p>
+            </h1>
           </div>
 
           {/* Form — 57:12584, 88px blocks 12px apart */}
@@ -397,22 +495,56 @@ export default function AddProductPage() {
               </div>
             </div>
 
-            {/* The till scans this. Without it a product can only be rung up
-                by finding it on the wall, which is the slow path the scanner
-                exists to replace. The input is a scan target: focus it and
-                pull the trigger. */}
-            <div className="flex flex-col gap-[8px]">
-              <label htmlFor="p-barcode" className={LABEL}>
-                Barcode <span className="text-[#8f8d87]">(optional)</span>
-              </label>
-              <div className={FIELD}>
-                <input
-                  id="p-barcode"
-                  value={form.barcode}
-                  onChange={(e) => set("barcode", e.target.value.trim())}
-                  placeholder="Scan or type the barcode on the packet"
-                  className={INPUT}
-                />
+            {/* The packet in your hand: its code, and how many of them arrived.
+                Side by side because they are read off the same delivery in one
+                motion — scan the barcode, count the case, move on.
+
+                The barcode is a scan target: focus it and pull the trigger.
+                Without one a product can only be rung up by finding it on the
+                wall, which is the slow path the scanner exists to replace. Left
+                empty, the server assigns an internal code of its own.
+
+                The opening stock is written as a real counted movement, not a
+                column on the product, because stock has exactly one way into
+                this system. It is costed at the Purchase Price above: a line
+                counted in at nothing makes the first sale of it look like pure
+                profit forever, since COGS is stamped once and never
+                recomputed. */}
+            <div className="flex flex-col gap-[30px] sm:flex-row sm:items-start">
+              <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
+                <label htmlFor="p-barcode" className={LABEL}>
+                  Barcode <span className="text-[#8f8d87]">(optional)</span>
+                </label>
+                <div className={FIELD}>
+                  <input
+                    id="p-barcode"
+                    value={form.barcode}
+                    onChange={(e) => set("barcode", e.target.value.trim())}
+                    placeholder="Scan or type the barcode"
+                    className={INPUT}
+                  />
+                </div>
+              </div>
+
+              <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
+                <label htmlFor="p-opening" className={LABEL}>
+                  Opening Stock <span className="text-[#8f8d87]">(optional)</span>
+                </label>
+                <div className={FIELD}>
+                  <input
+                    id="p-opening"
+                    value={form.openingStock}
+                    onChange={(e) => set("openingStock", e.target.value.replace(/[^\d.]/g, ""))}
+                    inputMode="decimal"
+                    placeholder="0"
+                    className={INPUT}
+                  />
+                </div>
+                <p className="text-[12px] leading-[16px] text-[#8f8d87]">
+                  {openingWarehouseName
+                    ? `Counted into ${openingWarehouseName} at the purchase price.`
+                    : "Counted in at the purchase price once a branch is active."}
+                </p>
               </div>
             </div>
 
@@ -445,16 +577,24 @@ export default function AddProductPage() {
                 onMode={(m) => setRates((r) => ({ ...r, discount: m }))}
                 hint="The till's offer on this product."
               />
+              {/* SELLING VAT, said plainly.
+                  It was labelled "Tax / VAT" beside a Purchase Price box, so it
+                  read as the VAT the shop PAYS its supplier — and it is not:
+                  this rate is what the till charges the customer. The VAT on a
+                  delivery belongs on the purchase, where it posts to VAT
+                  Receivable and is recoverable; this one is output tax and
+                  belongs to the customer's receipt. The two are different
+                  money and naming them the same thing is what confused it. */}
               <RateField
                 id="p-tax"
-                label="Tax / VAT"
+                label="Selling VAT"
                 value={form.tax}
                 mode={rates.tax}
                 onValue={(v) => set("tax", v)}
                 onMode={(m) => setRates((r) => ({ ...r, tax: m }))}
                 hint={
                   rates.tax === "percent"
-                    ? "Saved as the shop's tax rate for this product."
+                    ? "Charged to the customer at the till. VAT you pay a supplier goes on the purchase."
                     : "A flat tax is priced here only — the API stores a percentage."
                 }
               />
