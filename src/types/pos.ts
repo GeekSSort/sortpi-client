@@ -16,6 +16,17 @@ export interface ProductItem {
   priceFormatted: string;
   stock: number;
   image: string;
+  /**
+   * What the SERVER will tax this line at — the product's own rate, or the
+   * shop's default where it has none, already resolved.
+   *
+   * A fraction: 0.15 is 15%. Undefined only for a payload from a server that
+   * predates the field, in which case the till falls back to the shop setting
+   * as it always did.
+   */
+  taxRate?: number;
+  /** Whether `taxRate` is already inside `price` (BD retail) or added on top. */
+  taxInclusive?: boolean;
 }
 
 export type ProductCategory = "All Categories" | "Electronics" | "Groceries" | "Fashion" | "Home & Living";
@@ -57,6 +68,16 @@ export interface CheckoutPayload {
       `PosService.checkout` — which the type did not admit, so a production
       build failed on six references to a field the runtime has always used. */
   referenceNo?: string;
+  /**
+   * The `Idempotency-Key` this checkout is spent under.
+   *
+   * Belongs to the CART, not to the request: it has to be identical across a
+   * double-tap on PAY and across a retry after a timeout, or the server rings
+   * the sale twice. The till mints one per cart and drops it once a sale comes
+   * back. Omitted, `checkout` derives one, which still covers the two attempts
+   * it makes internally.
+   */
+  idempotencyKey?: string;
 }
 
 /** A cart parked at the till, waiting for the customer to come back. */

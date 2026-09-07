@@ -2,7 +2,7 @@
 
 import React, { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { InventoryService, StockService, TransferService } from "@/services";
+import { InventoryService, SettingsService, StockService, TransferService } from "@/services";
 import type { CatalogOption, CatalogOptions } from "@/services/inventoryService";
 import { GOLD_GRADIENT } from "@/components/shared/Modal";
 import UploadIcon from "@/components/shared/UploadIcon";
@@ -227,6 +227,14 @@ export default function AddProductPage() {
   const catalog = useQuery(queryKey("inventory", { part: "catalog" }), () =>
     InventoryService.getCatalogOptions()
   );
+
+  // How this shop quotes prices, so the preview below says what the till will
+  // actually charge rather than a figure no screen agrees with.
+  const { data: shopValues } = useQuery(queryKey("settings", { part: "values" }), () =>
+    SettingsService.getValues()
+  );
+  const vatIncluded =
+    String(shopValues?.["tax.inclusive_by_default"] ?? "true") !== "false";
   const options: CatalogOptions = catalog.data ?? {
     categories: [],
     brands: [],
@@ -252,12 +260,18 @@ export default function AddProductPage() {
     setError(null);
   };
 
-  /** Selling price less the discount, plus tax on the remainder.
+  /** What the customer will actually pay, priced the way the till prices it.
    *
-   * Each of the two is a percentage or a flat number of taka, so the switch
-   * beside the box decides the arithmetic. `form.tax` used to hold a tax row's
-   * UUID and this read `Number(form.tax)` — always NaN, so the preview never
-   * once included tax. */
+   * Each of discount and tax is a percentage or a flat number of taka, so the
+   * switch beside the box decides the arithmetic. `form.tax` used to hold a tax
+   * row's UUID and this read `Number(form.tax)` — always NaN, so the preview
+   * never once included tax.
+   *
+   * Whether the VAT is ADDED depends on how the shop quotes prices. With
+   * tax-inclusive pricing — the Bangladeshi retail default, and the shop's
+   * `tax.inclusive_by_default` setting — the shelf price already contains the
+   * VAT, so adding it again quoted a "final price" 15% above what the till
+   * would ever charge and the two screens disagreed about the same product. */
   const finalPrice = useMemo(() => {
     const sell = Number(form.sellingPrice) || 0;
     const discEntered = Math.max(0, Number(form.discount) || 0);
@@ -268,10 +282,11 @@ export default function AddProductPage() {
         ? (sell * Math.min(100, discEntered)) / 100
         : Math.min(sell, discEntered);
     const afterDiscount = Math.max(0, sell - discountOff);
+    if (vatIncluded) return afterDiscount;
     const taxOn =
       rates.tax === "percent" ? (afterDiscount * taxEntered) / 100 : taxEntered;
     return afterDiscount + taxOn;
-  }, [form.sellingPrice, form.discount, form.tax, rates]);
+  }, [form.sellingPrice, form.discount, form.tax, rates, vatIncluded]);
 
   /**
    * The FILE is kept, not just a preview URL of it.
@@ -562,16 +577,24 @@ export default function AddProductPage() {
                 onMode={(m) => setRates((r) => ({ ...r, discount: m }))}
                 hint="The till's offer on this product."
               />
+              {/* SELLING VAT, said plainly.
+                  It was labelled "Tax / VAT" beside a Purchase Price box, so it
+                  read as the VAT the shop PAYS its supplier — and it is not:
+                  this rate is what the till charges the customer. The VAT on a
+                  delivery belongs on the purchase, where it posts to VAT
+                  Receivable and is recoverable; this one is output tax and
+                  belongs to the customer's receipt. The two are different
+                  money and naming them the same thing is what confused it. */}
               <RateField
                 id="p-tax"
-                label="Tax / VAT"
+                label="Selling VAT"
                 value={form.tax}
                 mode={rates.tax}
                 onValue={(v) => set("tax", v)}
                 onMode={(m) => setRates((r) => ({ ...r, tax: m }))}
                 hint={
                   rates.tax === "percent"
-                    ? "Saved as the shop's tax rate for this product."
+                    ? "Charged to the customer at the till. VAT you pay a supplier goes on the purchase."
                     : "A flat tax is priced here only — the API stores a percentage."
                 }
               />

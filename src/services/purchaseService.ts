@@ -39,6 +39,17 @@ export interface NewPurchaseLine {
   /** What the supplier charges per unit. This is what stock costs when the
       goods are received, and what every margin is measured against. */
   unitCost: number;
+  /**
+   * INPUT VAT on this line, as a FRACTION — 0.15 is 15%.
+   *
+   * The VAT the shop PAYS. Recoverable, posted to VAT Receivable, and
+   * emphatically not the rate on the customer's receipt: folding input VAT
+   * into the goods would value every shelf at the tax-inclusive price and
+   * every margin computed off it would be wrong by the VAT rate.
+   *
+   * Purchase tax is EXCLUSIVE — a supplier invoice quotes net and adds VAT.
+   */
+  taxRate?: number;
 }
 
 /** What `POST /purchases/` needs. Ids, not names. */
@@ -78,6 +89,11 @@ export class PurchaseService {
             variant: l.variantId,
             quantity: l.quantity,
             unit_cost: l.unitCost,
+            // Input VAT: what the SUPPLIER charges, which is recoverable and
+            // posts to VAT Receivable. A fraction, like every other rate on
+            // this API. Omitted when zero so an untaxed delivery sends nothing
+            // rather than an explicit "0".
+            ...(l.taxRate && l.taxRate > 0 ? { tax_rate: l.taxRate.toFixed(4) } : {}),
           })),
         }),
       },

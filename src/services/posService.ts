@@ -202,11 +202,28 @@ export class PosService {
      */
     const tendered = Number(payload.totalAmount).toFixed(2);
 
+    /**
+     * One key for this CHECKOUT, not one per HTTP attempt.
+     *
+     * It used to be minted inside `post()`, so every attempt carried a
+     * different key and the server's at-most-once guarantee was inert: a
+     * double-tap on PAY, a retry after a timeout, or a re-mounted panel each
+     * rang the sale again, and the second one is a real duplicate — a second
+     * invoice, a second stock movement, a second row in the drawer.
+     *
+     * `checkoutKey` is handed in by the till and survives every attempt for
+     * the same cart; it is only replaced once a sale comes back. Without one
+     * a key is derived here, which still covers the two attempts this method
+     * makes on its own.
+     */
+    const key =
+      payload.idempotencyKey ||
+      `pos-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
     const post = (amount: string) =>
       apiFetch<any>("/sales/", {
         method: "POST",
-        // One key per attempt: a retry after a timeout must not ring twice.
-        idempotencyKey: `pos-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        idempotencyKey: key,
         body: buildBody(amount),
       });
 
@@ -282,7 +299,17 @@ export class PosService {
         error.code === "PAYMENT_EXCEEDS_TOTAL" &&
         detail?.grand_total
       ) {
-        sale = await post(Number(detail.grand_total).toFixed(2));
+        /**
+         * A different body under the same key is a 409 by design, so the
+         * re-priced attempt gets its own key. Safe: the first attempt was
+         * refused with a 400 before anything was written, so there is no sale
+         * for this one to duplicate.
+         */
+        sale = await apiFetch<any>("/sales/", {
+          method: "POST",
+          idempotencyKey: `${key}-repriced`,
+          body: buildBody(Number(detail.grand_total).toFixed(2)),
+        });
       } else {
         throw error;
       }

@@ -12,6 +12,7 @@ export interface CatalogOption {
     name, so it has to be able to tell whether the shop already has a row for
     what was typed. */
 export interface TaxOption extends CatalogOption {
+  /** A FRACTION, as the API stores it: 0.15 is 15%. */
   rate: number;
 }
 
@@ -133,16 +134,24 @@ export class InventoryService {
    * `Product.tax` is a foreign key: a rate typed into a form has nowhere to go
    * unless a row carries it. Matching first means typing 15 twice does not
    * leave a shop with two rows both called 15%.
+   *
+   * ⚠ `percent` is what the person typed. `Tax.rate` is a FRACTION — 15% is
+   * 0.15 — and this used to post the percentage straight through. A shop that
+   * typed 5 got a tax row of 5.0000, which is FIVE HUNDRED PER CENT, and every
+   * sale of a product carrying it would have charged a hundred times the tax
+   * intended. Two such rows were found in a live database. The API now refuses
+   * anything above 1; this is the side that has to send the right number.
    */
-  static async resolveTax(rate: number, existing: readonly TaxOption[]): Promise<string> {
-    const match = existing.find((t) => Math.abs(t.rate - rate) < 0.0001);
+  static async resolveTax(percent: number, existing: readonly TaxOption[]): Promise<string> {
+    const fraction = percent / 100;
+    const match = existing.find((t) => Math.abs(t.rate - fraction) < 0.000001);
     if (match) return match.id;
 
     const created = await apiFetch<any>("/taxes/", {
       method: "POST",
-      // Named after the rate, because that is the only thing the shop told us
-      // about it and a row called "Tax 3" helps nobody read a product later.
-      body: JSON.stringify({ name: `${rate}%`, rate }),
+      // Named after the PERCENTAGE, because that is what a shopkeeper reads;
+      // stored as the fraction, because that is what the engine prices with.
+      body: JSON.stringify({ name: `${percent}%`, rate: fraction.toFixed(4) }),
     });
     return String(created?.id ?? "");
   }
