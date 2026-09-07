@@ -60,15 +60,15 @@ export default function AddCustomerPage() {
       </div>
 
       {/* Centered Form Container */}
-      <div className="mx-auto w-full max-w-[560px] flex flex-col gap-5 pt-2">
+      <div className="mx-auto w-full max-w-[720px] flex flex-col gap-5 pt-2">
         <form onSubmit={handleSubmit} className="flex flex-col gap-5">
           {/* Card Form Box */}
           <div className="bg-white rounded-2xl border border-gray-200/90 shadow-[0_2px_12px_rgba(0,0,0,0.03)] overflow-hidden">
             {/* Header */}
-            <div className="py-3 px-4 text-center border-b border-gray-100 bg-white">
-              <h3 className="text-xs sm:text-sm font-semibold text-gray-800">
+            <div className="flex h-[60px] items-center justify-center border-b border-gray-100 bg-white px-[16px]">
+              <h1 className="text-[20px] leading-[28px] font-semibold tracking-[-0.4px] text-[#1e1e1e]">
                 Add New Customer
-              </h3>
+              </h1>
             </div>
 
             {/* Form Fields */}

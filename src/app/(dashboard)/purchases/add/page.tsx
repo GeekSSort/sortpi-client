@@ -303,6 +303,23 @@ export default function AddPurchasePage() {
 
     setSaving(true);
     setError(null);
+
+    /**
+     * Which step got there, so a failure can say what DID happen.
+     *
+     * Saving with an advance payment is three requests — create, confirm, pay —
+     * and one `catch` reported all three as "the order could not be saved". If
+     * the payment failed, the order existed and the supplier was already owed
+     * for it; the obvious response to that message is to fill the form in
+     * again, and that raises a SECOND order and a SECOND payable to the same
+     * supplier for the same goods.
+     *
+     * They cannot be made one transaction from here — three endpoints, three
+     * commits — so the honest thing is to report the boundary crossed.
+     */
+    let stage: "drafting" | "confirming" | "paying" = "drafting";
+    let reference = "";
+
     try {
       const created = await PurchaseService.createPurchase({
         referenceNo: purchaseRef(),
@@ -319,12 +336,16 @@ export default function AddPurchasePage() {
         })),
       });
 
+      reference = created.purchaseId;
+
       if (advance > 0) {
         // Confirm FIRST. Nothing is owed on a draft, so the API refuses a
         // payment against one — `PURCHASE_NOT_CONFIRMED`. Handing a supplier
         // money when you place the order is placing the order, so this is the
         // honest reading of what the person just did rather than a workaround.
+        stage = "confirming";
         await PurchaseService.confirm(created.id);
+        stage = "paying";
         await PurchaseService.recordPayment(created.id, advance, paymentMethod, "", purchaseDate);
         setSaved(
           `${created.purchaseId} confirmed with ${formatMoney(advance)} paid — receive the goods when they arrive`
@@ -337,7 +358,26 @@ export default function AddPurchasePage() {
     } catch (err) {
       // The server names the real problem — a duplicate reference, a supplier
       // that is not this organization's — and that is more use than "try again".
-      setError(err instanceof Error && err.message ? err.message : "The order could not be saved.");
+      const said = err instanceof Error && err.message ? err.message : "";
+
+      if (stage === "drafting") {
+        setError(said || "The order could not be saved.");
+      } else {
+        // The order EXISTS. Say so first and say it plainly, because the next
+        // thing this person does is decide whether to fill the form in again.
+        const owed =
+          stage === "confirming"
+            ? `${reference} was saved as a draft, but confirming it failed, so the supplier is not owed for it yet.`
+            : `${reference} was saved and confirmed — the supplier is owed for it — but the ${formatMoney(
+                advance
+              )} payment was not recorded.`;
+        setError(
+          `${owed}${said ? ` ${said}` : ""} Do not enter this order again: finish it from the purchases list.`
+        );
+        // The list is where they finish it, and it has to be current when they
+        // get there.
+        invalidate("purchases", "suppliers", "dashboard");
+      }
     } finally {
       setSaving(false);
     }
@@ -354,10 +394,10 @@ export default function AddPurchasePage() {
       >
         <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
           <RefreshBar active={suppliers.fetching || warehouseQuery.fetching} />
-          <div className="flex h-[48px] items-center justify-center px-[16px]">
-            <p className="text-[16px] leading-[1.5] font-medium tracking-[-0.32px] text-[#1e1e1e]">
+          <div className="flex h-[60px] items-center justify-center px-[16px]">
+            <h1 className="text-[20px] leading-[28px] font-semibold tracking-[-0.4px] text-[#1e1e1e]">
               New Purchase Order
-            </p>
+            </h1>
           </div>
 
           <div className="flex flex-col gap-[14px] px-[16px] pt-[8px] pb-[16px]">

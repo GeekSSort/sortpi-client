@@ -154,9 +154,18 @@ export class TransferService {
       `/inventory/transfers/${id}/receive/`,
       {
         method: "POST",
-        body: JSON.stringify({
-          lines: (lines || []).map((l) => ({ item: l.itemId, quantity: l.quantity })),
-        }),
+        // `lines` is OMITTED when there are none, rather than sent empty. The
+        // API reads the difference: a list means "this is what arrived, and a
+        // line I did not name got nothing", while leaving it out means
+        // everything still outstanding. Sending `[]` for "all of it" only
+        // worked because the API used to default an unnamed line to the full
+        // dispatched quantity — the defect that made a short receipt silently
+        // receive every other line.
+        body: JSON.stringify(
+          lines && lines.length
+            ? { lines: lines.map((l) => ({ item: l.itemId, quantity: l.quantity })) }
+            : {}
+        ),
       },
       toTransferRecord
     );

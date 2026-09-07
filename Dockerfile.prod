@@ -2,8 +2,25 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-ARG NEXT_PUBLIC_API_URL=http://13.140.141.131:4500/api/v1
+# NEXT_PUBLIC_* values are INLINED into the bundle at build time, which is why
+# they are build args and not runtime environment.
+#
+# The API URL defaults to EMPTY on purpose. One image serves every tenant, so a
+# baked-in address pins the whole platform to one company — it used to carry a
+# hard-coded IP, which meant every shop's till called that one server whatever
+# subdomain it was opened on. Left empty, the client reads the API off
+# `window.location`, so `nusrat.sortpi.com` calls `nusrat.sortpi.com`.
+#
+# The port is empty for the same reason: 8000 is a development convenience, and
+# behind nginx the API answers on the page's own port.
+ARG NEXT_PUBLIC_API_URL=""
+ARG NEXT_PUBLIC_API_PORT=""
+ARG NEXT_PUBLIC_PLATFORM_BASE_DOMAIN=""
+ARG NEXT_PUBLIC_PLATFORM_HOSTS=""
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_PORT=$NEXT_PUBLIC_API_PORT
+ENV NEXT_PUBLIC_PLATFORM_BASE_DOMAIN=$NEXT_PUBLIC_PLATFORM_BASE_DOMAIN
+ENV NEXT_PUBLIC_PLATFORM_HOSTS=$NEXT_PUBLIC_PLATFORM_HOSTS
 
 COPY package.json package-lock.json ./
 RUN npm ci

@@ -12,11 +12,13 @@ import {
   CaretIcon,
   CustomersIcon,
   DashboardIcon,
+  DiscountIcon,
   HrmIcon,
   InventoryIcon,
   LogOutIcon,
   PosIcon,
   PurchasesIcon,
+  ReportsIcon,
   RolesIcon,
   SalesPosIcon,
   SettingsIcon,
@@ -47,16 +49,20 @@ const NAV: NavItem[] = [
     icon: DashboardIcon,
     match: (p) => p === "/" || p === "/dashboard",
   },
-  // POS is its own environment, not a page inside Sales: it takes the whole
-  // window and has its own menu, so it sits at the top level here.
+  // The till is a page here, not an environment to switch into. Anyone
+  // reading this menu has `dashboard.view`, so the back office is their home
+  // and /pos would take the whole window away from them. A cashier never sees
+  // this menu — they get PosRail, in the till's own shell.
   {
     name: "POS",
     href: "/pos",
     icon: PosIcon,
-    match: (p) => p.startsWith("/pos"),
+    // The till only. Everything else under /pos has a back-office address of
+    // its own, and the guard sends this reader to it.
+    match: (p) => p === "/pos",
   },
   {
-    name: "Sales",
+    name: "Sales & Return",
     href: "/sales-pos/sales",
     icon: SalesPosIcon,
     match: (p) => p.startsWith("/sales-pos"),
@@ -108,6 +114,8 @@ const NAV: NavItem[] = [
       },
     ],
   },
+  { name: "Reports", href: "/reports", icon: ReportsIcon, match: (p) => p.startsWith("/reports") },
+  { name: "Discount", href: "/discount", icon: DiscountIcon, match: (p) => p.startsWith("/discount") },
   { name: "HRM", href: "/hrm", icon: HrmIcon, match: (p) => p.startsWith("/hrm") },
   {
     name: "Roles & Permissions",

@@ -9,10 +9,10 @@ import RowActionMenu from "@/components/shared/RowActionMenu";
 import TablePagination from "@/components/shared/TablePagination";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Modal, { MODAL_GHOST } from "@/components/shared/Modal";
-import { DashboardService, PosService, CustomerService } from "@/services";
+import { DashboardService, CustomerService, topSellerTiles } from "@/services";
 import { tokenStore } from "@/services/apiClient";
 import { useQuery, queryKey } from "@/lib/query/useQuery";
-import { resolveRange, type RangeOption } from "@/lib/range";
+import { resolveRange, previousRange, previousLabel, type RangeOption } from "@/lib/range";
 import {
   StatCardsSkeleton,
   ChartSkeleton,
@@ -47,51 +47,90 @@ const CELL = "flex min-w-0 items-center p-[12px]";
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e]";
 const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
 
-/** The four branch figures the design asks for, taken from dashboard data. */
-function branchMetrics(d: DashboardResponse): MetricCardData[] {
-  const revenue = d.profitLoss.totalRevenue;
-  const expenses = d.profitLoss.totalExpenses;
-  const taka = (n: number) => `৳ ${Math.round(n).toLocaleString("en-IN")}`;
-  const sales = d.salesSummary.reduce((s, p) => s + p.sales, 0);
+const taka = (n: number) => `৳ ${Math.round(n).toLocaleString("en-IN")}`;
 
-  return [
+/**
+ * Movement between two windows of the same length.
+ *
+ * The four percentages on this page were literals — 18.6%, 15.3%, 16.7%, 8.4%
+ * — printed under an arrow that always pointed up, whatever the shop had done.
+ * A figure with no measurement behind it is worse than no figure: it reads
+ * exactly like one that was measured.
+ *
+ * Growth from nothing has no percentage. "New" says that; 100% would claim a
+ * doubling of zero.
+ */
+function movement(now: number, before: number): { trend: string; trendType: "up" | "down" } {
+  if (before === 0) {
+    return { trend: now > 0 ? "New" : "—", trendType: now < 0 ? "down" : "up" };
+  }
+  const change = ((now - before) / Math.abs(before)) * 100;
+  return {
+    trend: `${Math.abs(change).toFixed(1)}%`,
+    trendType: change < 0 ? "down" : "up",
+  };
+}
+
+/** Units sold across a window, which is what the Sales card counts. */
+function unitsSold(d: DashboardResponse): number {
+  return d.salesSummary.reduce((total, point) => total + point.sales, 0);
+}
+
+/**
+ * The four figures at the top — 247:8246.
+ *
+ * `previous` is the window of the same length immediately before this one, so
+ * every arrow on this page is a comparison the reader could repeat by changing
+ * the range picker.
+ */
+function branchMetrics(
+  d: DashboardResponse,
+  previous: DashboardResponse | undefined,
+  vsText: string
+): MetricCardData[] {
+  const cards = [
     {
-      id: "branch-revenue",
-      title: "BRANCH REVENUE",
-      value: taka(revenue),
-      trend: "18.6%",
-      trendType: "up",
-      vsText: "vs. last month",
-      icon: "revenue",
+      id: "today-revenue",
+      title: "Today Revenue",
+      icon: "revenue" as const,
+      now: d.profitLoss.totalRevenue,
+      then: previous?.profitLoss.totalRevenue,
     },
     {
-      id: "branch-sales",
-      title: "BRANCH SALES",
-      value: taka(sales),
-      trend: "15.3%",
-      trendType: "up",
-      vsText: "vs yesterday",
-      icon: "sales",
+      id: "today-sales",
+      title: "Today Sales",
+      icon: "sales" as const,
+      now: unitsSold(d),
+      then: previous ? unitsSold(previous) : undefined,
     },
     {
-      id: "branch-profit",
-      title: "BRANCH PROFIT",
-      value: taka(d.profitLoss.netProfit),
-      trend: "16.7%",
-      trendType: "up",
-      vsText: "vs last month",
-      icon: "orders",
+      id: "today-profit",
+      title: "Today Profit",
+      icon: "orders" as const,
+      now: d.profitLoss.netProfit,
+      then: previous?.profitLoss.netProfit,
     },
     {
-      id: "branch-expenses",
-      title: "BRANCH EXPENSES",
-      value: taka(expenses),
-      trend: "8.4%",
-      trendType: "up",
-      vsText: "vs. last month",
-      icon: "customers",
+      id: "today-expenses",
+      title: "Today Expenses",
+      icon: "customers" as const,
+      now: d.profitLoss.totalExpenses,
+      then: previous?.profitLoss.totalExpenses,
     },
   ];
+
+  return cards.map((card) => ({
+    id: card.id,
+    title: card.title,
+    value: taka(card.now),
+    // Undefined while the comparison window is still in flight: an em dash is
+    // honest about not knowing yet, where "0.0%" would be a measurement.
+    ...(card.then === undefined
+      ? { trend: "—", trendType: "up" as const }
+      : movement(card.now, card.then)),
+    vsText,
+    icon: card.icon,
+  }));
 }
 
 function SearchIcon() {
@@ -130,6 +169,8 @@ export default function PosReportsPage() {
   const [pnlRange, setPnlRange] = useState<RangeOption>("This Week");
   const salesWindow = useMemo(() => resolveRange(salesRange, today), [salesRange, today]);
   const pnlWindow = useMemo(() => resolveRange(pnlRange, today), [pnlRange, today]);
+  // What the arrows on the four figures are measured against.
+  const priorWindow = useMemo(() => previousRange(salesWindow), [salesWindow]);
 
   const {
     data,
@@ -146,6 +187,15 @@ export default function PosReportsPage() {
     { staleMs: 30_000 }
   );
 
+  // The same bundle for the window before this one. It shares the dashboard's
+  // cache key, so moving the picker back and forth costs nothing after the
+  // first look, and a failure here only costs the arrows — never the figures.
+  const { data: priorData } = useQuery(
+    queryKey("dashboard", { branch: branchId, ...priorWindow }),
+    () => DashboardService.getDashboardData(branchId, priorWindow),
+    { staleMs: 30_000 }
+  );
+
   // The Profit & Loss card asks for its own window, so its picker works here
   // exactly as it does on the back-office dashboard.
   const {
@@ -159,16 +209,19 @@ export default function PosReportsPage() {
     { staleMs: 30_000 }
   );
 
+  // Ten tiles, so the ten best sellers in the window on screen — from
+  // /reports/sales/by-product/, joined to the catalogue for the photograph,
+  // the shelf price and what is left on it.
   const {
     data: products,
     loading: productsLoading,
     error: productsError,
     refetch: refetchProducts,
-    // Ten tiles, so ten products: the wall's query is now one page per request
-    // and this one asks for exactly the page it shows.
-  } = useQuery(queryKey("pos-products", { page: 1, limit: 10 }), () =>
-    PosService.getProducts({ page: 1, limit: 10 })
-  , { staleMs: 60_000 });
+  } = useQuery(
+    queryKey("top-sellers", { branch: branchId, ...salesWindow }),
+    () => topSellerTiles({ branchId, ...salesWindow }, 10),
+    { staleMs: 60_000 }
+  );
 
   // The search is part of the key, so a slow answer for "ra" can no longer
   // land after "rahman" — the two are separate cache entries.
@@ -183,11 +236,13 @@ export default function PosReportsPage() {
   );
   const customers = useMemo(() => customerPage?.data ?? [], [customerPage]);
 
-  const metrics = useMemo(() => (data ? branchMetrics(data) : []), [data]);
+  const metrics = useMemo(
+    () => (data ? branchMetrics(data, priorData, previousLabel(salesRange)) : []),
+    [data, priorData, salesRange]
+  );
 
-  // The design shows two rows of five. Stock movement is not on the catalogue
-  // response, so the order is the catalogue's own.
-  const topSelling = useMemo(() => products?.data ?? [], [products]);
+  // Two rows of five, best seller first.
+  const topSelling = useMemo(() => products ?? [], [products]);
 
   const totalPages = Math.max(1, Math.ceil(customers.length / pageSize));
   const current = Math.min(page, totalPages);
@@ -283,7 +338,7 @@ export default function PosReportsPage() {
         <div className="grid grid-cols-[repeat(auto-fill,minmax(212px,1fr))] gap-[14px]">
           {topSelling.map((p) => (
             <div
-              key={p.id}
+              key={p.variantId || p.sku}
               className="flex items-center gap-[12px] overflow-clip rounded-[10px] bg-white p-[10px] shadow-[inset_0_0_0_1px_#eaeaea]"
             >
               <span className="relative flex size-[48px] shrink-0 items-center justify-center overflow-hidden rounded-[8px] bg-[#fafafa] shadow-[inset_0_0_0_0.3px_#eaeaea]">

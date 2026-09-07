@@ -28,8 +28,14 @@ function RailArrow({ dir }: { dir: "left" | "right" }) {
  * The strip still scrolls — a trackpad and a touch drag both work — but a till
  * is a mouse and a finger on a fixed screen, and neither has a comfortable way
  * to reach a 4px horizontal scrollbar. Each arrow moves the rail by most of its
- * own width and disappears at the end it cannot go past, so the control says
- * whether there is anything more to see.
+ * own width.
+ *
+ * Both arrows are ALWAYS on screen, and go disabled at the end they cannot pass
+ * rather than vanishing. An arrow that appears and disappears is a control a
+ * cashier has to find twice: it is absent exactly when the rail is at rest,
+ * which is when somebody first looks for it, and its arrival shifts the chips
+ * under a finger already on the way down. Held and greyed, it is in the same
+ * place every time and still says whether there is more to see.
  */
 export default function ChipScroller({
   children,
@@ -72,18 +78,22 @@ export default function ChipScroller({
   };
 
   const ARROW =
-    "flex size-[34px] shrink-0 cursor-pointer items-center justify-center rounded-[9px] bg-white text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:text-[#1e1e1e]";
+    "flex size-[34px] shrink-0 items-center justify-center rounded-[9px] bg-white text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors " +
+    // Disabled, not hidden: no pointer, no hover, and faint enough to read as
+    // unavailable at a glance across a counter.
+    "enabled:cursor-pointer enabled:hover:text-[#1e1e1e] disabled:cursor-default disabled:text-[#d4d4d4] disabled:opacity-70";
 
   return (
     <div className={`flex items-center gap-[8px] ${className || "w-full"}`}>
-      {edges.start ? (
-        <button type="button" aria-label="Scroll categories left" onClick={() => nudge(-1)} className={ARROW}>
-          <RailArrow dir="left" />
-        </button>
-      ) : (
-        // Held open so the chips do not jump sideways as the arrows appear.
-        <span className="size-[34px] shrink-0" aria-hidden />
-      )}
+      <button
+        type="button"
+        aria-label="Scroll categories left"
+        onClick={() => nudge(-1)}
+        disabled={!edges.start}
+        className={ARROW}
+      >
+        <RailArrow dir="left" />
+      </button>
 
       <div
         ref={rail}
@@ -93,13 +103,15 @@ export default function ChipScroller({
         {children}
       </div>
 
-      {edges.end ? (
-        <button type="button" aria-label="Scroll categories right" onClick={() => nudge(1)} className={ARROW}>
-          <RailArrow dir="right" />
-        </button>
-      ) : (
-        <span className="size-[34px] shrink-0" aria-hidden />
-      )}
+      <button
+        type="button"
+        aria-label="Scroll categories right"
+        onClick={() => nudge(1)}
+        disabled={!edges.end}
+        className={ARROW}
+      >
+        <RailArrow dir="right" />
+      </button>
     </div>
   );
 }

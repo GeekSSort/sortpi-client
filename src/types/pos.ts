@@ -1,5 +1,11 @@
 export interface ProductItem {
+  /** The VARIANT id. Everything at the till is keyed by it — stock, the cart,
+      the sale line — because a variant is what is actually sold. */
   id: string;
+  /** The product it belongs to. Needed to address `/products/{id}/...`, which
+      is where a discount is set: the catalogue is addressed by product, the
+      till by variant, and one screen has to know both. */
+  productId: string;
   name: string;
   sku: string;
   /** The primary barcode on the default variant, "" when the product has
@@ -77,4 +83,22 @@ export interface OrderResponse {
   invoiceNo: string;
   message: string;
   timestamp: string;
+  /**
+   * What the SERVER priced this sale at, in its own words.
+   *
+   * The server is the pricing authority — it re-prices every line from
+   * `PriceService` and works the totals out itself — and when its figure
+   * differs from the till's, the till pays the server's. The receipt was still
+   * built from the till's own arithmetic, so a customer could be handed a slip
+   * whose subtotal, discount and total were not the ones in the books. These
+   * are the ones to print.
+   */
+  totals?: {
+    subtotal: number;
+    discount: number;
+    tax: number;
+    grandTotal: number;
+    paid: number;
+    due: number;
+  };
 }

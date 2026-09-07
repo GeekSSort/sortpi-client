@@ -1,11 +1,13 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { InventoryProduct } from "@/types/inventory";
 import { InventoryService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
+import Barcode from "@/components/shared/Barcode";
+import { printBarcodeLabels } from "@/lib/printLabels";
 import TablePagination from "@/components/shared/TablePagination";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import CatalogManagerModal from "@/components/modules/dashboard/CatalogManagerModal";
@@ -15,7 +17,7 @@ import { useQuery, queryKey, setQueryData, invalidate } from "@/lib/query/useQue
 import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/QueryBoundary";
 import ProductImage from "@/components/shared/ProductImage";
 import { useProductDiscounts } from "@/lib/usePosDiscounts";
-import { priceAfter } from "@/lib/posDiscounts";
+import { priceAfter } from "@/services/discountService";
 import { formatMoney } from "@/lib/format";
 
 /**
@@ -106,6 +108,27 @@ export default function InventoryPage() {
   /** Which lookup list the manage modal is showing, if any. */
   const [managing, setManaging] = useState<CatalogKind | null>(null);
   const [detailOf, setDetailOf] = useState<InventoryProduct | null>(null);
+  /** How many stickers to print. A case of 24 wants 24, and printing them one
+      at a time is why people give up and write the price on with a marker. */
+  const [copies, setCopies] = useState(1);
+  /** The rendered label, handed to the print window as finished markup so what
+      prints is exactly what was checked on screen. */
+  const labelRef = useRef<HTMLDivElement>(null);
+
+  const printLabel = (product: InventoryProduct) => {
+    const svg = labelRef.current?.querySelector("svg")?.outerHTML;
+    if (!svg) return;
+    printBarcodeLabels(
+      [
+        {
+          name: product.name,
+          price: product.price > 0 ? product.priceFormatted : undefined,
+          svg,
+        },
+      ],
+      copies
+    );
+  };
   const [deleteOf, setDeleteOf] = useState<InventoryProduct | null>(null);
   const [editOf, setEditOf] = useState<InventoryProduct | null>(null);
   /** `brandId`, not a brand name: the API takes an id, and a shop's brand list
@@ -242,7 +265,7 @@ export default function InventoryPage() {
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Brand</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Price</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Stock</span></div>
-                <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>SKU</span></div>
+                <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Barcode</span></div>
                 <div className={`${CELL} h-[40px] justify-center bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Status</span></div>
                 <div className={`${CELL} h-[40px] justify-center bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Action</span></div>
               </div>
@@ -263,9 +286,23 @@ export default function InventoryPage() {
                   />
                 )}
                 {rows.map((r, i) => (
+                  // The whole row opens the product. A row that only responds
+                  // to a 24px menu at its right edge is a row people click and
+                  // click again; the menu still has its own actions, and stops
+                  // its own clicks from reaching here.
                   <div
                     key={r.id}
-                    className={`grid ${GRID} h-[54px] items-center ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setDetailOf(r)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setDetailOf(r);
+                      }
+                    }}
+                    aria-label={`Open ${r.name}`}
+                    className={`grid ${GRID} h-[54px] cursor-pointer items-center transition-colors hover:bg-[#fafafa] focus-visible:bg-[#fafafa] focus-visible:outline-none ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}
                   >
                     <div className={`${CELL} justify-center`}><span className={TEXT}>{r.index}</span></div>
                     {/* 28px thumbnail, 8px from the name — 57:12649 */}
@@ -296,11 +333,26 @@ export default function InventoryPage() {
                       })()}
                     </div>
                     <div className={CELL}><span className={`${TEXT} truncate`}>{r.stock}</span></div>
-                    <div className={CELL}><span className={`${TEXT} truncate`}>{r.sku}</span></div>
+                    <div className={CELL}>
+                      {r.barcode ? (
+                        <span className="flex min-w-0 flex-col gap-[2px]">
+                          <span className="truncate font-mono text-[13px] leading-[16px] tracking-[0.02em] text-[#1e1e1e]">
+                            {r.barcode}
+                          </span>
+                          {/* Small, and without the digits repeated under it —
+                              the number is already on the line above. It is
+                              here so a shelf label can be recognised against
+                              the row it came from. */}
+                          <Barcode value={r.barcode} height={18} moduleWidth={1} showText={false} />
+                        </span>
+                      ) : (
+                        <span className="text-[12px] text-[#a3a3a3]">None</span>
+                      )}
+                    </div>
                     <div className={`${CELL} justify-center`}>
                       <StatusPill label={r.status} tone={STATUS_TONE[r.status] ?? "slate"} />
                     </div>
-                    <div className={`${CELL} justify-center`}>
+                    <div className={`${CELL} justify-center`} onClick={(e) => e.stopPropagation()}>
                       <RowActionMenu
                         label={`Actions for ${r.sku}`}
                         actions={[
@@ -321,7 +373,20 @@ export default function InventoryPage() {
         {/* Stacked cards below md */}
         <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
           {rows.map((r) => (
-            <div key={r.id} className="rounded-[10px] border border-solid border-[#eaeaea] p-[12px]">
+            <div
+              key={r.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => setDetailOf(r)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setDetailOf(r);
+                }
+              }}
+              aria-label={`Open ${r.name}`}
+              className="cursor-pointer rounded-[10px] border border-solid border-[#eaeaea] p-[12px] transition-colors hover:bg-[#fafafa] focus-visible:bg-[#fafafa] focus-visible:outline-none"
+            >
               <div className="flex items-start justify-between gap-[10px]">
                 <div className="flex min-w-0 items-center gap-[8px]">
                   <span className="relative size-[28px] shrink-0 overflow-hidden rounded-[6px]">
@@ -402,12 +467,53 @@ export default function InventoryPage() {
                 <p className="truncate text-[13px] text-[#525252]">{detailOf.sku}</p>
               </div>
             </div>
+            {/* The label, as it will print. Shown at label size rather than
+                thumbnail size so it can be held against the packet and checked
+                — a shelf label with the wrong code is a wrong price at the
+                till, and the only moment to catch it is before printing. */}
+            <div className="flex flex-col items-center gap-[10px] rounded-[10px] bg-white p-[14px] shadow-[inset_0_0_0_1px_#eaeaea]">
+              {detailOf.barcode ? (
+                <>
+                  <div ref={labelRef}>
+                    <Barcode value={detailOf.barcode} height={56} moduleWidth={2} />
+                  </div>
+                  <div className="flex flex-wrap items-center justify-center gap-[8px]">
+                    <label className="flex items-center gap-[6px] text-[13px] text-[#525252]">
+                      Copies
+                      <input
+                        type="number"
+                        min={1}
+                        max={200}
+                        value={copies}
+                        onChange={(e) => setCopies(Math.max(1, Math.min(200, Number(e.target.value) || 1)))}
+                        className="h-[36px] w-[70px] rounded-[8px] bg-white px-[10px] text-center text-[14px] tabular-nums text-[#1e1e1e] outline-none shadow-[inset_0_0_0_1px_#eaeaea]"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => printLabel(detailOf)}
+                      className="flex h-[36px] cursor-pointer items-center gap-[6px] rounded-[8px] bg-white px-[14px] text-[13px] font-medium text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e]"
+                    >
+                      Print barcode
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <p className="text-[13px] text-[#525252]">
+                  This product has no barcode yet. Add one under Edit product and it can be
+                  scanned and printed.
+                </p>
+              )}
+            </div>
+
             <dl className="flex flex-col gap-[12px]">
               {[
                 ["Category", detailOf.category],
                 ["Brand", detailOf.brand],
                 ["Price", detailOf.priceFormatted],
                 ["Stock", String(detailOf.stock)],
+                ["Barcode", detailOf.barcode || "None"],
+                ["SKU", detailOf.sku],
               ].map(([k, v]) => (
                 <div key={k} className="flex items-center justify-between gap-[16px]">
                   <dt className="text-[14px] text-[#525252]">{k}</dt>

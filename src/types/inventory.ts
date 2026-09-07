@@ -12,6 +12,9 @@ export interface InventoryProduct {
   priceFormatted: string;
   stock: number;
   sku: string;
+  /** The variant's primary barcode, "" when it has none. What the shelf label
+      prints and what the till scans. */
+  barcode: string;
   status: "In Stock" | "Low Stock" | "Out of Stock";
 }
 

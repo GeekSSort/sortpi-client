@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ProductItem } from "@/types/pos";
 import ProductPeek, { PeekAnchor } from "./ProductPeek";
 import { PosService } from "@/services";
@@ -11,7 +11,17 @@ import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/Query
 import ProductImage from "@/components/shared/ProductImage";
 import ChipScroller from "@/components/shared/ChipScroller";
 import { useProductDiscounts } from "@/lib/usePosDiscounts";
-import { priceAfter } from "@/lib/posDiscounts";
+import ScannerPanel, { ScannerPill } from "./ScannerStatus";
+import ScanResult, { ScanOutcome } from "./ScanResult";
+import OutOfStockDialog from "./OutOfStockDialog";
+import { beep, reportScanResult, useBarcodeScanner } from "./useBarcodeScanner";
+import {
+  connectSerialScanner,
+  initSerialScanner,
+  serialSupported,
+  useSerialScanner,
+} from "./useSerialScanner";
+import { priceAfter } from "@/services/discountService";
 import { formatMoney } from "@/lib/format";
 
 /**
@@ -85,13 +95,16 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
   // there is no device to open and no permission to ask for.
   const searchRef = useRef<HTMLInputElement>(null);
   const queryRef = useRef("");
-  const scannerBufferRef = useRef("");
-  const scannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const inputLastKeyAtRef = useRef(0);
-  const inputRapidCountRef = useRef(0);
   const submitScanRef = useRef<(scannedCode?: string) => Promise<void>>(async () => {});
   const [scanning, setScanning] = useState(false);
-  const [scanNote, setScanNote] = useState<string | null>(null);
+  /** What became of the last scan. Rendered by ScanResult, which builds the
+      "added" and "not in the catalogue" cases differently on purpose. */
+  const [scanNote, setScanNote] = useState<ScanOutcome | null>(null);
+  /** A scanned item the shelf does not have. Held out of the cart until the
+      cashier has seen why. */
+  const [outOfStock, setOutOfStock] = useState<ProductItem | null>(null);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const serial = useSerialScanner();
 
   // What the Discounts screen set. Read here so the wall shows what the
   // customer will actually be charged — a rate that only appeared on the
@@ -161,19 +174,55 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
    * and answers on an exact barcode. Only if that finds nothing does the box
    * fall back to being a search box.
    */
+  const clearScanNote = useCallback(() => setScanNote(null), []);
+
+  /**
+   * Put the cursor back in the search box after a scan — unless a dialog has it.
+   *
+   * A cashier never reaches for the mouse between two items, so the next scan
+   * has to land somewhere sensible. But the scanner panel and the customer
+   * dialog have fields of their own, and yanking focus out of one mid-sentence
+   * is worse than the problem this solves.
+   */
+  const refocusSearch = () => {
+    if (document.activeElement?.closest('[role="dialog"]')) return;
+    searchRef.current?.focus();
+  };
+
   const submitScan = async (scannedCode?: string) => {
     const code = (scannedCode ?? queryRef.current).trim();
-    if (!code || scanning) return;
+    // NOT gated on `scanning`. A cashier scanning three items in two seconds
+    // used to have the second and third dropped in silence while the first was
+    // still being looked up — the queue kept moving and the customer paid for
+    // one item. Each lookup is independent, so they can overlap.
+    if (!code) return;
+
+    /** Rings the product up, unless the shelf is empty. */
+    const ring = (product: ProductItem) => {
+      queryRef.current = "";
+      setQuery("");
+      if (product.stock <= 0) {
+        // Out of stock is not a scanning failure, and it must not reach the
+        // cart: the server refuses the sale at checkout, and finding that out
+        // at the payment screen means unpicking a basket in front of a queue.
+        setOutOfStock(product);
+        setScanNote(null);
+        reportScanResult(false, `${product.name} is out of stock`);
+        beep(false);
+        return;
+      }
+      onSelectProduct?.(product);
+      setScanNote({ kind: "added", text: `Added ${product.name}` });
+      reportScanResult(true, `Added ${product.name}`);
+      beep(true);
+    };
 
     const onTheWall = shown.find(
       (p) => p.barcode === code || p.sku.toLowerCase() === code.toLowerCase()
     );
     if (onTheWall) {
-      onSelectProduct?.(onTheWall);
-      queryRef.current = "";
-      setQuery("");
-      setScanNote(`Added ${onTheWall.name}`);
-      searchRef.current?.focus();
+      ring(onTheWall);
+      refocusSearch();
       return;
     }
 
@@ -182,139 +231,161 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
     try {
       const found = await PosService.lookupBarcode(code);
       if (found) {
-        onSelectProduct?.(found);
-        queryRef.current = "";
-        setQuery("");
-        setScanNote(`Added ${found.name}`);
+        ring(found);
       } else {
         // Not an error: the cashier may be typing a name, and the list below
         // is already filtered by what they typed.
-        setScanNote(`No product carries the barcode ${code}.`);
+        setScanNote({ kind: "missing", code });
+        reportScanResult(false, `No product carries the barcode ${code}.`);
+        beep(false);
       }
     } catch (err) {
-      setScanNote(
-        err instanceof Error && err.message ? err.message : "That barcode could not be looked up."
-      );
+      const message =
+        err instanceof Error && err.message ? err.message : "That barcode could not be looked up.";
+      setScanNote({ kind: "error", text: message });
+      reportScanResult(false, message);
+      beep(false);
     } finally {
       setScanning(false);
-      // The next scan has to land somewhere, and a cashier never reaches for
-      // the mouse between two items.
-      searchRef.current?.focus();
+      refocusSearch();
     }
   };
   useEffect(() => {
     submitScanRef.current = submitScan;
   });
 
-  // USB scanners behave like keyboards, but some models are configured without
-  // an Enter suffix. Capture only rapid keystrokes outside text fields and
-  // submit the barcode after the scanner pauses.
-  useEffect(() => {
-    const onScannerKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (
-        target?.tagName === "INPUT" ||
-        target?.tagName === "TEXTAREA" ||
-        target?.isContentEditable
-      ) {
-        return;
-      }
+  /**
+   * One detector for the whole till, wherever the cursor is.
+   *
+   * This used to be two heuristics that did not agree: a global listener that
+   * gave up the moment focus was in ANY text field, and a rapid-keystroke guess
+   * inside the search box. So a scan landed in the cart's customer search — or
+   * in the discount box — as text, and the item was never rung up. See
+   * useBarcodeScanner.ts, which takes the burst back off whichever field caught
+   * it and works with any scanner in keyboard mode.
+   */
+  useBarcodeScanner((code) => void submitScanRef.current(code));
 
-      if (event.key === "Enter") {
-        const code = scannerBufferRef.current;
-        scannerBufferRef.current = "";
-        if (scannerTimerRef.current) clearTimeout(scannerTimerRef.current);
-        if (code.length >= 3) {
-          event.preventDefault();
-          void submitScanRef.current(code);
-        }
-        return;
-      }
-
-      if (event.key.length !== 1 || !/[0-9A-Za-z]/.test(event.key)) return;
-      scannerBufferRef.current += event.key;
-
-      if (scannerTimerRef.current) clearTimeout(scannerTimerRef.current);
-      if (scannerBufferRef.current.length >= 3) {
-        scannerTimerRef.current = setTimeout(() => {
-          const code = scannerBufferRef.current;
-          scannerBufferRef.current = "";
-          void submitScanRef.current(code);
-        }, 120);
-      }
-    };
-
-    window.addEventListener("keydown", onScannerKey, true);
-    return () => {
-      window.removeEventListener("keydown", onScannerKey, true);
-      if (scannerTimerRef.current) clearTimeout(scannerTimerRef.current);
-    };
-  }, []);
+  /**
+   * And the scanners that speak down a serial port instead of typing.
+   *
+   * Same destination, different road. A scanner in USB Virtual COM mode writes
+   * its bytes to a port and types nothing at all, so the reader above hears
+   * silence while the scanner beeps — the till looks broken and the hardware is
+   * fine. Reconnects on its own to a port the shop has already granted, so the
+   * click is one-time. See useSerialScanner.ts.
+   */
+  useEffect(() => initSerialScanner((code) => void submitScanRef.current(code)), []);
 
   return (
     <div className="relative flex h-full w-full flex-col">
       <RefreshBar active={fetching} />
-      {/* Search — 45:2172 */}
-      <div className="flex h-[44px] w-full shrink-0 items-center justify-between overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea]">
-        <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
-          <SearchIcon />
-          <input
-            ref={searchRef}
-            autoFocus
-            value={query}
-            onChange={(e) => {
-              queryRef.current = e.target.value;
-              setQuery(e.target.value);
-              setScanNote(null);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void submitScanRef.current();
+      {/* Search, and the scanner's state beside it — 45:2172.
+          The field is capped rather than run to the full width of the wall: a
+          barcode is at most a couple of dozen characters, and a search box
+          three feet wide is a lot of white space for a cashier's eye to cross
+          between the code and the products it filtered. What the width buys
+          instead is a place on the same line for the device state, at the same
+          height and radius, so the two read as one strip. */}
+      <div className="flex w-full shrink-0 items-center gap-[10px]">
+        <div className="flex h-[44px] min-w-0 max-w-[520px] flex-1 items-center overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea]">
+          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
+            <SearchIcon />
+            <input
+              ref={searchRef}
+              autoFocus
+              value={query}
+              onChange={(e) => {
+                queryRef.current = e.target.value;
+                setQuery(e.target.value);
+                clearScanNote();
+              }}
+              onKeyDown={(e) => {
+                // Enter on something TYPED. A scan never reaches here — the
+                // detector ends the burst and clears the box first — so this is
+                // the cashier keying a code in by hand, which has to work when a
+                // scanner dies mid-queue.
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void submitScanRef.current();
+                }
+              }}
+              disabled={scanning}
+              placeholder="Scan a barcode, or search by name or SKU..."
+              aria-label="Scan a barcode or search products"
+              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] font-normal tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252] disabled:opacity-60"
+            />
+          </div>
+        </div>
+
+        {/* Right-aligned, and all three of the same 44px and 10px radius as the
+            field, so the row reads as one strip rather than three controls that
+            happen to be adjacent. */}
+        <div className="ml-auto flex shrink-0 items-center gap-[8px]">
+          <ScannerPill onClick={() => setScannerOpen(true)} />
+
+          <button
+            type="button"
+            /**
+             * One press, not two.
+             *
+             * With no scanner attached this IS the connect — `requestPort()`
+             * needs a real click, and sending somebody into a panel to find a
+             * second button to press is a step that exists only because the
+             * code was organised that way. Once a scanner is connected the same
+             * button opens the panel, which is where the state, the last code
+             * and the disconnect live.
+             */
+            onClick={() => {
+              if (serial.status !== "connected" && serialSupported()) {
+                void connectSerialScanner();
                 return;
               }
-
-              if (e.key.length !== 1) return;
-              const now = performance.now();
-              inputRapidCountRef.current =
-                now - inputLastKeyAtRef.current < 60 ? inputRapidCountRef.current + 1 : 1;
-              inputLastKeyAtRef.current = now;
-
-              if (inputRapidCountRef.current >= 3) {
-                if (scannerTimerRef.current) clearTimeout(scannerTimerRef.current);
-                scannerTimerRef.current = setTimeout(() => {
-                  inputRapidCountRef.current = 0;
-                  void submitScanRef.current();
-                }, 140);
-              }
+              setScannerOpen(true);
             }}
-            disabled={scanning}
-            placeholder="Scan a barcode, or search by name or SKU..."
-            aria-label="Scan a barcode or search products"
-            className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] font-normal tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252] disabled:opacity-60"
-          />
+            aria-label={
+              serial.status === "connected" ? "Open the scanner panel" : "Connect a scanner"
+            }
+            title={serial.status === "connected" ? "Scanner" : "Connect a scanner"}
+            className="flex h-[44px] shrink-0 cursor-pointer items-center gap-[7px] rounded-[10px] bg-white px-[14px] text-[13px] leading-[1.4] font-medium tracking-[-0.26px] whitespace-nowrap text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e]"
+          >
+            <ScanIcon />
+            <span className="hidden md:inline">
+              {serial.status === "connecting"
+                ? "Connecting…"
+                : serial.status === "connected"
+                  ? "Scanner"
+                  : "Connect device"}
+            </span>
+          </button>
         </div>
-        <button
-          type="button"
-          // The scanner types wherever the cursor is, so "scan" means "put the
-          // cursor back in the box". Pressed with something typed, it rings
-          // that code up — the same thing Enter does.
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => (query.trim() ? void submitScan() : searchRef.current?.focus())}
-          disabled={scanning}
-          aria-label={query.trim() ? "Look up this barcode" : "Scan barcode"}
-          title={query.trim() ? "Look up this barcode" : "Ready to scan"}
-          className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e] disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <ScanIcon />
-        </button>
       </div>
 
-      {scanNote && (
-        <p className="mt-[6px] shrink-0 text-[12px] leading-[1.4] tracking-[-0.24px] text-[#525252]">
-          {scanNote}
-        </p>
-      )}
+      <ScannerPanel
+        open={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onSubmitCode={(code) => submitScanRef.current(code)}
+      />
+
+      <ScanResult outcome={scanNote} onDismiss={clearScanNote} />
+
+      <OutOfStockDialog
+        // Keyed by the product, so the form starts empty for each one. A
+        // remount is the reset — the last item's quantity and cost must not be
+        // sitting in the boxes when the next thing is scanned, and clearing
+        // them from an effect is writing state during render by another name.
+        key={outOfStock?.id ?? "none"}
+        product={outOfStock}
+        onClose={() => setOutOfStock(null)}
+        // Counted in, so the stock is real now — and the customer is still
+        // standing there holding it. Ringing it up is the reason they scanned.
+        onRestocked={(product) => {
+          setOutOfStock(null);
+          onSelectProduct?.(product);
+          setScanNote({ kind: "added", text: `Counted in and added ${product.name}` });
+          beep(true);
+        }}
+      />
 
       {/* Categories — 45:2183, 16px below the search bar. The strip used to be
           a bare overflow-x scroller: on a till there is no comfortable way to

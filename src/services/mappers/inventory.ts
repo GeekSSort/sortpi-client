@@ -30,6 +30,10 @@ export function toInventoryProduct(row: any, index: number): InventoryProduct {
   const variants: any[] = Array.isArray(row?.variants) ? row.variants : [];
   const variant = variants.find((v) => v?.isDefault) || variants[0] || {};
   const sku = String(variant?.sku ?? "—");
+  // The primary one, or the first: a variant may carry several — a case code
+  // and a unit code — and the label prints the one the shelf is scanned by.
+  const codes: any[] = Array.isArray(variant?.barcodes) ? variant.barcodes : [];
+  const barcode = String((codes.find((c) => c?.isPrimary) ?? codes[0])?.barcode ?? "");
   const price = toAmount(variant?.price);
   // The API's own figure, scoped to the branches the caller can see.
   const stock = toAmount(row?.stockOnHand ?? row?.stock_on_hand);
@@ -56,12 +60,16 @@ export function toInventoryProduct(row: any, index: number): InventoryProduct {
     priceFormatted: price > 0 ? formatMoney(price, { decimals: 2 }) : "No price",
     stock,
     sku,
+    barcode,
     status: statusFor(stock, toAmount(row?.reorderLevel ?? row?.reorder_level)),
   };
 }
 
 export function toStockItem(row: any): StockItem {
   const available = toAmount(row?.available);
+  // Falls back to `available` only for a payload that predates the field —
+  // nothing writes `reserved_quantity` today, so the two are equal.
+  const quantity = row?.quantity == null ? available : toAmount(row.quantity);
   const reorder = toAmount(row?.reorderLevel ?? row?.reorder_level);
   // Some filenames contain spaces; unencoded they break the request.
   const image = String(row?.productImage ?? row?.product_image ?? "");
@@ -75,6 +83,7 @@ export function toStockItem(row: any): StockItem {
     sku: String(row?.sku || "—"),
     // The warehouse comes back as an id and a code; the code is the readable one.
     warehouse: String(row?.warehouseCode ?? row?.warehouse_code ?? "—"),
+    quantity,
     available,
     reserved: toAmount(row?.reservedQuantity ?? row?.reserved_quantity),
     lowStock: reorder || LOW_STOCK,

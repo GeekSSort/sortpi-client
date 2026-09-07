@@ -1,4 +1,4 @@
-import { ReturnRecord } from "@/types/returns";
+import { ReturnRecord, ReturnedLine } from "@/types/returns";
 import { toAmount } from "../apiClient";
 import { formatMoney } from "@/lib/format";
 
@@ -29,6 +29,29 @@ const STATUS: Record<string, ReturnRecord["status"]> = {
 
 const WHEN = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 
+/**
+ * The lines the return put back.
+ *
+ * The endpoint used to send a return's totals and no lines at all, so the
+ * screen could say a return was worth 1,455.67 but not which products it was
+ * or how many of each went back into stock.
+ */
+function toReturnedLines(rows: any): ReturnedLine[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((r: any) => {
+    const lineTotal = toAmount(r?.lineTotal ?? r?.line_total);
+    return {
+      id: String(r?.id ?? ""),
+      sku: String(r?.sku ?? ""),
+      name: String(r?.productName ?? r?.product_name ?? r?.sku ?? "—"),
+      quantity: toAmount(r?.quantity),
+      unitPrice: toAmount(r?.unitPrice ?? r?.unit_price),
+      lineTotal,
+      lineTotalFormatted: formatMoney(lineTotal),
+    };
+  });
+}
+
 export function toReturnRecord(row: any): ReturnRecord {
   const total = toAmount(row?.grandTotal ?? row?.grand_total);
   const refund = toAmount(row?.refundAmount ?? row?.refund_amount);
@@ -47,5 +70,6 @@ export function toReturnRecord(row: any): ReturnRecord {
     paymentMethod:
       TENDER[String(row?.refundMethod ?? row?.refund_method ?? "").toUpperCase()] ?? "Cash",
     status: STATUS[String(row?.status || "").toUpperCase()] ?? "Pending",
+    items: toReturnedLines(row?.items),
   };
 }

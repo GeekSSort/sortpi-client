@@ -3,6 +3,8 @@
 import React from "react";
 import { CartItem } from "@/types/pos";
 import { formatMoney } from "@/lib/format";
+import { useProductDiscounts } from "@/lib/usePosDiscounts";
+import { amountOff } from "@/services/discountService";
 
 /**
  * The middle column of the three-column till: what has been rung up so far.
@@ -38,6 +40,15 @@ function BinIcon() {
   );
 }
 
+/**
+ * Whether this line has taken everything the shelf has.
+ *
+ * A stock of zero or less is NOT a ceiling of zero — that is a line whose stock
+ * ran out after it was added, and emptying it under the cashier would be worse
+ * than letting the server refuse the sale with a reason.
+ */
+const atCap = (item: CartItem) => item.product.stock > 0 && item.quantity >= item.product.stock;
+
 export default function SelectedItems({
   cart,
   onUpdateQuantity,
@@ -49,6 +60,9 @@ export default function SelectedItems({
   onRemoveItem: (productId: string) => void;
   onClearCart: () => void;
 }) {
+  // The same offers the product wall prices its tiles by, and the same ones the
+  // invoice subtracts. Three views of one sale have to agree.
+  const rates = useProductDiscounts();
   const count = cart.reduce((n, i) => n + i.quantity, 0);
 
   return (
@@ -96,6 +110,11 @@ export default function SelectedItems({
                   {item.product.name}
                 </span>
                 <span className="truncate text-[12px] text-[#8f8d87]">{item.product.sku}</span>
+                {atCap(item) && (
+                  <span className="truncate text-[12px] leading-[1.4] font-medium text-[#a66a00]">
+                    All {item.product.stock} on the shelf are on this sale
+                  </span>
+                )}
               </span>
 
               <span className="flex items-center gap-[8px]">
@@ -110,23 +129,49 @@ export default function SelectedItems({
                 <span className="w-[22px] text-center text-[14px] font-medium text-[#1e1e1e] tabular-nums">
                   {item.quantity}
                 </span>
+                {/* At the ceiling the button goes dead rather than doing
+                    nothing on press. A control that accepts a click and
+                    changes nothing reads as a broken till, and the cashier
+                    presses it again. */}
                 <button
                   type="button"
                   aria-label="Increase quantity"
                   onClick={() => onUpdateQuantity(item.product.id, 1)}
-                  className="flex size-[26px] shrink-0 cursor-pointer items-center justify-center rounded-[7px] border border-solid border-[#eaeaea] text-[#525252] transition-colors hover:border-[#f5b800] hover:text-[#f5b800]"
+                  disabled={atCap(item)}
+                  title={atCap(item) ? `Only ${item.product.stock} in stock` : undefined}
+                  className="flex size-[26px] shrink-0 items-center justify-center rounded-[7px] border border-solid border-[#eaeaea] text-[#525252] transition-colors enabled:cursor-pointer enabled:hover:border-[#f5b800] enabled:hover:text-[#f5b800] disabled:cursor-not-allowed disabled:text-[#d4d4d4]"
                 >
                   <PlusIcon />
                 </button>
-                <span className="truncate text-[12px] text-[#8f8d87]">
-                  &times; {formatMoney(item.product.price, { decimals: 2 })}
-                </span>
+                {/* The price the customer is actually charged.
+                    This column showed the SHELF price while the product wall
+                    beside it showed the offer and the invoice took the offer
+                    off the total — one item, two prices, on one screen. The
+                    struck-through original stays, because a discount nobody
+                    can see is a discount the shop cannot tell it is running. */}
+                {(() => {
+                  const off = amountOff(item.product.price, rates[item.product.id]);
+                  return (
+                    <span className="flex min-w-0 items-baseline gap-[4px] truncate text-[12px] text-[#8f8d87]">
+                      &times; {formatMoney(item.product.price - off, { decimals: 2 })}
+                      {off > 0 && (
+                        <span className="text-[11px] text-[#a3a3a3] line-through">
+                          {formatMoney(item.product.price, { decimals: 2 })}
+                        </span>
+                      )}
+                    </span>
+                  );
+                })()}
               </span>
             </span>
 
             <span className="flex shrink-0 flex-col items-end gap-[8px]">
               <span className="text-[14px] font-medium text-[#1e1e1e] tabular-nums">
-                {formatMoney(item.product.price * item.quantity, { decimals: 2 })}
+                {formatMoney(
+                  (item.product.price - amountOff(item.product.price, rates[item.product.id])) *
+                    item.quantity,
+                  { decimals: 2 }
+                )}
               </span>
               <button
                 type="button"

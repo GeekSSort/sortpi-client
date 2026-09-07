@@ -4,10 +4,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ProductImage from "@/components/shared/ProductImage";
 import ChipScroller from "@/components/shared/ChipScroller";
 import { ProductItem } from "@/types/pos";
-import { PosService, SettingsService } from "@/services";
+import { DiscountService, PosService, SettingsService } from "@/services";
 import { useSession } from "@/services/useSession";
 import TablePagination from "@/components/shared/TablePagination";
-import { useQuery, queryKey } from "@/lib/query/useQuery";
+import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
 import { RefreshBar } from "@/components/shared/QueryBoundary";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import {
@@ -18,8 +18,6 @@ import {
   capped,
   effectivePercent,
   priceAfter,
-  readDiscounts,
-  writeDiscounts,
 } from "@/lib/posDiscounts";
 
 /**
@@ -193,6 +191,7 @@ export default function PosDiscountPage() {
   const [pageSize, setPageSize] = useState(16);
 
   const [rates, setRates] = useState<DiscountMap>({});
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
 
   /** One product or several: what the rate card is about to change. */
@@ -214,11 +213,37 @@ export default function PosDiscountPage() {
     user.permissions.length > 0 &&
     !user.permissions.includes(EDIT_PERMISSION);
 
-  useEffect(() => {
-    // Read after this render, not during it: the server has no localStorage,
-    // so the first paint has to match it and the offers arrive a tick later.
-    queueMicrotask(() => setRates(readDiscounts()));
+  /**
+   * The offers, from the server.
+   *
+   * They used to be read out of this browser's localStorage — which is exactly
+   * why an offer set here was invisible to the till in the next room. The map
+   * arrives keyed by variant, which is what this screen keys by too.
+   */
+  const { data: serverRates, refetch: refetchRates } = useQuery(
+    queryKey("discounts"),
+    () => DiscountService.map(),
+    { staleMs: 60_000 }
+  );
 
+  // Server data seeding locally EDITABLE state. The screen applies a rate card
+  // optimistically and reconciles on failure, so it cannot render straight off
+  // the query — and the rule cannot tell that case from the derived-state
+  // mistake it exists for.
+  useEffect(() => {
+    if (!serverRates) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setRates(
+      Object.fromEntries(
+        Object.entries(serverRates).map(([variantId, offer]) => [
+          variantId,
+          { mode: offer.mode === "FLAT" ? "flat" : "percent", value: offer.value } as Discount,
+        ])
+      )
+    );
+  }, [serverRates]);
+
+  useEffect(() => {
     return () => {
       if (undoTimer.current) clearTimeout(undoTimer.current);
     };
@@ -238,10 +263,63 @@ export default function PosDiscountPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const persist = useCallback((next: DiscountMap) => {
-    setRates(next);
-    writeDiscounts(next);
-  }, []);
+  /**
+   * Save a whole map by writing only what CHANGED.
+   *
+   * The screen thinks in a map — it edits several products at once, and clears
+   * the lot — while the API is one product at a time, which is the right shape
+   * for an offer that has to be audited and scoped to a branch. So the diff
+   * happens here: set what is new or different, clear what has gone.
+   *
+   * Applied optimistically, then reconciled. A rate card that waits for a round
+   * trip per product before showing anything makes bulk edits feel broken; a
+   * failure puts the server's answer back.
+   */
+  const persist = useCallback(
+    (next: DiscountMap) => {
+      const before = rates;
+      setRates(next);
+
+      const byId = new Map(products.map((p) => [p.id, p]));
+      const touched = new Set([...Object.keys(before), ...Object.keys(next)]);
+      const writes: Promise<unknown>[] = [];
+
+      touched.forEach((variantId) => {
+        const product = byId.get(variantId);
+        if (!product) return;
+        const was = before[variantId];
+        const now = next[variantId];
+        if (now && (!was || was.mode !== now.mode || was.value !== now.value)) {
+          writes.push(
+            DiscountService.set(product.productId, {
+              mode: now.mode === "flat" ? "FLAT" : "PERCENT",
+              value: now.value,
+              variantId,
+            })
+          );
+        } else if (!now && was) {
+          writes.push(DiscountService.clear(product.productId, { variantId }));
+        }
+      });
+
+      if (writes.length === 0) return;
+      void Promise.all(writes)
+        .then(() => {
+          // The till's wall prices its tiles by this, and the products table
+          // shows it: both read the same key.
+          invalidate("discounts", "pos-products", "inventory");
+        })
+        .catch((err) => {
+          setSaveError(
+            err instanceof Error && err.message
+              ? `Not everything saved: ${err.message}`
+              : "Not everything saved."
+          );
+          void refetchRates();
+        });
+    },
+    [products, rates, refetchRates]
+  );
 
   /** A change big enough to regret: keep the old set for a few seconds. */
   const persistUndoable = useCallback(
@@ -433,6 +511,11 @@ export default function PosDiscountPage() {
           </div>
 
           <div className="flex items-center gap-[8px]">
+            {saveError && (
+              <span className="flex h-[36px] items-center rounded-[9px] bg-[#fef6f5] px-[12px] text-[13px] font-medium text-[#ef4444]">
+                {saveError}
+              </span>
+            )}
             {undoState && (
               <button
                 type="button"

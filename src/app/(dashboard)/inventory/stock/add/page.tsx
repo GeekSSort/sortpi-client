@@ -151,7 +151,9 @@ export default function AddStockPage() {
       ? null
       : items.find((i) => i.name === product && i.warehouseId === warehouseId) ?? null;
   const picked = lineAtWarehouse ?? lineForProduct;
-  const currentStock = lineAtWarehouse?.available ?? 0;
+  // On the shelf, not what is sellable. `available` is this minus what is
+  // spoken for, and adding against it would write the reserved units off.
+  const currentStock = lineAtWarehouse?.quantity ?? 0;
   const newTotal = useMemo(
     () => currentStock + (Number(quantity) || 0),
     [currentStock, quantity]
@@ -194,18 +196,43 @@ export default function AddStockPage() {
       if (needsCost && (!unitCost.trim() || Number.isNaN(cost) || cost <= 0)) {
         throw new Error("Enter what one unit cost, greater than zero.");
       }
-      // A stock adjustment takes the COUNT, not the amount added: the service
-      // works out the movement against the balance at the moment it applies.
+      /**
+       * The live figure, read now — not the one this form has been holding.
+       *
+       * This screen means "add 10" and the endpoint takes an absolute count, so
+       * the two are bridged by `live + 10`. That bridge is only sound if `live`
+       * is live: the number came off a stock list fetched when the page opened,
+       * and a till goes on selling while somebody fills in a form. Three units
+       * sold in between made "add 10 to 100" arrive as 110 against a shelf of
+       * 97 — and the service, correctly for a COUNT, drove stock to 110 and put
+       * the three sales back.
+       *
+       * `expectUnchanged` closes what is left: between this read and the apply
+       * the balance can still move, and the API then refuses with
+       * ADJUSTMENT_STOCK_MOVED rather than writing a figure computed against a
+       * shelf that no longer exists.
+       */
+      const live = await StockService.liveLine(picked.variantId, warehouseId);
+      const onShelf = live?.quantity ?? 0;
+      if (live && live.quantity !== currentStock) {
+        setNote(`${product} now shows ${live.quantity} in stock — adding ${qty} to that.`);
+      }
+
       await StockService.adjustStock({
         warehouseId,
         variantId: picked.variantId,
-        newQuantity: currentStock + qty,
+        newQuantity: onShelf + qty,
+        // What this form just read. Without it `expectUnchanged` has nothing to
+        // compare against and the guard is inert.
+        expectedQuantity: onShelf,
         ...(needsCost ? { unitCost: cost } : {}),
         referenceNo: `ADJ-${Date.now()}`,
         // CORRECTION — goods arriving without a purchase order. "STOCK_IN"
         // was not an AdjustmentReason at all, so this form 400'd on every
         // submit.
         reason: "CORRECTION",
+        // This is an ADD, not a count: nobody walked the shelf.
+        expectUnchanged: true,
         note: `Added ${qty} on ${(date ?? new Date()).toISOString().slice(0, 10)}`,
       });
       setNote(`${qty} added to ${product}`);
@@ -226,12 +253,12 @@ export default function AddStockPage() {
 
   return (
     <div className="flex w-full flex-col">
-      <form onSubmit={submit} className="mx-auto flex w-full max-w-[565px] flex-col gap-[24px]">
+      <form onSubmit={submit} className="mx-auto flex w-full max-w-[720px] flex-col gap-[24px]">
         <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
-          <div className="flex h-[48px] items-center justify-center px-[16px]">
-            <p className="text-[16px] leading-[1.5] font-medium tracking-[-0.32px] text-[#1e1e1e]">
+          <div className="flex h-[60px] items-center justify-center px-[16px]">
+            <h1 className="text-[20px] leading-[28px] font-semibold tracking-[-0.4px] text-[#1e1e1e]">
               Add Stock
-            </p>
+            </h1>
           </div>
 
           {/* Form — 57:13993, 88px blocks 12px apart */}

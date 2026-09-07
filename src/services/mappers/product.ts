@@ -51,6 +51,7 @@ export function toProductItem(
 
   return {
     id: String(variant?.id ?? row?.id ?? ""),
+    productId: String(row?.id ?? ""),
     name: String(row?.name ?? ""),
     sku,
     barcode,

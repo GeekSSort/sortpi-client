@@ -1,3 +1,14 @@
+/** A line that came back, and so a line that was put back on the shelf. */
+export interface ReturnedLine {
+  id: string;
+  sku: string;
+  name: string;
+  quantity: number;
+  unitPrice: number;
+  lineTotal: number;
+  lineTotalFormatted: string;
+}
+
 export interface ReturnRecord {
   id: string;
   returnNo: string;
@@ -10,6 +21,8 @@ export interface ReturnRecord {
   refundAmountFormatted: string;
   paymentMethod: "Cash" | "bKash" | "Card" | "Bank Transfer";
   status: "Paid" | "Unpaid" | "Pending" | "Rejected";
+  /** What was restocked. Empty only if the server sent no lines. */
+  items: ReturnedLine[];
 }
 
 export interface ReturnQueryFilter {

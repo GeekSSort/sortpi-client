@@ -169,7 +169,7 @@ export default function NewReturnPage() {
         </p>
       </div>
 
-      <div className="mx-auto flex w-full max-w-[640px] flex-col gap-[16px]">
+      <div className="mx-auto flex w-full max-w-[720px] flex-col gap-[16px]">
         {/* 1 — the sale */}
         <div className="relative flex flex-col gap-[10px] rounded-[12px] bg-white p-[16px] shadow-[inset_0_0_0_1px_#eaeaea]">
           <RefreshBar active={lookup.fetching} />

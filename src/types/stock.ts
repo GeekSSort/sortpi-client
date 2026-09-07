@@ -8,6 +8,10 @@ export interface StockItem {
   image: string;
   sku: string;
   warehouse: string;
+  /** What is ON THE SHELF. `available` is this minus what is spoken for, and
+      counting against that would write the reserved units off the moment
+      anything reserves any. */
+  quantity: number;
   available: number;
   reserved: number;
   lowStock: number;

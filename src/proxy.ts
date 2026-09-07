@@ -28,7 +28,39 @@ const BACK_OFFICE = [
   "/roles-permissions",
   "/settings",
   "/sales-pos",
+  // Reports and Discount in the back office's own shell. A cashier already has
+  // both in the POS shell and belongs there, so these copies are back office
+  // like the rest. /pos is NOT here: it is the one address both roles share,
+  // and the layout picks the frame.
+  "/reports",
+  "/discount",
 ];
+
+/**
+ * The POS shell for a cashier, the main menu for everyone else.
+ *
+ * Someone with `dashboard.view` has every one of these screens in their own
+ * sidebar, so sending them into the till's environment would swap their menu
+ * for a smaller one and take the whole window. Old links and bookmarks land on
+ * the back-office copy instead of a shell they no longer use.
+ */
+const POS_TO_BACK_OFFICE: Record<string, string> = {
+  "/pos/sales": "/sales-pos/sales",
+  "/pos/return": "/sales-pos/return",
+  "/pos/customers": "/customers",
+  "/pos/products": "/inventory",
+  "/pos/reports": "/reports",
+  "/pos/discount": "/discount",
+  "/pos/settings": "/settings",
+};
+
+/** The longest mapped prefix, so /pos/sales does not match /pos first. */
+function backOfficeEquivalent(pathname: string): string | null {
+  const hit = Object.keys(POS_TO_BACK_OFFICE)
+    .filter((p) => pathname === p || pathname.startsWith(`${p}/`))
+    .sort((a, b) => b.length - a.length)[0];
+  return hit ? POS_TO_BACK_OFFICE[hit] : null;
+}
 
 /** Pages a signed-out person may see. Everything else needs a session. */
 const PUBLIC_PATHS = [
@@ -74,6 +106,12 @@ export function proxy(request: NextRequest) {
     );
     if (posOnly && wantsBackOffice) {
       return NextResponse.redirect(new URL("/pos", request.url));
+    }
+    // And the other way round: the till's environment is the cashier's, not
+    // the back office's.
+    if (!posOnly) {
+      const equivalent = backOfficeEquivalent(pathname);
+      if (equivalent) return NextResponse.redirect(new URL(equivalent, request.url));
     }
     return NextResponse.next();
   }

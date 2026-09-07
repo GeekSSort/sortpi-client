@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { SaleRecord } from "@/types/sales";
-import { SalesService } from "@/services";
+import { SalesService, ReturnService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import TablePagination from "@/components/shared/TablePagination";
@@ -84,6 +84,10 @@ export default function SalesPage() {
   const [note, setNote] = useState<string | null>(null);
   const [invoiceOf, setInvoiceOf] = useState<SaleRecord | null>(null);
   const [receiptOf, setReceiptOf] = useState<SaleRecord | null>(null);
+  const [refundOf, setRefundOf] = useState<SaleRecord | null>(null);
+  const [refunding, setRefunding] = useState(false);
+  const [withdrawOf, setWithdrawOf] = useState<SaleRecord | null>(null);
+  const [withdrawing, setWithdrawing] = useState(false);
 
   // The shop's own masthead, shared with the till's cache entry.
   const { shop } = useShopProfile();
@@ -98,7 +102,9 @@ export default function SalesPage() {
    * modal or the receipt, since they are the same record. `enabled` keeps the
    * list from fetching one sale per row as somebody scrolls.
    */
-  const openSaleId = invoiceOf?.id ?? receiptOf?.id ?? null;
+  // The refund dialog is included: it has to say which products go back on
+  // the shelf, and that is on the sale's lines rather than on the list row.
+  const openSaleId = invoiceOf?.id ?? receiptOf?.id ?? refundOf?.id ?? null;
   const {
     data: saleDetail,
     loading: saleDetailLoading,
@@ -109,8 +115,6 @@ export default function SalesPage() {
     () => SalesService.getSale(openSaleId!),
     { enabled: openSaleId !== null }
   );
-  const [refundOf, setRefundOf] = useState<SaleRecord | null>(null);
-  const [refunding, setRefunding] = useState(false);
 
   useEffect(() => {
     if (query === term) return;
@@ -124,6 +128,18 @@ export default function SalesPage() {
   // fetched, and the pager called 200 the total.
   const day = date ? toApiDay(date) : undefined;
   const key = queryKey("sales", { page, limit: pageSize, search: term, day });
+  // The refund documents on the sale being withdrawn. A cancelled sale carries
+  // the auto-return the cancel wrote; that is the one to undo.
+  const { data: withdrawable, loading: withdrawableLoading } = useQuery(
+    queryKey("returns", { invoice: withdrawOf?.invoiceNo ?? "none" }),
+    () => ReturnService.getReturnsForInvoice(withdrawOf!.invoiceNo),
+    { enabled: withdrawOf !== null }
+  );
+  const openRefund = useMemo(
+    () => (withdrawable ?? []).find((r) => r.status !== "Rejected") ?? null,
+    [withdrawable]
+  );
+
   const { data, loading, fetching, error, refetch } = useQuery(key, () =>
     SalesService.getSales({
       search: term,
@@ -316,7 +332,12 @@ export default function SalesPage() {
                                   onSelect: () => setRefundOf(s),
                                 },
                               ]
-                            : []),
+                            : [
+                                {
+                                  label: "Withdraw refund",
+                                  onSelect: () => setWithdrawOf(s),
+                                },
+                              ]),
                         ]}
                       />
                     </div>
@@ -673,6 +694,98 @@ export default function SalesPage() {
         )}
       </Modal>
 
+      {/* Withdraw a refund */}
+      <Modal
+        open={withdrawOf !== null}
+        onClose={() => {
+          if (!withdrawing) setWithdrawOf(null);
+        }}
+        title="Withdraw refund"
+        width={460}
+        footer={
+          <>
+            <button
+              type="button"
+              disabled={withdrawing}
+              className={MODAL_GHOST}
+              onClick={() => setWithdrawOf(null)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={withdrawing || !openRefund}
+              style={{ backgroundImage: GOLD_GRADIENT }}
+              className={MODAL_PRIMARY}
+              onClick={async () => {
+                if (!openRefund || !withdrawOf) return;
+                setWithdrawing(true);
+                try {
+                  await ReturnService.withdrawReturn(openRefund.id);
+                  await refetch();
+                  setNote(`${withdrawOf.invoiceNo} reinstated`);
+                  setWithdrawOf(null);
+                } catch (err: any) {
+                  setNote(err?.message || "Could not withdraw this refund.");
+                } finally {
+                  setWithdrawing(false);
+                }
+              }}
+            >
+              {withdrawing ? "Withdrawing…" : "Withdraw refund"}
+            </button>
+          </>
+        }
+      >
+        {withdrawOf && (
+          <div className="flex flex-col gap-[14px]">
+            <p className="text-[14px] leading-[1.6] text-[#525252]">
+              Put invoice <span className="font-medium text-[#1e1e1e]">{withdrawOf.invoiceNo}</span>{" "}
+              back? The sale returns to Completed and the refund is marked withdrawn.
+            </p>
+
+            <div className="flex flex-col gap-[8px] rounded-[10px] bg-[#fafafa] p-[12px]">
+              <p className="text-[13px] font-medium text-[#1e1e1e]">Back off the shelf</p>
+              {withdrawableLoading && !withdrawable ? (
+                <p className="text-[13px] text-[#9e9e9e]">Reading the refund…</p>
+              ) : !openRefund ? (
+                <p className="text-[13px] text-[#9e9e9e]">
+                  No open refund is recorded against this invoice.
+                </p>
+              ) : openRefund.items.length === 0 ? (
+                <p className="text-[13px] text-[#9e9e9e]">This refund records no lines.</p>
+              ) : (
+                <ul className="flex flex-col gap-[6px]">
+                  {openRefund.items.map((line) => (
+                    <li key={line.id} className="flex items-start justify-between gap-[12px]">
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] text-[#1e1e1e]">{line.name}</span>
+                        <span className="block truncate text-[11px] text-[#9e9e9e]">{line.sku}</span>
+                      </span>
+                      <span className="shrink-0 text-[13px] font-medium whitespace-nowrap text-[#e5484d]">
+                        −{line.quantity}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="text-[12px] leading-[1.5] text-[#9e9e9e]">
+                Refused if any of it has since been sold to somebody else.
+              </p>
+            </div>
+
+            {openRefund && (
+              <div className="flex items-center justify-between gap-[12px] border-t border-solid border-[#eaeaea] pt-[12px]">
+                <span className="text-[14px] text-[#525252]">Back onto revenue</span>
+                <span className="text-[16px] font-semibold text-[#00b837]">
+                  +{openRefund.totalAmountFormatted}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
       {/* Refund sale */}
       <Modal
         open={refundOf !== null}
@@ -725,12 +838,49 @@ export default function SalesPage() {
         }
       >
         {refundOf && (
-          <p className="text-[14px] leading-[1.6] text-[#525252]">
-            Refund <span className="font-medium text-[#1e1e1e]">{refundOf.totalAmountFormatted}</span> for
-            invoice <span className="font-medium text-[#1e1e1e]">{refundOf.invoiceNo}</span> to{" "}
-            <span className="font-medium text-[#1e1e1e]">{refundOf.customerName}</span>? The sale will be
-            cancelled and marked as Refunded.
-          </p>
+          <div className="flex flex-col gap-[14px]">
+            <p className="text-[14px] leading-[1.6] text-[#525252]">
+              Refund invoice <span className="font-medium text-[#1e1e1e]">{refundOf.invoiceNo}</span>{" "}
+              for <span className="font-medium text-[#1e1e1e]">{refundOf.customerName}</span>? The
+              whole sale is cancelled and marked as Refunded.
+            </p>
+
+            {/* What the refund actually does, before it is done. It used to
+                name a figure and nothing else, so nobody could see which
+                products were about to come back into stock — the one part of a
+                refund that is hard to undo. */}
+            <div className="flex flex-col gap-[8px] rounded-[10px] bg-[#fafafa] p-[12px]">
+              <p className="text-[13px] font-medium text-[#1e1e1e]">Back into stock</p>
+              {saleDetailLoading && !saleDetail ? (
+                <p className="text-[13px] text-[#9e9e9e]">Loading the sale&apos;s lines…</p>
+              ) : saleDetail && saleDetail.items.length > 0 ? (
+                <ul className="flex flex-col gap-[6px]">
+                  {saleDetail.items.map((line, i) => (
+                    <li key={`${line.sku}-${i}`} className="flex items-start justify-between gap-[12px]">
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] text-[#1e1e1e]">{line.name}</span>
+                        <span className="block truncate text-[11px] text-[#9e9e9e]">{line.sku}</span>
+                      </span>
+                      <span className="shrink-0 text-[13px] font-medium whitespace-nowrap text-[#00b837]">
+                        +{line.quantity}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-[13px] text-[#9e9e9e]">
+                  Could not read this sale&apos;s lines. The refund still restocks whatever it sold.
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between gap-[12px] border-t border-solid border-[#eaeaea] pt-[12px]">
+              <span className="text-[14px] text-[#525252]">Off revenue</span>
+              <span className="text-[16px] font-semibold text-[#e5484d]">
+                −{refundOf.totalAmountFormatted}
+              </span>
+            </div>
+          </div>
         )}
       </Modal>
     </div>

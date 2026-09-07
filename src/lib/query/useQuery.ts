@@ -97,7 +97,21 @@ export function useQuery<T>(
   useEffect(() => {
     if (!refetchOnFocus || !enabled) return;
     const onFocus = () => {
-      if (document.visibilityState === "visible") void run(false);
+      if (document.visibilityState !== "visible") return;
+      /**
+       * FORCED, not "if stale".
+       *
+       * Coming back to a tab is the strongest signal there is that something
+       * happened elsewhere — a price edited in the back office, a delivery
+       * counted in, another till selling the last one. Honouring the 30-second
+       * freshness window here meant a quick switch away and back showed the old
+       * figures, which is precisely the "I had to reload the page" case.
+       *
+       * The two-second floor is the only guard: a rapid alt-tab must not fire a
+       * request per query per flick.
+       */
+      const age = Date.now() - getEntry(key).updatedAt;
+      void run(age > 2_000);
     };
     window.addEventListener("visibilitychange", onFocus);
     window.addEventListener("focus", onFocus);
@@ -105,7 +119,7 @@ export function useQuery<T>(
       window.removeEventListener("visibilitychange", onFocus);
       window.removeEventListener("focus", onFocus);
     };
-  }, [run, refetchOnFocus, enabled]);
+  }, [run, refetchOnFocus, enabled, key]);
 
   return {
     data: entry.data,

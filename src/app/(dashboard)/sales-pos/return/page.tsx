@@ -74,6 +74,8 @@ export default function ReturnPage() {
   const [pageSize, setPageSize] = useState(8);
   const [note, setNote] = useState<string | null>(null);
   const [detailOf, setDetailOf] = useState<ReturnRecord | null>(null);
+  const [withdrawOf, setWithdrawOf] = useState<ReturnRecord | null>(null);
+  const [withdrawing, setWithdrawing] = useState(false);
   const [slipOf, setSlipOf] = useState<ReturnRecord | null>(null);
 
   useEffect(() => {
@@ -192,7 +194,17 @@ export default function ReturnPage() {
                 {rows.map((r, i) => (
                   <div
                     key={r.id}
-                    className={`grid ${GRID} h-[54px] items-center ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open return ${r.returnNo}`}
+                    onClick={() => setDetailOf(r)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setDetailOf(r);
+                      }
+                    }}
+                    className={`grid ${GRID} h-[54px] cursor-pointer items-center transition-colors outline-none hover:bg-[#fafafa] focus-visible:bg-[#fffaeb] focus-visible:ring-1 focus-visible:ring-[#f5b800] focus-visible:ring-inset ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}
                   >
                     <div className={`${CELL}`}><span className={`${TEXT} truncate`}>{r.returnNo}</span></div>
                     <div className={`${CELL}`}><span className={`${TEXT} truncate`}>{r.invoiceNo}</span></div>
@@ -204,7 +216,10 @@ export default function ReturnPage() {
                     <div className={`${CELL} justify-center`}>
                       <StatusPill label={r.status} tone={STATUS_TONE[r.status] ?? "slate"} />
                     </div>
-                    <div className={`${CELL} justify-center`}>
+                    <div
+                      className={`${CELL} justify-center`}
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       <RowActionMenu
                         label={`Actions for ${r.returnNo}`}
                         // Approve / Reject / Withdraw used to sit here. They
@@ -215,6 +230,16 @@ export default function ReturnPage() {
                         actions={[
                           { label: "View return", onSelect: () => setDetailOf(r) },
                           { label: "Print slip", onSelect: () => setSlipOf(r) },
+                          // A refund already withdrawn has nothing left to undo.
+                          ...(r.status === "Rejected"
+                            ? []
+                            : [
+                                {
+                                  label: "Withdraw refund",
+                                  tone: "danger" as const,
+                                  onSelect: () => setWithdrawOf(r),
+                                },
+                              ]),
                         ]}
                       />
                     </div>
@@ -311,7 +336,124 @@ export default function ReturnPage() {
                 <StatusPill label={detailOf.status} tone={STATUS_TONE[detailOf.status] ?? "slate"} />
               </dd>
             </div>
+
+            {/* What came back, and therefore what went back into stock. The
+                quantities are the return's own lines, not a guess from the
+                total. */}
+            <div className="mt-[4px] flex flex-col gap-[8px] border-t border-solid border-[#eaeaea] pt-[12px]">
+              <p className="text-[14px] font-medium text-[#1e1e1e]">Restocked to inventory</p>
+              {detailOf.items.length === 0 ? (
+                <p className="text-[13px] text-[#9e9e9e]">
+                  This return has no lines recorded against it.
+                </p>
+              ) : (
+                <ul className="flex flex-col gap-[6px]">
+                  {detailOf.items.map((line) => (
+                    <li key={line.id} className="flex items-start justify-between gap-[12px]">
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[14px] text-[#1e1e1e]">{line.name}</span>
+                        <span className="block truncate text-[12px] text-[#9e9e9e]">{line.sku}</span>
+                      </span>
+                      <span className="shrink-0 text-right">
+                        <span className="block text-[14px] font-medium text-[#00b837]">
+                          +{line.quantity} back in stock
+                        </span>
+                        <span className="block text-[12px] text-[#525252]">
+                          {line.lineTotalFormatted}
+                        </span>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </dl>
+        )}
+      </Modal>
+
+      {/* Withdraw a refund */}
+      <Modal
+        open={withdrawOf !== null}
+        onClose={() => {
+          if (!withdrawing) setWithdrawOf(null);
+        }}
+        title="Withdraw refund"
+        width={460}
+        footer={
+          <>
+            <button
+              type="button"
+              disabled={withdrawing}
+              className={MODAL_GHOST}
+              onClick={() => setWithdrawOf(null)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={withdrawing}
+              className={MODAL_PRIMARY}
+              style={{ backgroundImage: GOLD_GRADIENT }}
+              onClick={async () => {
+                if (!withdrawOf) return;
+                setWithdrawing(true);
+                try {
+                  await ReturnService.withdrawReturn(withdrawOf.id);
+                  await refetch();
+                  setNote(`${withdrawOf.returnNo} withdrawn`);
+                  setWithdrawOf(null);
+                } catch (err: any) {
+                  // The server names every SKU that is short; that is the
+                  // whole of what the operator can act on, so show it.
+                  setNote(err?.message || "Could not withdraw this refund.");
+                } finally {
+                  setWithdrawing(false);
+                }
+              }}
+            >
+              {withdrawing ? "Withdrawing…" : "Withdraw refund"}
+            </button>
+          </>
+        }
+      >
+        {withdrawOf && (
+          <div className="flex flex-col gap-[14px]">
+            <p className="text-[14px] leading-[1.6] text-[#525252]">
+              Undo <span className="font-medium text-[#1e1e1e]">{withdrawOf.returnNo}</span> against
+              invoice <span className="font-medium text-[#1e1e1e]">{withdrawOf.invoiceNo}</span>?
+            </p>
+
+            <div className="flex flex-col gap-[8px] rounded-[10px] bg-[#fafafa] p-[12px]">
+              <p className="text-[13px] font-medium text-[#1e1e1e]">Back off the shelf</p>
+              {withdrawOf.items.length === 0 ? (
+                <p className="text-[13px] text-[#9e9e9e]">This return records no lines.</p>
+              ) : (
+                <ul className="flex flex-col gap-[6px]">
+                  {withdrawOf.items.map((line) => (
+                    <li key={line.id} className="flex items-start justify-between gap-[12px]">
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] text-[#1e1e1e]">{line.name}</span>
+                        <span className="block truncate text-[11px] text-[#9e9e9e]">{line.sku}</span>
+                      </span>
+                      <span className="shrink-0 text-[13px] font-medium whitespace-nowrap text-[#e5484d]">
+                        −{line.quantity}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="text-[12px] leading-[1.5] text-[#9e9e9e]">
+                Refused if any of it has since been sold to somebody else.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between gap-[12px] border-t border-solid border-[#eaeaea] pt-[12px]">
+              <span className="text-[14px] text-[#525252]">Back onto revenue</span>
+              <span className="text-[16px] font-semibold text-[#00b837]">
+                +{withdrawOf.totalAmountFormatted}
+              </span>
+            </div>
+          </div>
         )}
       </Modal>
 

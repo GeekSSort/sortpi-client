@@ -28,7 +28,12 @@ const GOLD = "#f5b800";
 
 /** A smooth curve through the points, drawn as bezier segments. */
 function smoothPath(pts: { x: number; y: number }[]): string {
-  if (pts.length < 2) return "";
+  if (pts.length === 0) return "";
+  // A single day is still a place on the chart. Returning "" for it left the
+  // area path below starting with "L", which is not a path — the browser
+  // refused the whole `d` with "Expected moveto path command". One day is what
+  // "This Week" means on a Monday morning, so it is not a rare shape.
+  if (pts.length === 1) return `M ${pts[0].x} ${pts[0].y}`;
   let d = `M ${pts[0].x} ${pts[0].y}`;
   for (let i = 0; i < pts.length - 1; i++) {
     const p0 = pts[i - 1] ?? pts[i];
@@ -101,7 +106,15 @@ function axisDate(raw: string): string {
 
 interface SalesSummaryChartProps {
   data?: SalesDataPoint[];
-  /** Which stretches of the line get the dotted shading, as in the design. */
+  /**
+   * Stretches of the line to pick out, as index pairs into `data`.
+   *
+   * It used to default to [[1,2],[4,5]] — the two bands the Figma mockup
+   * happens to draw — so every chart in the app emphasised its second and
+   * fifth points whatever they were. On a week that is Tuesday and Friday for
+   * no reason; on a month it is meaningless. Emphasis has to be about the
+   * data, so nothing is emphasised unless a caller says what.
+   */
   highlights?: [number, number][];
   /**
    * The range is CONTROLLED by the page, because picking one has to re-ask the
@@ -116,10 +129,7 @@ interface SalesSummaryChartProps {
 
 export default function SalesSummaryChart({
   data = [],
-  highlights = [
-    [1, 2],
-    [4, 5],
-  ],
+  highlights = [],
   range,
   onRangeChange,
   busy = false,
@@ -158,12 +168,36 @@ export default function SalesSummaryChart({
     );
     const pts = points.map((p, i) => ({ x: xs[i], y: valueToY(p.sales) }));
 
+    /**
+     * What the line is drawn through, which is not always what is plotted.
+     *
+     * One day has nothing to join, so `smoothPath` emitted a bare moveto — a
+     * `d` that draws no pixels — and the area under it was empty. The card
+     * then showed an axis, one dot and no graph, which is what "This Week"
+     * looks like every Monday morning.
+     *
+     * A single day is drawn as its level, held across the plot: the shape a
+     * one-reading series has. The dot and the tooltip still sit on the real
+     * point, so nothing invents a second day's trading.
+     */
+    const drawn =
+      pts.length === 1
+        ? [
+            { x: PLOT_X, y: pts[0].y },
+            { x: W - RIGHT_PAD, y: pts[0].y },
+          ]
+        : pts;
+
     return {
       pts,
       xs,
-      line: smoothPath(pts),
-      // The curve closed down to the bottom line: this is what keeps the shading under it.
-      area: pts.length ? `${smoothPath(pts)} L ${xs[xs.length - 1]} ${AXIS_BOTTOM} L ${xs[0]} ${AXIS_BOTTOM} Z` : "",
+      line: smoothPath(drawn),
+      // The curve closed down to the bottom line: this is what keeps the
+      // shading under it, and the dotted fill is clipped to this path.
+      area:
+        drawn.length > 1
+          ? `${smoothPath(drawn)} L ${drawn[drawn.length - 1].x} ${AXIS_BOTTOM} L ${drawn[0].x} ${AXIS_BOTTOM} Z`
+          : "",
       ticks: Array.from({ length: ROWS }, (_, i) => ({
         y: AXIS_TOP + i * ROW_GAP,
         label: tickLabel(base + (ROWS - 1 - i) * step),
@@ -216,6 +250,9 @@ export default function SalesSummaryChart({
   const btn =
     "flex h-[40px] items-center justify-center gap-[8px] rounded-[11px] border border-solid border-[#eaeaea] bg-white px-[18px] text-[14px] font-medium tracking-[-0.28px] text-[#525252] transition-colors hover:bg-[#fafafa] cursor-pointer";
 
+  // Nothing at all, or nothing that sold: both are "no sales in this range".
+  const empty = data.length === 0 || data.every((point) => point.sales === 0);
+
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-[10px] bg-white px-[16px] py-[16px] shadow-[inset_0_0_0_1px_#eaeaea] sm:px-[33.5px]">
       {/* Headline — 30:15469 */}
@@ -265,6 +302,20 @@ export default function SalesSummaryChart({
       </div>
 
       {/* Layout — 30:15483, 16px under the headline */}
+      {empty ? (
+        // A window with no sales in it. Drawn, this was an axis of zeroes and a
+        // flat line on the floor, which reads as a chart that failed to load
+        // rather than as a quiet week — and a Monday morning is always a quiet
+        // week until the first customer.
+        <div className="mt-[16px] flex w-full flex-1 flex-col items-center justify-center gap-[6px] text-center">
+          <p className="text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]">
+            No sales in this range.
+          </p>
+          <p className="text-[13px] leading-[1.5] tracking-[-0.26px] text-[#9e9e9e]">
+            Pick a wider range to see earlier trading.
+          </p>
+        </div>
+      ) : (
       <div className="relative mt-[16px] w-full flex-1">
         <svg
           ref={svgRef}
@@ -303,7 +354,20 @@ export default function SalesSummaryChart({
             </g>
           ))}
 
-          {/* Dotted emphasis bands, clipped under the curve */}
+          {/* The area under the curve, dotted — the design's shading, applied
+              to all of it rather than to two arbitrary columns. */}
+          {chart.area && (
+            <rect
+              x={PLOT_X}
+              y={AXIS_TOP}
+              width={W - RIGHT_PAD - PLOT_X}
+              height={AXIS_BOTTOM - AXIS_TOP}
+              fill="url(#salesDots)"
+              clipPath="url(#salesUnderCurve)"
+            />
+          )}
+
+          {/* Emphasis bands, when a caller has a reason for one. */}
           {highlights.map(([a, b], i) => {
             const x1 = chart.xs[a];
             const x2 = chart.xs[b];
@@ -356,7 +420,17 @@ export default function SalesSummaryChart({
               label width, so the last one ran past the viewBox and was cut in
               half, and the connector rules landed on top of the text whenever
               the labels were a different length. */}
-          {visible.length > 0 && (
+          {/* One day names itself once, centred. Taking first, middle and last
+              of a single-element series printed the same date three times with
+              rules drawn between the copies. */}
+          {visible.length === 1 && (
+            <g className="fill-[#525252] text-[12px]">
+              <text x={W / 2} y={FOOTER_Y + 10.5} dominantBaseline="middle" textAnchor="middle">
+                {axisDate(visible[0].date)}
+              </text>
+            </g>
+          )}
+          {visible.length > 1 && (
             <g className="fill-[#525252] text-[12px]">
               <text x={PLOT_X} y={FOOTER_Y + 10.5} dominantBaseline="middle" textAnchor="start">
                 {axisDate(visible[0].date)}
@@ -417,6 +491,7 @@ export default function SalesSummaryChart({
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }
