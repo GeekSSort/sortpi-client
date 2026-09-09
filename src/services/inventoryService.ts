@@ -1,5 +1,5 @@
 import { InventoryProduct, InventoryQueryFilter } from "@/types/inventory";
-import { apiFetch, apiList } from "./apiClient";
+import { ApiError, apiDownload, apiFetch, apiList, apiUpload, saveBlob } from "./apiClient";
 import { toInventoryProduct } from "./mappers/inventory";
 
 /** An id and a name, for the form's dropdowns. */
@@ -48,6 +48,31 @@ export interface CreateProductPayload {
   sku?: string;
   barcode?: string;
   reorderLevel?: number;
+}
+
+/** One row of an import, as the server reports it back. */
+export interface ImportRow {
+  line: number;
+  status: "created" | "error";
+  name: string;
+  sku: string | null;
+  code?: string;
+  message?: string;
+}
+
+/**
+ * What a dry run or a real import produced.
+ *
+ * `created` is always 0 for a dry run — the run happens inside a transaction
+ * that is rolled back, so "would have created" is what `valid` counts.
+ */
+export interface ImportReport {
+  dryRun: boolean;
+  total: number;
+  valid: number;
+  created: number;
+  failed: number;
+  rows: ImportRow[];
 }
 
 export class InventoryService {
@@ -293,6 +318,52 @@ export class InventoryService {
       method: "POST",
     });
   }
+  /**
+   * Send a CSV to the importer.
+   *
+   * `dryRun` first, always, from the screen's point of view: the server runs
+   * the SAME code path either way — a dry run is a real import inside a
+   * transaction it rolls back — so a clean dry run is a promise the real one
+   * keeps. Showing the report before writing is the whole value of that.
+   */
+  static async importCsv(file: File, { dryRun }: { dryRun: boolean }): Promise<ImportReport> {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("dry_run", dryRun ? "true" : "false");
+    return apiUpload<ImportReport>("/products/import/", form);
+  }
+
+  /**
+   * Download the catalogue as CSV, honouring the filters on screen.
+   *
+   * The same query the list is showing, so "Export" means "export this" rather
+   * than "export something else" — a button that quietly exports the whole
+   * catalogue while the screen shows a search is a button that lies.
+   */
+  static async exportCsv(params?: InventoryQueryFilter & { search?: string }): Promise<void> {
+    const query = new URLSearchParams();
+    if (params?.search) query.set("search", params.search);
+    if (params?.category) query.set("category", params.category);
+    if (params?.status) query.set("status", params.status);
+    const qs = query.toString() ? `?${query.toString()}` : "";
+
+    const { blob, filename } = await apiDownload(`/products/export/${qs}`, "products.csv");
+    saveBlob(blob, filename);
+  }
+
+  /** Wording a shopkeeper can act on, for the import and export paths. */
+  static describeFileError(error: unknown): string {
+    if (error instanceof ApiError) {
+      if (error.code === "NETWORK_ERROR") return "Cannot reach the server.";
+      if (error.status === 403) return "You do not have permission to do that.";
+      if (error.status === 413) return "That file is too large.";
+      const field = Object.values(error.errors || {})[0];
+      if (Array.isArray(field) && field.length) return String(field[0]);
+      return error.message;
+    }
+    return "That did not work.";
+  }
+
 }
 
 /**

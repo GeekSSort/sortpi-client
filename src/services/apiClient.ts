@@ -431,6 +431,140 @@ export async function apiFetch<T>(
   return mapper ? mapper(payload) : payload;
 }
 
+/**
+ * A multipart POST — a file going up.
+ *
+ * `apiFetch` cannot do this: it sets `Content-Type: application/json` on every
+ * request, and a multipart body needs the BOUNDARY in that header, which only
+ * the browser can generate. Setting it by hand produces a body the server
+ * cannot split.
+ *
+ * Everything else is the same request path — the bearer token, the tenant
+ * host, the envelope, the error codes — because a file upload that invents its
+ * own auth is a file upload that breaks the day tokens change.
+ */
+export async function apiUpload<T>(
+  endpoint: string,
+  form: FormData,
+  options: Omit<ApiFetchOptions, "body" | "headers"> = {}
+): Promise<T> {
+  const base = resolveBaseUrl();
+  const url = `${base}/${normalizeEndpoint(endpoint).replace(/^\/+/, "")}`;
+
+  const headers: Record<string, string> = { Accept: "application/json" };
+  const token = tokenStore.access();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  if (options.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
+  if (options.branchId) headers["X-Branch"] = options.branchId;
+
+  let response: Response;
+  try {
+    response = await fetch(url, { method: "POST", body: form, headers });
+  } catch (cause) {
+    throw new ApiError(0, "NETWORK_ERROR", `Could not reach the API at ${base}.`, {
+      cause: String(cause),
+    });
+  }
+
+  let body: any = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+  if (body) {
+    const originalErrors = body.errors;
+    body = snakeToCamelCase(body);
+    if (originalErrors && typeof originalErrors === "object") body.errors = originalErrors;
+  }
+
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      body?.code || "HTTP_ERROR",
+      body?.message || `Upload to ${endpoint} failed with ${response.status}.`,
+      body?.errors || {},
+      body?.requestId
+    );
+  }
+  return (body && "data" in body ? body.data : body) as T;
+}
+
+/**
+ * A file coming down, as a blob and the name the server gave it.
+ *
+ * `apiFetch` parses every response as JSON, so a CSV would come back null. And
+ * a plain `<a href>` cannot be used for these: the endpoint needs the bearer
+ * token, which an anchor cannot send, and on a tenant subdomain it also needs
+ * to go to that host rather than wherever the page happens to be.
+ *
+ * The filename is read from `Content-Disposition` rather than guessed, so the
+ * server stays the one place that decides what a download is called.
+ */
+export async function apiDownload(
+  endpoint: string,
+  fallbackName: string
+): Promise<{ blob: Blob; filename: string }> {
+  const base = resolveBaseUrl();
+  const url = `${base}/${normalizeEndpoint(endpoint).replace(/^\/+/, "")}`;
+
+  const headers: Record<string, string> = {};
+  const token = tokenStore.access();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, { method: "GET", headers });
+  } catch (cause) {
+    throw new ApiError(0, "NETWORK_ERROR", `Could not reach the API at ${base}.`, {
+      cause: String(cause),
+    });
+  }
+
+  if (!response.ok) {
+    // A refusal still arrives as the JSON envelope, so the reason survives.
+    let body: any = null;
+    try {
+      body = await response.json();
+    } catch {
+      body = null;
+    }
+    throw new ApiError(
+      response.status,
+      body?.code || "HTTP_ERROR",
+      body?.message || `Download of ${endpoint} failed with ${response.status}.`,
+      body?.errors || {},
+      body?.requestId
+    );
+  }
+
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+  return {
+    blob: await response.blob(),
+    filename: match ? decodeURIComponent(match[1]) : fallbackName,
+  };
+}
+
+/**
+ * Hand a blob to the browser as a download.
+ *
+ * The object URL is revoked afterwards: without it every export leaks the
+ * whole file for the life of the tab, and a shopkeeper exporting a catalogue
+ * repeatedly is exactly who would notice.
+ */
+export function saveBlob(blob: Blob, filename: string): void {
+  const href = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // A tick later: Safari has not started reading the blob when click() returns.
+  setTimeout(() => URL.revokeObjectURL(href), 1000);
+}
+
 export async function apiList<T>(
   endpoint: string,
   options?: ApiFetchOptions,

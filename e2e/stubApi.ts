@@ -33,6 +33,7 @@ const ALL_PERMISSIONS = [
   "product.view",
   "product.create",
   "product.update",
+  "product.import",
   "product.view_cost",
   "inventory.view",
   "inventory.adjust",
@@ -119,7 +120,20 @@ function ok(data: unknown, extra: Record<string, unknown> = {}) {
   return JSON.stringify({ success: true, data, ...extra });
 }
 
-export async function stubApi(page: Page) {
+export async function stubApi(
+  page: Page,
+  /**
+   * Narrow the signed-in account.
+   *
+   * `without` drops permission codes, which is how a screen's permission
+   * gating gets tested: the alternative is a second route handler racing this
+   * one, and Playwright runs the LAST registered handler first, so that fights
+   * the stub rather than layering on it.
+   */
+  options: { without?: string[] } = {}
+) {
+  const permissions = ALL_PERMISSIONS.filter((code) => !(options.without ?? []).includes(code));
+  const me = { ...ME, permissions };
   /**
    * Discounts that have been PUT during this test.
    *
@@ -141,12 +155,39 @@ export async function stubApi(page: Page) {
       // only the first and the session silently stays null — the shell still
       // paints, so the page looks right and every control gated on a
       // permission is simply absent. That is how this stub first "passed".
-      if (path.includes("/auth/me")) return ok(ME);
+      if (path.includes("/auth/me")) return ok(me);
       if (path.includes("/auth/logout")) return ok({});
       if (path.startsWith("/branches")) return ok(BRANCHES, { total: BRANCHES.length });
       if (path.startsWith("/notifications/unread")) return ok({ count: 0 });
       if (path.startsWith("/settings/resolved")) return ok([]);
       if (path.startsWith("/categories")) return ok(CATEGORIES, { total: CATEGORIES.length });
+      // The CSV export is not JSON, so it is answered before the envelope
+      // handlers below and with the headers the download helper reads.
+      if (path.startsWith("/products/export")) return "__CSV__";
+      if (path.startsWith("/products/import")) {
+        // A dry run reports; a real run creates. The screen must tell them
+        // apart, so the stub does too.
+        const dry = /dry_run"?\r?\n?\s*true/i.test(route.request().postData() || "");
+        return ok({
+          dry_run: dry,
+          total: 3,
+          valid: 2,
+          created: dry ? 0 : 2,
+          failed: 1,
+          rows: [
+            { line: 2, status: "created", name: "Rice 5kg", sku: "R5", code: null, message: null },
+            { line: 3, status: "created", name: "Dal 1kg", sku: "D1", code: null, message: null },
+            {
+              line: 4,
+              status: "error",
+              name: "Ghee 500g",
+              sku: "G5",
+              code: "UNKNOWN_CATEGORY",
+              message: "No category named 'Dairy' exists. Create it before importing.",
+            },
+          ],
+        });
+      }
       if (path.startsWith("/products/discounts"))
         return ok([...discounts.values()], { total: discounts.size });
       if (/^\/products\/[^/]+\/discount/.test(path)) {
@@ -241,6 +282,20 @@ export async function stubApi(page: Page) {
       // are read by the pagination bar, so they have to be present and honest.
       return ok([], { total: 0, page: 1, limit: 20 });
     })();
+
+    if (body === "__CSV__") {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/csv; charset=utf-8",
+        headers: {
+          "access-control-allow-origin": "*",
+          "access-control-expose-headers": "Content-Disposition",
+          "content-disposition": 'attachment; filename="products.csv"',
+        },
+        body: "name,category,unit\nRice 5kg,Grains,Piece\n",
+      });
+      return;
+    }
 
     await route.fulfill({
       status: 200,
