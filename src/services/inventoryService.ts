@@ -269,7 +269,25 @@ export class InventoryService {
       // Must match what the URL was signed with, or the bucket refuses it.
       headers: { "Content-Type": file.type },
     });
-    if (!put.ok) throw new Error(`The image could not be stored (${put.status}).`);
+    if (!put.ok) {
+      /**
+       * Say WHICH thing was wrong, not just the number.
+       *
+       * The bare status read as "the upload endpoint is missing" and sent
+       * people looking at the API, when a 404 here can only mean the BUCKET
+       * does not exist — which is what happened when the project was renamed
+       * and `AWS_STORAGE_BUCKET_NAME` no longer matched the bucket in the
+       * volume. Every product image upload failed with `404` and nothing on
+       * screen named the cause.
+       */
+      const reason =
+        put.status === 404
+          ? "the storage bucket does not exist — check AWS_STORAGE_BUCKET_NAME"
+          : put.status === 403
+            ? "the storage rejected the signature — check the endpoint, key and region"
+            : `the storage answered ${put.status}`;
+      throw new Error(`The image could not be stored: ${reason}.`);
+    }
 
     await apiFetch<unknown>(`/products/${productId}/images/${imageId}/confirm/`, {
       method: "POST",

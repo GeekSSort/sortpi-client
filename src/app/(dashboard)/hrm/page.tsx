@@ -14,7 +14,7 @@ import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "
 import { toTimeInput } from "@/services/mappers/employee";
 import { toApiDay } from "@/lib/dateFilter";
 import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
-import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/QueryBoundary";
+import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 
 /**
  * All Employees — Figma 59:17405.
@@ -196,8 +196,8 @@ export default function HrmPage() {
     <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 59:17407. Same shape as the other list pages: search on the
           left, the controls that narrow the list on the right. */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
+      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
+        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
           <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
             <SearchIcon />
             <input
@@ -391,6 +391,19 @@ export default function HrmPage() {
 
         {/* Below md the grid cannot hold eight columns; each row becomes a card. */}
         <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
+          {/* Below md there is no table, so the boundary around it never
+              speaks here. Without this the phone showed one blank card for
+              loading, for failure and for an empty list alike. */}
+          <CardListState
+            loading={loading}
+            error={error}
+            hasData={data !== undefined}
+            isEmpty={rows.length === 0}
+            errorMessage={HrmService.describeError(error)}
+            emptyMessage={term || filter !== "All Employees" || day ? "No employees match this view." : "No employees yet."}
+            onRetry={refetch}
+            rows={4}
+          />
           {rows.map((e) => (
             <div key={e.id || e.index} className="rounded-[10px] border border-solid border-[#eaeaea] p-[12px]">
               <div className="flex items-center justify-between gap-[8px]">

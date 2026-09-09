@@ -326,7 +326,30 @@ async function request<T>(
   } catch {
     body = null;
   }
-  if (mapSnakeCase && body) body = snakeToCamelCase(body);
+  if (mapSnakeCase && body) {
+    /**
+     * `errors` keeps the server's own key names.
+     *
+     * `snakeToCamelCase` walks the whole body and cannot tell a FIELD from a
+     * MAP KEY, so the error envelope's `{"grand_total": "800.0000"}` arrived
+     * as `{"grandTotal": ...}` — and every reader that looked for the name the
+     * API documents found nothing. The POS re-price retry was dead code for
+     * exactly this reason: it tested `errors.grand_total`, which was always
+     * undefined, so a till whose total disagreed with the server showed the
+     * cashier a refusal instead of settling at the server's figure.
+     *
+     * The keys in here are a CONTRACT — `openapi.yaml` names them, and a
+     * client is told to branch on them — so they are put back verbatim after
+     * the transform. The same reasoning applies to `subscription.limits` and
+     * `usage`, which `authService` normalises on its own because it also has
+     * to accept the camelCased shape from any response cached before this.
+     */
+    const originalErrors = body.errors;
+    body = snakeToCamelCase(body);
+    if (originalErrors && typeof originalErrors === "object") {
+      body.errors = originalErrors;
+    }
+  }
 
   if (response.ok) return body as Envelope<T>;
 

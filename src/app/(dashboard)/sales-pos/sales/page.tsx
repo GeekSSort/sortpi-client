@@ -12,7 +12,7 @@ import { toApiDay } from "@/lib/dateFilter";
 import { formatMoney } from "@/lib/format";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
 import { useQuery, queryKey, setQueryData } from "@/lib/query/useQuery";
-import { QueryBoundary, RefreshBar, EmptyState, ErrorState } from "@/components/shared/QueryBoundary";
+import { CardListState, EmptyState, ErrorState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import { DetailSkeleton } from "@/components/shared/Skeleton";
 import Receipt from "@/components/shared/Receipt";
 import { useShopProfile } from "@/components/shared/useShopProfile";
@@ -199,8 +199,8 @@ export default function SalesPage() {
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 45:3003 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
+      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
+        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
           <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
             <SearchIcon />
             <input
@@ -351,6 +351,19 @@ export default function SalesPage() {
 
         {/* Stacked cards below md */}
         <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
+          {/* Below md there is no table, so the boundary around it never
+              speaks here. Without this the phone showed one blank card for
+              loading, for failure and for an empty list alike. */}
+          <CardListState
+            loading={loading}
+            error={error}
+            hasData={data !== undefined}
+            isEmpty={rows.length === 0}
+            errorMessage="Sales could not be loaded."
+            emptyMessage={term || date ? "No sales match that search or date." : "No sales yet."}
+            onRetry={refetch}
+            rows={4}
+          />
           {rows.map((s) => (
             <div
               key={s.id}
