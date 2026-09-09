@@ -14,6 +14,9 @@ export interface PayrollRecord {
   netSalary: number;
   netSalaryFormatted: string;
   status: "Paid" | "Pending";
+  /** The run's period, as "YYYY-MM-DD". Which month this payslip pays for. */
+  periodStart: string;
+  periodEnd: string;
   /** Draft-run payslips can be corrected; posted ones are in the ledger. */
   editable?: boolean;
 }
@@ -23,5 +26,7 @@ export interface PayrollQueryFilter {
   status?: string;
   page?: number;
   limit?: number;
+  /** One month, as "2026-09". Omit for every month. */
+  month?: string;
 }
 

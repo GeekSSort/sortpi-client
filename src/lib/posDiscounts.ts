@@ -51,6 +51,24 @@ export function effectivePercent(price: number, d: Discount | undefined): number
  * legal discount instead of being silently refused.
  */
 export function capped(price: number, d: Discount, cap: number): Discount {
-  if (d.mode === "percent") return { mode: "percent", value: Math.min(cap, d.value) };
-  return { mode: "flat", value: Math.min(d.value, (price * cap) / 100) };
+  if (d.mode === "percent") return { mode: "percent", value: toMoney(Math.min(cap, d.value)) };
+  return { mode: "flat", value: toMoney(Math.min(d.value, (price * cap) / 100)) };
+}
+
+/**
+ * Four decimal places, which is what the money column holds.
+ *
+ * `(19.99 * 20) / 100` is `3.9979999999999993` in IEEE-754, and the API refuses
+ * it: "Ensure that there are no more than 4 decimal places." Applying a
+ * discount to a selection would fail on whichever products happened to land on
+ * a non-representable fraction, and the screen reported the whole batch as
+ * "Not everything saved" without saying which or why.
+ *
+ * Rounded HERE rather than at the request, so the number shown in the rate
+ * card's preview is the number that gets stored. Rounding only on the way out
+ * would leave the two disagreeing in the fourth decimal, which is the kind of
+ * difference nobody sees until they reconcile a day's takings.
+ */
+function toMoney(value: number): number {
+  return Math.round(value * 10_000) / 10_000;
 }

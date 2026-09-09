@@ -1,11 +1,13 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import Link from "next/link";
 import { BranchService } from "@/services/branchService";
 import { tokenStore } from "@/services/apiClient";
 import { Branch, CreateBranchPayload } from "@/types/branch";
 import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
 import { useSession } from "@/services/useSession";
+import { atPlanLimit } from "@/services/authService";
 
 /**
  * The branch the dashboard reports on, and the way to add another.
@@ -48,6 +50,11 @@ export default function BranchSwitcher({ onChange }: { onChange?: (branchId: str
    * than on a role NAME keeps that true after a shop renames its roles.
    */
   const { user: session, loading: sessionLoading } = useSession();
+  // Read once, so the JSX below reads as a question about the plan rather than
+  // as four lookups.
+  const branchesFull = atPlanLimit(session?.subscription, "max_branches");
+  const planBranches = session?.subscription?.limits?.max_branches ?? 0;
+  const planName = session?.subscription?.planName || "this plan";
   const maySwitch = Boolean(session?.permissions?.includes("branch.view"));
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
@@ -146,14 +153,14 @@ export default function BranchSwitcher({ onChange }: { onChange?: (branchId: str
   if (sessionLoading || !maySwitch) return null;
 
   return (
-    <div ref={rootRef} className="relative select-none">
+    <div ref={rootRef} className="relative min-w-0 flex-1 select-none md:flex-none">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         disabled={switching}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex h-[48px] min-w-[210px] cursor-pointer items-center justify-between gap-[12px] rounded-[12px] border border-[#e5e5e5] bg-white px-[14px] transition-colors hover:border-[#f5b800] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#f5b800] disabled:cursor-not-allowed disabled:opacity-60"
+        className="flex h-[48px] w-full min-w-0 cursor-pointer items-center justify-between gap-[12px] rounded-[12px] border border-[#e5e5e5] bg-white px-[14px] transition-colors hover:border-[#f5b800] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#f5b800] disabled:cursor-not-allowed disabled:opacity-60 md:w-auto md:min-w-[210px]"
       >
         <span className="flex min-w-0 items-center gap-[10px]">
           <StoreIcon />
@@ -165,7 +172,13 @@ export default function BranchSwitcher({ onChange }: { onChange?: (branchId: str
       {open && (
         <div
           role="listbox"
-          className="absolute right-0 z-40 mt-[6px] w-[260px] overflow-hidden rounded-[12px] border border-[#e5e5e5] bg-white shadow-[0_12px_32px_rgba(0,0,0,0.12)]"
+          /* Anchored to whichever edge has room. Below md the only live copy
+             of this control is the one in the sidebar, hard against the LEFT
+             of the screen — a right-anchored 260px panel there starts at -36px
+             and the first third of every branch name is off the screen. From
+             md up it is back in the header at the right, where the opposite is
+             true. */
+          className="absolute left-0 z-40 mt-[6px] w-[260px] max-w-[calc(100vw-32px)] overflow-hidden rounded-[12px] border border-[#e5e5e5] bg-white shadow-[0_12px_32px_rgba(0,0,0,0.12)] md:right-0 md:left-auto"
         >
           <p className="px-[14px] pt-[10px] pb-[6px] text-[11px] font-medium tracking-[0.06em] text-[#8a8a8a] uppercase">
             Showing figures for
@@ -193,17 +206,44 @@ export default function BranchSwitcher({ onChange }: { onChange?: (branchId: str
           </ul>
 
           <div className="border-t border-[#e5e5e5] p-[8px]">
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                setModalOpen(true);
-              }}
-              className="flex w-full cursor-pointer items-center gap-[9px] rounded-[8px] px-[12px] py-[10px] text-left text-[14px] font-medium text-[#1e1e1e] transition-colors hover:bg-[#fdf7e6]"
-            >
-              <PlusIcon />
-              Add branch
-            </button>
+            {/*
+              The ceiling is checked BEFORE the form opens.
+              `/auth/me` has carried `subscription.limits` and `usage` since
+              plan limits were built and nothing read them, so the only way to
+              find out you were at your branch ceiling was to fill the form in
+              and be refused by the API — after typing a code, a name, a phone
+              number and an address.
+
+              The server is still the authority; this only decides whether to
+              offer the button, and says what to do instead.
+            */}
+            {branchesFull ? (
+              <div className="flex flex-col gap-[6px] px-[12px] py-[10px]">
+                <span className="text-[13px] font-medium text-[#1e1e1e]">
+                  You are using all {planBranches} branch
+                  {planBranches === 1 ? "" : "es"} on {planName}.
+                </span>
+                <Link
+                  href="/settings?upgrade=1"
+                  onClick={() => setOpen(false)}
+                  className="text-[13px] font-semibold text-[#f5b800]"
+                >
+                  Upgrade to add more →
+                </Link>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  setModalOpen(true);
+                }}
+                className="flex w-full cursor-pointer items-center gap-[9px] rounded-[8px] px-[12px] py-[10px] text-left text-[14px] font-medium text-[#1e1e1e] transition-colors hover:bg-[#fdf7e6]"
+              >
+                <PlusIcon />
+                Add branch
+              </button>
+            )}
           </div>
         </div>
       )}

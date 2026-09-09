@@ -22,6 +22,9 @@ const NAV = [
   { name: "Invoices", href: "/platform/invoices", icon: InvoicesIcon },
   { name: "Plans", href: "/platform/plans", icon: PlansIcon },
   { name: "Staff", href: "/platform/staff", icon: StaffIcon },
+  // After Staff, because the two are read together: a staff account is
+  // useless without a role, and a role is only visible through who holds it.
+  { name: "Manage roles", href: "/platform/roles", icon: RolesIcon },
 ];
 
 function DashboardIcon() {
@@ -72,6 +75,21 @@ function PlansIcon() {
   );
 }
 
+/** A key: what a role hands out. */
+function RolesIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden className="block shrink-0">
+      <circle cx="7" cy="7" r="3.4" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M9.4 9.4 16.5 16.5M14 15l1.6-1.6M12 13l1.6-1.6"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function StaffIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden className="block shrink-0">
@@ -118,12 +136,16 @@ export default function PlatformSidebar({
         }`}
       />
       <aside
-        className={`fixed inset-y-0 left-0 z-50 flex h-screen w-[240px] shrink-0 overflow-hidden bg-[#eaeaea] px-[16px] py-[20px] transition-transform duration-300 ease-in-out select-none lg:static lg:z-40 lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-50 flex h-screen w-[240px] shrink-0 bg-[#eaeaea] px-[16px] py-[20px] transition-transform duration-300 ease-in-out select-none lg:static lg:z-40 lg:translate-x-0 ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >
         <div className="flex h-full w-[208px] flex-col justify-between">
-          <div className="flex w-full flex-col items-center gap-[32px]">
+          {/* Scrolls rather than clips, for the same reason the shop sidebar
+              does: seven rows plus the logo and the footer outgrow a phone in
+              landscape, and the aside's `overflow-hidden` simply cut off
+              whatever did not fit. `min-h-0` is what lets it shrink. */}
+          <div className="flex w-full min-h-0 flex-1 flex-col items-center gap-[32px] overflow-y-auto overflow-x-hidden [scrollbar-width:thin]">
             <Link href="/platform" className="block h-[54px] w-[208px] shrink-0">
               <Image
                 src="/sidebar/logo.png"
@@ -170,7 +192,7 @@ export default function PlatformSidebar({
             </nav>
           </div>
 
-          <div className="flex w-full flex-col gap-[12px]">
+          <div className="flex w-full shrink-0 flex-col gap-[12px] pt-[12px]">
             <button
               type="button"
               disabled={signingOut}

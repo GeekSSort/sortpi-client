@@ -2,7 +2,8 @@
 
 import React, { useEffect, useState } from "react";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
-import { clearScannerLog, useScannerState } from "./useBarcodeScanner";
+import { beep, clearScannerLog, useScannerRaw, useScannerState } from "./useBarcodeScanner";
+import { setScanVolume, useScanVolume } from "./scanSound";
 import {
   connectSerialScanner,
   disconnectSerialScanner,
@@ -135,6 +136,10 @@ export default function ScannerPanel({
   onSubmitCode: (code: string) => void | Promise<void>;
 }) {
   const scanner = useScannerState();
+  const volume = useScanVolume();
+  // Its own subscription: every keystroke notifies this, and nothing else on
+  // the till should re-render thirteen times while a barcode is being read.
+  const raw = useScannerRaw();
   const serial = useSerialScanner();
   const [manual, setManual] = useState("");
   // The "2s ago" has to move on its own while the panel is open.
@@ -197,6 +202,61 @@ export default function ScannerPanel({
       }
     >
         <div className="flex flex-col gap-[14px]">
+          {/* How loud, on THIS till.
+
+              The beep was a fixed level, and a level that carries across a
+              shop floor with a fridge and a queue is the wrong level on a desk
+              in a quiet office — the same company has both, which is why this
+              is per device rather than a shop setting. The default is exactly
+              what the till shipped with, so nobody who never opens this hears a
+              change; above it, it is genuinely louder than before.
+
+              The Test button is not a nicety: a volume control you cannot hear
+              while you move it is set by scanning something and guessing. */}
+          <div className="flex flex-col gap-[8px] rounded-[12px] bg-[#fafafa] p-[16px]">
+            <div className="flex items-center justify-between gap-[10px]">
+              <label
+                htmlFor="scan-volume"
+                className="text-[14px] font-medium tracking-[-0.28px] text-[#1e1e1e]"
+              >
+                Beep volume
+              </label>
+              <span className="text-[13px] tabular-nums text-[#525252]">
+                {volume === 0 ? "Silent" : `${Math.round(volume * 100)}%`}
+              </span>
+            </div>
+            <div className="flex items-center gap-[12px]">
+              <input
+                id="scan-volume"
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={Math.round(volume * 100)}
+                onChange={(e) => setScanVolume(Number(e.target.value) / 100)}
+                className="h-[6px] min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-[#eaeaea] accent-[#f5b800]"
+              />
+              <button
+                type="button"
+                onClick={() => beep(true)}
+                className="h-[34px] shrink-0 cursor-pointer rounded-[8px] bg-white px-[12px] text-[13px] font-medium text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:text-[#1e1e1e]"
+              >
+                Test
+              </button>
+              <button
+                type="button"
+                onClick={() => beep(false)}
+                title="The tone for a code the till does not recognise"
+                className="h-[34px] shrink-0 cursor-pointer rounded-[8px] bg-white px-[12px] text-[13px] font-medium text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:text-[#1e1e1e]"
+              >
+                Error tone
+              </button>
+            </div>
+            <p className="text-[12px] leading-[1.5] text-[#8f8d87]">
+              Applies to this till only, and is remembered on this device.
+            </p>
+          </div>
+
           {/* The state and the last code â the two things somebody with a
               working scanner opened this to see. */}
           <div
@@ -395,9 +455,9 @@ export default function ScannerPanel({
                 <summary className={FOLD_SUMMARY}>
                   <ChevronIcon />
                   Raw keystrokes
-                  {scanner.raw.length > 0 && (
+                  {raw.length > 0 && (
                     <span className="text-[#a3a3a3]">
-                      ({scanner.raw.length})
+                      ({raw.length})
                     </span>
                   )}
                 </summary>
@@ -417,14 +477,14 @@ export default function ScannerPanel({
                     </button>
                   </div>
 
-                  {scanner.raw.length === 0 ? (
+                  {raw.length === 0 ? (
                     <p className="rounded-[8px] bg-[#fafafa] px-[12px] py-[10px] text-[12px] text-[#a3a3a3]">
                       No keystrokes yet.
                     </p>
                   ) : (
                     <div className="max-h-[120px] overflow-y-auto rounded-[8px] bg-[#fafafa] p-[8px]">
                       <div className="flex flex-wrap gap-[4px]">
-                        {scanner.raw.map((k, i) => (
+                        {raw.map((k, i) => (
                           <span
                             key={i}
                             title={`landed on <${k.target}>`}

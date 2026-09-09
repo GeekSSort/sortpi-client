@@ -112,14 +112,19 @@ export default function PosPage() {
         {/* Products, what has been rung up, and the money — one job each. All
             three are as tall as the window and scroll inside themselves, so
             the page never scrolls as a whole. */}
-        {/* The product wall carries more per row than the other two columns:
-            tiles have a minimum width of 150px, so at 1.6fr it fitted only two
-            per row on a laptop while the cart and the invoice sat half empty.
-            the extra width comes from the SELECTED ITEMS column, which holds
-            two short columns and has room to spare, not from the invoice —
-            that one carries the discount box, the coupon field and the
-            totals, and narrowing it clipped their labels. */}
-        <div className="grid h-full w-full min-h-0 grid-cols-1 gap-[16px] xl:grid-cols-[2.1fr_0.95fr_1.2fr]">
+        {/* Selected items and the invoice are the SAME width — they are the two
+            halves of one sale, and a cashier reads across them.
+
+            They were 0.95fr and 1.2fr. Equalising them at the NARROWER figure
+            would have been the obvious way and is the wrong one: the invoice
+            column carries the discount box, the coupon field and the totals,
+            and narrowing it clips their labels. So both sit at the WIDER of the
+            two and the difference comes off the product wall, which gives up
+            2.1fr for 1.85fr — tiles have a 150px minimum, and 1.85fr still
+            fits the same number per row at every width the till is used at.
+            The three tracks still sum to 4.25, so nothing else on the page
+            moves. */}
+        <div className="grid h-full w-full min-h-0 grid-cols-1 gap-[16px] xl:grid-cols-[1.85fr_1.2fr_1.2fr]">
           <div className="flex min-h-0 min-w-0 flex-col overflow-y-auto rounded-[12px] bg-white p-[16px] shadow-[inset_0_0_0_1px_#eaeaea]">
             <ProductGrid onSelectProduct={handleSelectProduct} />
           </div>
@@ -154,14 +159,20 @@ export default function PosPage() {
           width, then pins the invoice column at its natural 565 so a wide
           monitor gives the extra pixels to the product grid instead. Both
           columns are as tall as the window and scroll inside themselves. */}
-      <div className="pos-split grid h-full w-full min-h-0 grid-cols-1 gap-[31px]">
-        {/* Product list (left) — 45:2171 */}
-        <div className="flex min-h-0 min-w-0 flex-col overflow-y-auto">
+      <div className="pos-split grid h-full w-full min-h-0 grid-cols-1 gap-[16px]">
+        {/* Product list (left) — 45:2171.
+            The SAME card as the three-column view: white, 12px radius, 16px
+            padding, a hairline inset border. The two views used to look like
+            two products — bare columns on a grey page here, bordered cards
+            there — and a cashier switching between them had to re-find every
+            control. The gap matches too (16 rather than 31), so the two
+            layouts sit on the same grid. */}
+        <div className="flex min-h-0 min-w-0 flex-col overflow-y-auto rounded-[12px] bg-white p-[16px] shadow-[inset_0_0_0_1px_#eaeaea]">
           <ProductGrid onSelectProduct={handleSelectProduct} />
         </div>
 
         {/* Cart & checkout (right) — 45:2333 */}
-        <div className="flex min-h-0 min-w-0 flex-col overflow-y-auto">
+        <div className="flex min-h-0 min-w-0 flex-col overflow-y-auto rounded-[12px] bg-white p-[16px] shadow-[inset_0_0_0_1px_#eaeaea]">
           <CartPanel
             cart={cart}
             onUpdateQuantity={handleUpdateQuantity}

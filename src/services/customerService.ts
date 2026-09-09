@@ -41,14 +41,86 @@ export class CustomerService {
   static async recordPayment(
     customerId: string,
     amount: number,
-    note = ""
+    note = "",
+    options: {
+      /** Which invoices this money settles, and by how much. Amounts POSITIVE. */
+      allocations?: { saleId: string; amount: number }[];
+      /** How it was paid, so the ledger debits the account it moved through. */
+      paymentMethod?: string;
+      /**
+       * One key for one PAYMENT, not one per attempt.
+       *
+       * The default is `Date.now()`, which makes every retry a new payment —
+       * fine for a button pressed once, wrong for a dialog that can be
+       * double-tapped. A caller that mints a key when the dialog opens gets
+       * the at-most-once guarantee the header exists for; these ledgers are
+       * insert-only, so a double post is corrected by hand or not at all.
+       */
+      idempotencyKey?: string;
+    } = {}
   ): Promise<{ balanceAfter: number }> {
     const row = await apiFetch<any>(`/customers/${customerId}/payments/`, {
       method: "POST",
-      idempotencyKey: `pay-${customerId}-${Date.now()}`,
-      body: JSON.stringify({ amount, reference_type: "PAYMENT", note }),
+      idempotencyKey: options.idempotencyKey ?? `pay-${customerId}-${Date.now()}`,
+      body: JSON.stringify({
+        // A STRING, never a JSON number. `apiClient` documents the rule in the
+        // other direction — Decimal crosses the API as a string — and it holds
+        // on the way out too: `JSON.stringify(1234.5)` is a float, and DRF's
+        // DecimalField would build its Decimal from one.
+        amount: amount.toFixed(4),
+        reference_type: "PAYMENT",
+        note,
+        ...(options.paymentMethod ? { payment_method: options.paymentMethod } : {}),
+        // Sent only when there are any, so a payment ON ACCOUNT hashes exactly
+        // as it did before allocation existed and every key already issued
+        // still replays.
+        ...(options.allocations?.length
+          ? {
+              allocations: options.allocations.map((a) => ({
+                sale_id: a.saleId,
+                amount: a.amount.toFixed(4),
+              })),
+            }
+          : {}),
+      }),
     });
     return { balanceAfter: toAmount(row?.balanceAfter ?? row?.balance_after) };
+  }
+
+  /**
+   * This customer's invoices, and what each one STILL owes.
+   *
+   * `outstanding` is derived from the ledger — charged, less returns, less
+   * every payment and allocation — and is NOT the `due_amount` on the sale
+   * row, which is what was owed the day it was rung up and never moves again.
+   * Allocating against that column would offer to settle money a return has
+   * already credited back.
+   *
+   * Oldest first, which is the order a payment is applied in.
+   */
+  /** One customer, by id. The list row shape, for a detail page's header. */
+  static async getCustomer(customerId: string): Promise<CustomerRecord> {
+    const row = await apiFetch<any>(`/customers/${customerId}/`, { method: "GET" });
+    return toCustomerRecord(row);
+  }
+
+  static async getInvoices(
+    customerId: string,
+    { includeSettled = false } = {}
+  ): Promise<CustomerInvoice[]> {
+    const rows = await apiFetch<any>(
+      `/customers/${customerId}/invoices/${includeSettled ? "?all=true" : ""}`,
+      { method: "GET" }
+    );
+    return (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      id: String(row?.id ?? ""),
+      invoiceNumber: String(row?.invoiceNumber ?? row?.invoice_number ?? ""),
+      saleDate: String(row?.saleDate ?? row?.sale_date ?? ""),
+      branchName: String(row?.branchName ?? row?.branch_name ?? ""),
+      grandTotal: toAmount(row?.grandTotal ?? row?.grand_total),
+      paidAmount: toAmount(row?.paidAmount ?? row?.paid_amount),
+      outstanding: toAmount(row?.outstanding),
+    }));
   }
 
   /**
@@ -102,4 +174,16 @@ async function nextCustomerCode(): Promise<string> {
     if (found) highest = Math.max(highest, Number(found[1]));
   }
   return `CUS-${String(highest + 1).padStart(3, "0")}`;
+}
+
+/** One of a customer's invoices, as the detail page shows it. */
+export interface CustomerInvoice {
+  id: string;
+  invoiceNumber: string;
+  saleDate: string;
+  branchName: string;
+  grandTotal: number;
+  paidAmount: number;
+  /** Still owed, from the ledger. Zero means settled. */
+  outstanding: number;
 }

@@ -15,7 +15,7 @@ import Avatar from "@/components/shared/Avatar";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
 import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
 import { ListSkeleton } from "@/components/shared/Skeleton";
-import { QueryBoundary, RefreshBar, EmptyState, ErrorState } from "@/components/shared/QueryBoundary";
+import { CardListState, EmptyState, ErrorState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 
 /**
  * User List — Figma 59:18134.
@@ -123,6 +123,37 @@ export default function RolesPermissionsPage() {
   // list on screen is empty. Sharing one state meant the refetch an action
   // triggers cleared the confirmation that action had just set.
   const [note, setNote] = useState<string | null>(null);
+  /**
+   * Handing the company to somebody else.
+   *
+   * The mirror of the console's own handover, and it exists for the same
+   * reason: the server refuses to let the LAST active Admin step down, and a
+   * refusal with no next step is worse than the outage it prevents. Adds an
+   * owner and removes none, so an interrupted handover leaves two.
+   */
+  const [handOverOpen, setHandOverOpen] = useState(false);
+  const [handOver, setHandOver] = useState({ email: "", fullName: "" });
+  const [handingOver, setHandingOver] = useState(false);
+  const [handOverError, setHandOverError] = useState<string | null>(null);
+
+  const transferOwnership = async () => {
+    setHandingOver(true);
+    setHandOverError(null);
+    try {
+      await RoleService.transferOwnership(handOver.email.trim(), handOver.fullName.trim());
+      setNote(
+        `${handOver.email.trim()} is now an Admin. They have been emailed a link ` +
+          "to set a password. You can change your own role once they have."
+      );
+      setHandOverOpen(false);
+      setHandOver({ email: "", fullName: "" });
+      invalidate("roles");
+    } catch (e) {
+      setHandOverError(RoleService.describeError(e));
+    } finally {
+      setHandingOver(false);
+    }
+  };
   const [roleOf, setRoleOf] = useState<SystemUserRecord | null>(null);
   const [nextRole, setNextRole] = useState("");
   const [dropOf, setDropOf] = useState<SystemUserRecord | null>(null);
@@ -274,6 +305,7 @@ export default function RolesPermissionsPage() {
   }
 
   return (
+    <>
     <div className="flex w-full flex-col gap-[14px]">
       {/* Two things live on this screen and they are different kinds of thing:
           the people, and the jobs those people hold. */}
@@ -322,8 +354,8 @@ export default function RolesPermissionsPage() {
       ) : (
       <>
       {/* Headline — 59:18136 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
+      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
+        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
           <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
             <SearchIcon />
             <input
@@ -384,6 +416,16 @@ export default function RolesPermissionsPage() {
               </ul>
             )}
           </div>
+
+          {can.create && (
+            <button
+              type="button"
+              onClick={() => setHandOverOpen(true)}
+              className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] text-[15px] font-medium whitespace-nowrap text-[#525252] transition-colors hover:bg-[#fafafa]"
+            >
+              Hand over ownership
+            </button>
+          )}
 
           {can.create && (
             <Link
@@ -522,7 +564,19 @@ export default function RolesPermissionsPage() {
 
         {/* Below md the grid cannot hold nine columns; each row becomes a card. */}
         <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
-          {loading && <ListSkeleton rows={4} />}
+          {/* Was a bare loading skeleton: a failed load and an empty list both
+              fell through to nothing at all, on a screen where "no users" and
+              "we could not fetch the users" mean very different things. */}
+          <CardListState
+            loading={loading}
+            error={usersQuery.error}
+            hasData={usersQuery.data !== undefined}
+            isEmpty={rows.length === 0}
+            errorMessage={loadError ?? "Users could not be loaded."}
+            emptyMessage={scope ? "Nobody matches this view in this branch." : "No users match this view."}
+            onRetry={usersQuery.refetch}
+            rows={4}
+          />
           {!loading &&
             rows.map((u) => (
               <div key={u.id} className="rounded-[10px] p-[12px] shadow-[inset_0_0_0_1px_#eaeaea]">
@@ -680,6 +734,69 @@ export default function RolesPermissionsPage() {
         </p>
       </Modal>
     </div>
+
+      <Modal
+        open={handOverOpen}
+        onClose={() => setHandOverOpen(false)}
+        title="Hand over ownership"
+        width={460}
+        footer={
+          <>
+            <button type="button" className={MODAL_GHOST} onClick={() => setHandOverOpen(false)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={handingOver || !handOver.email.trim()}
+              style={{ backgroundImage: GOLD_GRADIENT }}
+              className={MODAL_PRIMARY}
+              onClick={transferOwnership}
+            >
+              {handingOver ? "Sending..." : "Make them an Admin"}
+            </button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-[14px]">
+          <p className="text-[13px] leading-[1.6] text-[#525252]">
+            They become an Admin straight away, and are emailed a link to choose
+            their own password if the account is new. Nothing is taken away from
+            you — change your own role afterwards.
+          </p>
+          <label className="flex flex-col gap-[6px]">
+            <span className="text-[13px] font-medium text-[#1e1e1e]">Their email</span>
+            <input
+              type="email"
+              value={handOver.email}
+              onChange={(e) => setHandOver({ ...handOver, email: e.target.value })}
+              className={FIELD}
+              placeholder="successor@yourshop.com"
+            />
+          </label>
+          <label className="flex flex-col gap-[6px]">
+            <span className="text-[13px] font-medium text-[#1e1e1e]">Their name (optional)</span>
+            <input
+              value={handOver.fullName}
+              onChange={(e) => setHandOver({ ...handOver, fullName: e.target.value })}
+              className={FIELD}
+            />
+          </label>
+          <p className="text-[12px] leading-[1.5] text-[#8f8d87]">
+            A company always has at least one Admin. Until somebody else holds
+            it, the last one cannot change their own role or be deactivated —
+            nobody left could add a user or grant a role again.
+          </p>
+          {handOverError && (
+            <p
+              role="alert"
+              className="rounded-[10px] bg-[#fdeceb] px-[12px] py-[10px] text-[13px] font-medium text-[#a02620]"
+            >
+              {handOverError}
+            </p>
+          )}
+        </div>
+      </Modal>
+    </>
   );
 }
 

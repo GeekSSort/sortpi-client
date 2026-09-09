@@ -13,13 +13,8 @@ import { DashboardService, CustomerService, topSellerTiles } from "@/services";
 import { tokenStore } from "@/services/apiClient";
 import { useQuery, queryKey } from "@/lib/query/useQuery";
 import { resolveRange, previousRange, previousLabel, type RangeOption } from "@/lib/range";
-import {
-  StatCardsSkeleton,
-  ChartSkeleton,
-  CardGridSkeleton,
-  ListSkeleton,
-} from "@/components/shared/Skeleton";
-import { QueryBoundary, RefreshBar, EmptyState, ErrorState } from "@/components/shared/QueryBoundary";
+import { StatCardsSkeleton, ChartSkeleton, CardGridSkeleton } from "@/components/shared/Skeleton";
+import { CardListState, EmptyState, ErrorState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import { DashboardResponse, MetricCardData } from "@/types/dashboard";
 import { CustomerRecord } from "@/types/customer";
 import ProductImage from "@/components/shared/ProductImage";
@@ -379,7 +374,7 @@ export default function PosReportsPage() {
           <p className="text-[16px] leading-[1.5] font-medium tracking-[-0.32px] whitespace-nowrap text-[#1e1e1e]">
             Recent Customer List
           </p>
-          <div className="flex h-[44px] w-full items-center justify-between gap-[12px] rounded-[10px] bg-white px-[12px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
+          <div className="flex h-[44px] w-full items-center justify-between gap-[12px] rounded-[10px] bg-white px-[12px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
             <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
               <SearchIcon />
               <input
@@ -488,10 +483,19 @@ export default function PosReportsPage() {
 
         {/* Stacked cards below md */}
         <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
-          {customersLoading && customerPage === undefined && <ListSkeleton rows={pageSize} />}
-          {customersError !== undefined && customerPage === undefined && (
-            <ErrorState message="Could not load the customer list." onRetry={refetchCustomers} compact />
-          )}
+          {/* Loading and failure were already answered here; an empty result was
+              not, and read as a list still arriving. Same component as every
+              other card list now, so the three states cannot drift apart. */}
+          <CardListState
+            loading={customersLoading}
+            error={customersError}
+            hasData={customerPage !== undefined}
+            isEmpty={rows.length === 0}
+            errorMessage="Could not load the customer list."
+            emptyMessage={query ? "No customers match that search." : "No customers yet."}
+            onRetry={refetchCustomers}
+            rows={4}
+          />
           {rows.map((c) => (
             <button
               key={c.id}

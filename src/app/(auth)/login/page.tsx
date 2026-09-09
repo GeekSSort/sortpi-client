@@ -6,11 +6,13 @@ import Image from "next/image";
 
 import { AuthService } from "@/services";
 import { resolveRealm, currentSubdomain } from "@/services/apiClient";
+import { platformHref } from "@/lib/realmUrl";
 
 /**
  * Login — Figma 19:7398.
- * Sizes match the frame: a 549x563 card, 24px padding and gaps, a 501px
- * column, 56px controls.
+ * Follows the frame for padding, gaps and the 56px controls. The card is
+ * narrower than the frame's 549px: at that width the 56px inputs read as a
+ * form stretched to fill a box rather than one sized to its content.
  */
 
 /** Eye with a slash, node 19:7428. */
@@ -85,6 +87,14 @@ export default function LoginPage() {
   const realm = useSyncExternalStore(subscribe, resolveRealm, () => "tenant" as const);
   const shop = useSyncExternalStore(subscribe, currentSubdomain, () => null);
   const isConsole = realm === "platform";
+  // Resolved in the browser for the same reason the realm is: the host is the
+  // input and the server does not have it. The server-rendered value is the
+  // relative path, which is what this was before and is correct on the apex.
+  const signupHref = useSyncExternalStore(
+    subscribe,
+    () => platformHref("/signup"),
+    () => "/signup"
+  );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -126,10 +136,10 @@ export default function LoginPage() {
         }}
       />
 
-      {/* Login card — 549x563, radius 10, 24px padding, 24px gap */}
+      {/* Login card — radius 10, 24px padding, 24px gap. Width matches AuthShell. */}
       <form
         onSubmit={handleSubmit}
-        className="relative flex w-full max-w-[549px] flex-col items-center gap-[24px] rounded-[10px] bg-white p-[24px] shadow-[0px_0px_28px_0px_rgba(207,207,207,0.16),inset_0px_0px_1px_0px_rgba(0,0,0,0.25)]"
+        className="relative flex w-full max-w-[480px] flex-col items-center gap-[24px] rounded-[10px] bg-white p-[24px] shadow-[0_1px_2px_0_rgba(16,24,40,0.04),0_8px_20px_-6px_rgba(16,24,40,0.08),0_28px_56px_-16px_rgba(16,24,40,0.12),inset_0_0_0_1px_rgba(16,24,40,0.05)]"
       >
         {/* image 6 — 106x100, radius 24 */}
         <Image
@@ -246,9 +256,22 @@ export default function LoginPage() {
         {!isConsole && (
           <p className="w-full text-center text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252]">
             New company?{" "}
-            <Link href="/signup" className="cursor-pointer font-medium text-[#f5b800]">
+            {/*
+              An <a> to the PLATFORM, not a <Link> to "/signup".
+
+              Registering a company is the platform's job. On
+              `nusrat.sortpi.com` a relative "/signup" kept the person on
+              Nusrat's front door, so somebody creating their OWN new company
+              did it from inside an existing customer's address — and every
+              step after it, including the address the finished account is told
+              to sign in at, was resolved against the wrong host.
+
+              `platformHref` returns the plain relative path when subdomains are
+              switched off, so a single-tenant deployment is unchanged.
+            */}
+            <a href={signupHref} className="cursor-pointer font-medium text-[#f5b800]">
               Create an account
-            </Link>
+            </a>
           </p>
         )}
 

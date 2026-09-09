@@ -33,6 +33,11 @@ export function toPayrollRows(runs: PayrollRun[]): PayrollRecord[] {
       const netSalary = toAmount(slip?.netPay);
       rows.push({
         id: String(slip?.id ?? ""),
+        // Which month this payslip pays for. The table used to show every run
+        // a company had ever made, one after another, with nothing on a row to
+        // say which was which — the same person and the same salary twice.
+        periodStart: String(run.periodStart ?? ""),
+        periodEnd: String(run.periodEnd ?? ""),
         // Only a draft run can be corrected; a posted one is in the ledger.
         editable: String(run.status || "").toUpperCase() === "DRAFT",
         index: String(rows.length + 1).padStart(2, "0"),

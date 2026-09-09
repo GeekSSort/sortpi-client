@@ -96,7 +96,9 @@
    goes to the product grid, which turns them into more product columns. */
 @media (min-width: 1024px) {
   .pos-split {
-    grid-template-columns: minmax(0, 1fr) min(calc(50% - 15.5px), 565px);
+    /* The 15.5px was half of a 31px gap. Both POS views now use a 16px gap so
+       they sit on the same grid, so the half is 8. */
+    grid-template-columns: minmax(0, 1fr) min(calc(50% - 8px), 565px);
   }
 }
 

@@ -9,6 +9,12 @@ import { useQuery, queryKey, setQueryData } from "@/lib/query/useQuery";
 import { AuthService, NotificationService } from "@/services";
 import { useSession, clearSessionCache } from "@/services/useSession";
 import BranchSwitcher from "./BranchSwitcher";
+import {
+  UpgradeBarButton,
+  UpgradeDialog,
+  UpgradeMenuItem,
+  UpgradePlanChip,
+} from "./UpgradeButton";
 import PosViewToggle from "@/components/modules/pos/PosViewToggle";
 import { NotificationItem } from "@/types/notifications";
 import { useSidebar } from "./SidebarContext";
@@ -157,6 +163,15 @@ export default function Header({ title, subtitle, user }: HeaderProps) {
 
   const { user: session } = useSession();
   const [open, setOpen] = useState<"bell" | "profile" | null>(null);
+  /**
+   * The plan dialog is owned HERE, not by whichever button opened it.
+   *
+   * It used to live inside the account dropdown on a phone, and opening it
+   * closed the dropdown — which unmounted the dialog along with it, so the
+   * button did nothing at all. One dialog, mounted outside everything that can
+   * disappear, opened by either trigger.
+   */
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [items, setItems] = useState<NotificationItem[]>([]);
   const menuRef = useRef<HTMLDivElement>(null);
   const [bellLoading, setBellLoading] = useState(false);
@@ -248,44 +263,81 @@ export default function Header({ title, subtitle, user }: HeaderProps) {
 
   return (
     <>
-    <header className="flex w-full items-center justify-between px-[16px] py-[16px] select-none sm:px-[24px]">
-      <div className="flex min-w-0 flex-col justify-center">
-        <h1 className="truncate text-[28px] leading-[1.15] font-bold tracking-[-0.5px] text-[#f5b800] sm:text-[34px] lg:text-[42px]">
-          {heading}
-        </h1>
-        {sub && (
-          <p className="mt-[2px] truncate text-[14px] leading-[1.5] font-normal tracking-[-0.28px] text-[#525252]">
-            {sub}
-          </p>
-        )}
+    {/* Below md this bar carries the title, the bell and the avatar, and
+        nothing else.
+
+        Everything that did not fit a phone used to be given `hidden sm:block`
+        and simply disappear: the plan chip, Upgrade, and the branch dropdown.
+        The first two are an inconvenience. The third is not — the branch
+        cursor is SERVER-SIDE state, every scoped list in the app answers
+        differently once it moves, and below 640px there was no way to move it
+        and no sign it existed. A manager on a phone was silently pinned to
+        whichever branch they last chose at a desk.
+
+        Neither is hidden now; both moved somewhere a phone has room for them.
+        Upgrade is a row in the account menu, beside Settings and Log Out,
+        where the other whole-account actions already are. The branch switcher
+        sits at the top of the sidebar drawer, above the menu it re-scopes.
+        From md up both are back in this bar and nothing about the desktop
+        layout changes. */}
+    <header className="flex w-full items-center justify-between gap-[12px] px-[16px] py-[16px] sm:px-[24px]">
+      <div className="flex min-w-0 flex-1 items-center gap-[10px]">
+        {/* On the left, beside the title, which is where the console keeps it
+            and where a menu button is looked for. It used to sit on the right
+            in a row of four circles, reading as a third notification icon. */}
+        <button
+          type="button"
+          onClick={toggleSidebar}
+          aria-label="Toggle navigation"
+          className="flex size-[40px] shrink-0 cursor-pointer items-center justify-center rounded-[10px] bg-white text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] lg:hidden"
+        >
+          <MenuIcon />
+        </button>
+
+        <div className="flex min-w-0 flex-col justify-center">
+          <h1 className="truncate text-[24px] leading-[1.15] font-bold tracking-[-0.5px] text-[#f5b800] sm:text-[32px] lg:text-[42px]">
+            {heading}
+          </h1>
+          {/* Hidden on a phone: at this width it truncates to half a sentence,
+              which tells you less than the title already did and costs a line
+              of a screen that has few to spare. */}
+          {sub && (
+            <p className="mt-[2px] hidden truncate text-[14px] leading-[1.5] font-normal tracking-[-0.28px] text-[#525252] sm:block">
+              {sub}
+            </p>
+          )}
+        </div>
       </div>
 
-      {/* Menu — 30:15362 */}
-      <div ref={menuRef} className="relative flex shrink-0 items-center gap-[12px]">
+      {/* Plan, then Upgrade, then the branch dropdown — in that order, because
+          that is the order the questions come in: what are we on, how do I get
+          more, and which shop am I looking at. The first two are also what
+          EXPLAINS the third when "Add branch" is refused.
+
+          Hidden below md, where the two of them live in the account menu and
+          the sidebar instead. Only one of each is ever on screen: a hidden
+          ancestor takes its dialog with it, so the copies cannot both open. */}
+      <div className="hidden shrink-0 items-center gap-[12px] md:flex">
         {/* The till is the one page here with two layouts, and it is the same
-            control the cashier's own top bar carries. */}
+            control the cashier's own top bar carries. Below sm there is no
+            room for two or three columns anyway, so the choice is moot. */}
         {pathname === "/pos" && (
           <div className="hidden sm:block">
             <PosViewToggle />
           </div>
         )}
+        <UpgradePlanChip />
+        <UpgradeBarButton onClick={() => setUpgradeOpen(true)} />
+
         {/* The branch cursor lives here rather than on one page because it is
             not a filter on one screen: it is server-side state, and every
             branch-scoped list in the app answers differently once it moves.
             Reachable from wherever you notice you are in the wrong branch. */}
-        <div className="hidden sm:block">
-          <BranchSwitcher onChange={onBranchSwitched} />
-        </div>
+        <BranchSwitcher onChange={onBranchSwitched} />
+      </div>
 
-        <button
-          type="button"
-          onClick={toggleSidebar}
-          aria-label="Toggle navigation"
-          className="flex size-[46px] shrink-0 cursor-pointer items-center justify-center rounded-full text-[#525252] transition-colors hover:bg-black/5 lg:hidden"
-        >
-          <MenuIcon />
-        </button>
-
+      {/* Menu — 30:15362 */}
+      <div ref={menuRef} className="relative flex shrink-0 items-center gap-[12px]">
         {/* btn — 30:15364 */}
         <button
           type="button"
@@ -349,6 +401,18 @@ export default function Header({ title, subtitle, user }: HeaderProps) {
               <p className="truncate text-[14px] font-medium text-[#262626]">{profile.name}</p>
               <p className="truncate text-[12px] text-[#525252]">{profile.email}</p>
             </div>
+            {/* Above Settings, and only below md — from there up it is the
+                button in the bar. Closing the menu when the dialog opens is
+                the point of `onOpen`: leaving a dropdown hanging over a modal
+                is how you end up clicking the wrong one. */}
+            <div className="md:hidden">
+              <UpgradeMenuItem
+                onClick={() => {
+                  setUpgradeOpen(true);
+                  setOpen(null);
+                }}
+              />
+            </div>
             <Link
               href="/settings"
               onClick={() => setOpen(null)}
@@ -369,6 +433,7 @@ export default function Header({ title, subtitle, user }: HeaderProps) {
     </header>
     {/* Sleek rule separating the bar from the page. */}
     <div className="h-px w-full shrink-0 bg-[#1e1e1e]/12" />
+    <UpgradeDialog open={upgradeOpen} onClose={() => setUpgradeOpen(false)} />
     </>
   );
 }

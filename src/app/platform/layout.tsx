@@ -38,6 +38,13 @@ const TITLES: Record<string, { title: string; note: string }> = {
     title: "Staff",
     note: "The SortPi people who can sign in to this console.",
   },
+  // Was missing, so the one console page reached from a button rather than the
+  // menu announced itself as "Console — SortPi staff only", the fallback. The
+  // sidebar said Manage roles and the page said something else.
+  "/platform/roles": {
+    title: "Manage roles",
+    note: "What each console role can do, and who may change it.",
+  },
 };
 
 function MenuIcon() {

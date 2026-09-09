@@ -7,6 +7,9 @@ import { usePathname, useRouter } from "next/navigation";
 import { AuthService } from "@/services";
 import { clearSessionCache, useSession } from "@/services/useSession";
 
+import { canOpenPage } from "@/lib/pageAccess";
+
+import BranchSwitcher from "./BranchSwitcher";
 import { useSidebar } from "./SidebarContext";
 import {
   CaretIcon,
@@ -136,10 +139,54 @@ export default function Sidebar() {
   // Read once at mount this went stale: the sidebar lives in the layout and
   // never remounts, so moving between sections left the wrong one open.
   // Setting it during render keeps it in step.
-  const { user: session } = useSession();
+  const { user: session, loading: sessionLoading } = useSession();
   const router = useRouter();
 
-  const routeSection = NAV.find((i) => i.children && i.match(pathname))?.name ?? null;
+  /**
+   * Only the destinations this account can actually open.
+   *
+   * The menu used to list all thirteen to everybody who reached it, so an
+   * Accountant saw HRM, Roles & Permissions and Settings and was refused by
+   * each. Hiding a row is NOT the control — the API refuses these regardless,
+   * which is where authorization belongs — but a menu that offers what it
+   * cannot open is a menu nobody trusts, and it is how somebody concludes the
+   * product is broken rather than that they lack a permission.
+   *
+   * Sub-items are filtered on their own codes, and a section whose children
+   * all disappear goes with them. A destination with no entry in the map is
+   * shown, so an unlisted page is visible rather than silently dropped.
+   */
+  const permissions = session?.permissions;
+  const nav = React.useMemo(() => {
+    // Unfiltered until the session lands. `useSession` starts at null, and
+    // filtering on an empty permission list would paint an EMPTY sidebar for
+    // the first frame and then fill it in — a worse artefact than briefly
+    // showing a row the account cannot open, which the API refuses anyway.
+    if (sessionLoading || !permissions) return NAV;
+    return NAV.map((item) => {
+      const children = item.children?.filter((child) => canOpenPage(child.href, permissions));
+      return { ...item, children };
+    }).filter((item) => {
+      if (item.children && item.children.length > 0) return true;
+      if (item.children && item.children.length === 0) return false;
+      return canOpenPage(item.href, permissions);
+    });
+  }, [permissions, sessionLoading]);
+
+  /**
+   * A branch switch changes the answer to every request on the page.
+   *
+   * Same handling as the header's copy, and for the same reason: the token is
+   * new, the permissions in it are new, and every list on screen was fetched
+   * under the old one. `router.refresh()` would not do it — these are client
+   * pages that fetch in effects, and nothing would re-run.
+   */
+  const onBranchSwitched = React.useCallback(() => {
+    clearSessionCache();
+    window.location.reload();
+  }, []);
+
+  const routeSection = nav.find((i) => i.children && i.match(pathname))?.name ?? null;
   const [openSection, setOpenSection] = useState<string | null>(routeSection);
   const [lastRoute, setLastRoute] = useState<string | null>(routeSection);
 
@@ -162,13 +209,26 @@ export default function Sidebar() {
           collapsed state, so the rail is always open on desktop and always shut
           on first paint below it — no media query in JS, so no hydration flash. */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 flex h-screen w-[240px] shrink-0 overflow-hidden bg-[#eaeaea] px-[16px] py-[20px] transition-transform duration-300 ease-in-out select-none lg:static lg:z-40 lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-50 flex h-screen w-[240px] shrink-0 bg-[#eaeaea] px-[16px] py-[20px] transition-transform duration-300 ease-in-out select-none lg:static lg:z-40 lg:translate-x-0 ${
           isCollapsed ? "-translate-x-full" : "translate-x-0"
         }`}
       >
       <div className="flex h-full w-[208px] flex-col justify-between">
-        {/* Top: logo + menu, 32px apart */}
-        <div className="flex w-full flex-col items-center gap-[32px]">
+        {/* Top: the logo, the branch cursor on a phone, and the menu.
+
+            The MENU is what scrolls, not this group. Eleven rows, the logo and
+            the footer want about 740px; a phone in landscape has 375 and an
+            iPhone SE in portrait has 667, so the bottom of the menu used to be
+            CLIPPED by the aside's `overflow-hidden` with no way to reach it —
+            Settings, Log Out and the profile simply were not there. Opening a
+            section, which adds three more rows, cut it further.
+
+            Scrolling the nav alone rather than this whole group matters twice
+            over: the branch cursor stays put while you look down the menu, and
+            its dropdown is not inside a scroll container — an `overflow` box
+            clips absolutely-positioned children, so anchoring it here would
+            have cut the branch list off at the menu's edge. */}
+        <div className="flex w-full min-h-0 flex-1 flex-col items-center gap-[24px]">
           <Link href="/dashboard" className="block h-[54px] w-[208px] shrink-0">
             <Image
               src="/sidebar/logo.png"
@@ -180,8 +240,24 @@ export default function Sidebar() {
             />
           </Link>
 
-          <nav className="flex w-[208px] flex-col gap-[8px]">
-            {NAV.map((item) => {
+          {/* The branch cursor, on a phone.
+
+              It is in the header from md up, where there is room for it. Below
+              that the header carries the title, the bell and the avatar and
+              nothing else, so it lives here — directly above the menu it
+              re-scopes, which is the right place to read it: every destination
+              under it answers for the branch named here.
+
+              Only one of the two is ever mounted for real. This copy is
+              `md:hidden` and the header's is `hidden md:flex`, and a hidden
+              ancestor takes the dropdown and the Add-branch dialog with it, so
+              they cannot both be open. */}
+          <div className="w-[208px] shrink-0 md:hidden">
+            <BranchSwitcher onChange={onBranchSwitched} />
+          </div>
+
+          <nav className="flex w-[208px] min-h-0 flex-1 flex-col gap-[8px] overflow-x-hidden overflow-y-auto [scrollbar-width:thin]">
+            {nav.map((item) => {
               const Icon = item.icon;
               const active = item.match(pathname);
 
@@ -312,8 +388,9 @@ export default function Sidebar() {
           </nav>
         </div>
 
-        {/* Bottom: log out, divider, profile — 12px apart */}
-        <div className="flex w-full flex-col gap-[12px]">
+        {/* Bottom: log out, divider, profile — 12px apart. `shrink-0` so the
+            scrolling menu above can never eat into it. */}
+        <div className="flex w-full shrink-0 flex-col gap-[12px] pt-[12px]">
           <button
             type="button"
             onClick={async () => {

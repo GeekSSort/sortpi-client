@@ -11,10 +11,11 @@ import { printBarcodeLabels } from "@/lib/printLabels";
 import TablePagination from "@/components/shared/TablePagination";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import CatalogManagerModal from "@/components/modules/dashboard/CatalogManagerModal";
-import type { CatalogKind } from "@/services/inventoryService";
+import type { CatalogKind, ImportReport } from "@/services/inventoryService";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
 import { useQuery, queryKey, setQueryData, invalidate } from "@/lib/query/useQuery";
-import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/QueryBoundary";
+import { useSession } from "@/services/useSession";
+import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import ProductImage from "@/components/shared/ProductImage";
 import { useProductDiscounts } from "@/lib/usePosDiscounts";
 import { priceAfter } from "@/services/discountService";
@@ -35,6 +36,24 @@ const STATUS_TONE: Record<InventoryProduct["status"], Tone> = {
   "Low Stock": "gold",
   "Out of Stock": "rose",
 };
+
+function ImportIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden className="shrink-0">
+      <path d="M10 12.5V3M10 12.5 6.5 9M10 12.5 13.5 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M3.5 13.5v1.5a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ExportIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden className="shrink-0">
+      <path d="M10 3v9.5M10 3 6.5 6.5M10 3l3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M3.5 13.5v1.5a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
 
 function AddIcon() {
   return (
@@ -107,6 +126,82 @@ export default function InventoryPage() {
   const [note, setNote] = useState<string | null>(null);
   /** Which lookup list the manage modal is showing, if any. */
   const [managing, setManaging] = useState<CatalogKind | null>(null);
+
+  /* ── Import and export ───────────────────────────────────────────────── */
+  /**
+   * Import is its own permission; export rides `product.view`, which anyone
+   * reading this page already holds.
+   *
+   * Hidden rather than disabled, and hiding is NOT the control — the API
+   * refuses it regardless. But a button that opens a dialog, takes a file and
+   * then fails is worse than no button, and it is how somebody concludes the
+   * product is broken rather than that they lack a permission. Shown while the
+   * session is still loading, so it does not appear and vanish.
+   */
+  const { user: session, loading: sessionLoading } = useSession();
+  const mayImport =
+    sessionLoading || !session?.permissions?.length
+      ? true
+      : session.permissions.includes("product.import");
+
+  const [importOpen, setImportOpen] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importReport, setImportReport] = useState<ImportReport | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  /** What the list is currently showing, so the export matches the screen. */
+  const exportFilters = { search: term || undefined };
+
+  const runExport = async () => {
+    setExporting(true);
+    try {
+      await InventoryService.exportCsv(exportFilters);
+    } catch (e) {
+      setNote(InventoryService.describeFileError(e));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const closeImport = () => {
+    setImportOpen(false);
+    setImportFile(null);
+    setImportReport(null);
+    setImportError(null);
+    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  /**
+   * Check the file, then write it — never the other way round.
+   *
+   * The dry run is not a preview built from different code: the server runs the
+   * real import inside a transaction and rolls it back, so a clean dry run is
+   * a promise the real one keeps. That is only worth anything if the screen
+   * actually shows the report before committing, which is why this is two
+   * steps and not a single "Import" button.
+   */
+  const runImport = async (dryRun: boolean) => {
+    if (!importFile) return;
+    setImportBusy(true);
+    setImportError(null);
+    try {
+      const report = await InventoryService.importCsv(importFile, { dryRun });
+      setImportReport(report);
+      if (!dryRun) {
+        // A real import changes the catalogue the till prices from and the
+        // product list on screen; both read these keys.
+        invalidate("inventory", "pos-products", "dashboard");
+        setNote(`${report.created} product${report.created === 1 ? "" : "s"} imported.`);
+      }
+    } catch (e) {
+      setImportError(InventoryService.describeFileError(e));
+    } finally {
+      setImportBusy(false);
+    }
+  };
   const [detailOf, setDetailOf] = useState<InventoryProduct | null>(null);
   /** How many stickers to print. A case of 24 wants 24, and printing them one
       at a time is why people give up and write the price on with a marker. */
@@ -195,8 +290,8 @@ export default function InventoryPage() {
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 51:10943 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
+      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
+        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
           <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
             <SearchIcon />
             <input
@@ -240,6 +335,31 @@ export default function InventoryPage() {
           >
             <BrandIcon />
             Brands
+          </button>
+          {/* Import and Export sit either side of nothing by accident: they are
+              the two halves of the same job — take the catalogue out, put a
+              corrected one back — and they belong beside Add New because that
+              is the button somebody reaches for when they have fifty products
+              to enter and realise one at a time will not do. */}
+          {mayImport && (
+          <button
+            type="button"
+            onClick={() => setImportOpen(true)}
+            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[12px] bg-white px-[16px] py-[8px] text-[15px] leading-[24px] font-medium whitespace-nowrap text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e]"
+          >
+            <ImportIcon />
+            Import
+          </button>
+          )}
+          <button
+            type="button"
+            onClick={runExport}
+            disabled={exporting}
+            title="Download what is on screen as CSV"
+            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[12px] bg-white px-[16px] py-[8px] text-[15px] leading-[24px] font-medium whitespace-nowrap text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <ExportIcon />
+            {exporting ? "Exporting…" : "Export"}
           </button>
           <Link
             href="/inventory/add"
@@ -372,6 +492,19 @@ export default function InventoryPage() {
 
         {/* Stacked cards below md */}
         <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
+          {/* Below md there is no table, so the boundary around it never
+              speaks here. Without this the phone showed one blank card for
+              loading, for failure and for an empty list alike. */}
+          <CardListState
+            loading={loading}
+            error={error}
+            hasData={data !== undefined}
+            isEmpty={rows.length === 0}
+            errorMessage="Products could not be loaded."
+            emptyMessage={term ? "No products match that search." : "No products yet."}
+            onRetry={refetch}
+            rows={4}
+          />
           {rows.map((r) => (
             <div
               key={r.id}
@@ -726,6 +859,127 @@ export default function InventoryPage() {
           onClose={() => setManaging(null)}
         />
       )}
+
+      {/* Import — check first, then write.
+          The dialog stays open on the report because the report IS the point:
+          a run that quietly imported and told you afterwards would make the
+          dry run decorative. */}
+      <Modal
+        open={importOpen}
+        onClose={closeImport}
+        title="Import products"
+        width={640}
+        footer={
+          <>
+            <button type="button" className={MODAL_GHOST} onClick={closeImport}>
+              {importReport && !importReport.dryRun ? "Done" : "Cancel"}
+            </button>
+            {(!importReport || importReport.dryRun) && (
+              <button
+                type="button"
+                disabled={
+                  !importFile ||
+                  importBusy ||
+                  // A checked file with nothing importable in it: the button
+                  // would post a run that creates zero products.
+                  (importReport !== null && importReport.valid === 0)
+                }
+                style={{ backgroundImage: GOLD_GRADIENT }}
+                // NOT `Boolean(importReport)` — that is inverted, and the
+                // inversion meant the FIRST press wrote to the database with
+                // no dry run at all, which is the one thing this dialog exists
+                // to prevent. No report yet means check; a report means write.
+                onClick={() => runImport(importReport === null)}
+              >
+                {importBusy
+                  ? "Working…"
+                  : importReport
+                    ? `Import ${importReport.valid} product${importReport.valid === 1 ? "" : "s"}`
+                    : "Check the file"}
+              </button>
+            )}
+          </>
+        }
+      >
+        <div className="flex flex-col gap-[14px]">
+          <p className="text-[14px] leading-[1.6] text-[#525252]">
+            A UTF-8 CSV with a header row. The columns are the ones{" "}
+            <button
+              type="button"
+              onClick={runExport}
+              className="cursor-pointer font-medium text-[#f5b800] underline underline-offset-2"
+            >
+              Export
+            </button>{" "}
+            writes, so the quickest way to a valid file is to export one and
+            edit it. Categories, brands, units and taxes are matched BY NAME and
+            must already exist.
+          </p>
+
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv,text/csv"
+            aria-label="CSV file"
+            onChange={(e) => {
+              setImportFile(e.target.files?.[0] ?? null);
+              // A new file invalidates the previous report; leaving it up would
+              // let somebody commit a run they checked against another file.
+              setImportReport(null);
+              setImportError(null);
+            }}
+            className="w-full cursor-pointer rounded-[10px] border border-dashed border-[#eaeaea] bg-[#fafafa] p-[14px] text-[13px] text-[#525252] file:mr-[12px] file:cursor-pointer file:rounded-[8px] file:border-0 file:bg-white file:px-[12px] file:py-[6px] file:text-[13px] file:font-medium file:text-[#525252] file:shadow-[inset_0_0_0_1px_#eaeaea]"
+          />
+
+          {importReport && (
+            <div className="flex flex-col gap-[10px]">
+              <div className="flex flex-wrap items-center gap-x-[16px] gap-y-[4px] text-[13px]">
+                <span className="text-[#525252]">
+                  {importReport.total} row{importReport.total === 1 ? "" : "s"} read
+                </span>
+                <span className="font-medium text-[#16a34a]">
+                  {importReport.dryRun ? importReport.valid : importReport.created}{" "}
+                  {importReport.dryRun ? "ready" : "imported"}
+                </span>
+                {importReport.failed > 0 && (
+                  <span className="font-medium text-[#e63946]">
+                    {importReport.failed} to fix
+                  </span>
+                )}
+              </div>
+
+              {importReport.failed > 0 && (
+                <div className="flex max-h-[220px] flex-col gap-[6px] overflow-y-auto rounded-[10px] border border-solid border-[#eaeaea] p-[10px]">
+                  {importReport.rows
+                    .filter((row) => row.status === "error")
+                    .map((row) => (
+                      <p key={row.line} className="text-[12px] leading-[1.5] text-[#525252]">
+                        <span className="font-medium text-[#1e1e1e]">Line {row.line}</span>
+                        {row.name ? ` · ${row.name}` : ""} — {row.message}
+                      </p>
+                    ))}
+                </div>
+              )}
+
+              {importReport.dryRun && importReport.failed > 0 && (
+                <p className="text-[12px] leading-[1.5] text-[#8f8d87]">
+                  Importing now writes the {importReport.valid} that are ready and
+                  skips the rest. Nothing has been written yet.
+                </p>
+              )}
+            </div>
+          )}
+
+          {importError && (
+            <p
+              role="alert"
+              className="rounded-[10px] bg-[#fdeceb] px-[12px] py-[10px] text-[13px] font-medium text-[#a02620]"
+            >
+              {importError}
+            </p>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }

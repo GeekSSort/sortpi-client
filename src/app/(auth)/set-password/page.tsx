@@ -4,6 +4,7 @@ import React, { Suspense, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import AuthShell, { AuthAlert, AuthButton, AuthField } from "@/components/auth/AuthShell";
 import { RegistrationService, Realm } from "@/services/registrationService";
+import { tenantHref } from "@/lib/realmUrl";
 
 /**
  * Choose a password, using the ticket the code check handed back.
@@ -42,11 +43,22 @@ function SetPasswordInner() {
     if (given) return given;
     if (realm === "platform") return "/login";
     if (purpose === "signup" && subdomain) {
-      // Their own address exists only now that the account is finished.
-      const { protocol, host } = window.location;
-      const port = host.includes(":") ? `:${host.split(":")[1]}` : "";
-      const base = host.split(":")[0].split(".").slice(-2).join(".");
-      return `${protocol}//${subdomain}.${base}${port}/login`;
+      /**
+       * Their own address exists only now that the account is finished.
+       *
+       * This used to build it from `host.split(".").slice(-2)` — the last two
+       * labels of whatever host the page was on. That is right for
+       * `sortpi.com` and wrong for every other shape: `sortpi.co.uk` became
+       * `co.uk`, `app.sortpi.com` became `sortpi.com`, and on a company
+       * address reached through the old relative sign-up link the base was
+       * derived from that company's host rather than from the platform's.
+       *
+       * `tenantHref` reads `NEXT_PUBLIC_PLATFORM_BASE_DOMAIN`, which is the
+       * value the API client already resolves the realm from and the mirror of
+       * `PLATFORM_BASE_DOMAIN` on the server — so the address a new owner is
+       * sent to is the one the backend will actually accept their token on.
+       */
+      return tenantHref(subdomain, "/login");
     }
     return "/login";
   };

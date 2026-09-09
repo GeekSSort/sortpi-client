@@ -78,7 +78,7 @@ export default function Modal({
         </div>
 
         {footer && (
-          <div className="flex shrink-0 items-center justify-end gap-[12px] border-t border-solid border-[#eaeaea] px-[20px] py-[16px]">
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-[12px] border-t border-solid border-[#eaeaea] px-[20px] py-[16px]">
             {footer}
           </div>
         )}

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { CartItem, CheckoutPayload, Customer, HeldCart, ProductItem } from "@/types/pos";
+import { CartItem, Customer, HeldCart, ProductItem } from "@/types/pos";
 import { CustomerService, PosService, SettingsService } from "@/services";
 import { useSession } from "@/services/useSession";
 import { useQuery, useMutation, queryKey, invalidate } from "@/lib/query/useQuery";

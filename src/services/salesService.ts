@@ -192,7 +192,17 @@ export class SalesService {
     };
   }
 
-  static async exportSales(_format: "csv" | "pdf" | "excel" = "csv"): Promise<void> {
+  /**
+   * Download the sales list as CSV.
+   *
+   * The `format` argument is accepted and ignored — the browser build only
+   * makes a CSV, and PDF/Excel come from `/reports/*` with an `export`
+   * parameter. Named `format` rather than `_format` so a caller reads what it
+   * is for; the eslint rule that flagged the underscore was right that a
+   * silently-unused parameter is a lie about what the method does.
+   */
+  static async exportSales(format: "csv" | "pdf" | "excel" = "csv"): Promise<void> {
+    void format;
     const { data: sales } = await SalesService.getSales();
 
     const csvContent =

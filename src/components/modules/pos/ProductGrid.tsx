@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ProductItem } from "@/types/pos";
+import { CartItem, ProductItem } from "@/types/pos";
 import ProductPeek, { PeekAnchor } from "./ProductPeek";
 import { PosService } from "@/services";
 import TablePagination from "@/components/shared/TablePagination";
@@ -12,6 +12,7 @@ import ProductImage from "@/components/shared/ProductImage";
 import ChipScroller from "@/components/shared/ChipScroller";
 import { useProductDiscounts } from "@/lib/usePosDiscounts";
 import ScannerPanel, { ScannerPill } from "./ScannerStatus";
+import { readPosDraft } from "@/components/modules/pos/posCart";
 import ScanResult, { ScanOutcome } from "./ScanResult";
 import OutOfStockDialog from "./OutOfStockDialog";
 import { beep, reportScanResult, useBarcodeScanner } from "./useBarcodeScanner";
@@ -81,6 +82,41 @@ interface ProductGridProps {
   onSelectProduct?: (product: ProductItem) => void;
 }
 
+/**
+ * Codes this till has looked up, for the next half minute.
+ *
+ * A live deployment answers a barcode lookup over the internet, so the second
+ * scan of the same product used to cost the same wait as the first. At a till
+ * that is the ordinary case, not an edge one — six of the same item is six
+ * scans.
+ *
+ * Thirty seconds, and the stock figure is what ages: a cached product carries
+ * the count it had when it was fetched. That is deliberately STRICTER than the
+ * product wall beside it, which holds its own figures for sixty
+ * (`staleMs: 60_000`), and the server refuses to sell stock it does not have
+ * whatever the till believes — so the worst a stale figure does is let a
+ * cashier add a line the checkout then explains.
+ *
+ * Module scope, not state: it must survive the re-render a scan causes, and
+ * nothing renders from it.
+ */
+const SCAN_CACHE_MS = 30_000;
+const scanCache = new Map<string, { at: number; product: ProductItem }>();
+
+function recentScan(code: string): ProductItem | undefined {
+  const hit = scanCache.get(code);
+  if (!hit) return undefined;
+  if (Date.now() - hit.at > SCAN_CACHE_MS) {
+    scanCache.delete(code);
+    return undefined;
+  }
+  return hit.product;
+}
+
+function rememberScan(code: string, product: ProductItem): void {
+  scanCache.set(code, { at: Date.now(), product });
+}
+
 export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
   const [peeked, setPeeked] = useState<PeekAnchor | null>(null);
 
@@ -113,6 +149,21 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
 
   /** "" is every category. Held as an ID, which is what the API filters on. */
   const [categoryId, setCategoryId] = useState("");
+  /**
+   * Hide what the till cannot sell.
+   *
+   * The control beside the category strip was drawn from the Figma frame and
+   * wired to nothing — a button on a till that does nothing when a cashier
+   * taps it, with a customer waiting. It is now the filter it looks like.
+   *
+   * Applied to the page in hand rather than sent to the server: the wall is
+   * already paginated server-side, and adding a stock predicate to the query
+   * would make the page counts disagree with the pager beneath them. What a
+   * cashier wants here is "stop showing me the greyed-out ones", and that is
+   * exactly a view of this page.
+   */
+  const [inStockOnly, setInStockOnly] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [query, setQuery] = useState("");
   /** The debounce settles the term before it reaches the cache key: one
       request for a word rather than one per letter, and a slow answer for "so"
@@ -163,8 +214,12 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
   const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const current = Math.min(page, totalPages);
-  // The server already sliced. This is the page.
-  const shown = products ?? [];
+  // The server already sliced. This is the page, less anything the "in stock
+  // only" filter hides.
+  const shown = useMemo(() => {
+    const page = products ?? [];
+    return inStockOnly ? page.filter((p) => p.stock > 0) : page;
+  }, [products, inStockOnly]);
 
   /**
    * A scan, or Enter on a typed code: ring the product up.
@@ -217,11 +272,34 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
       beep(true);
     };
 
-    const onTheWall = shown.find(
+    /**
+     * Three places the answer may already be, in order of how likely they are
+     * at a real till. Every one of them rings the item up with NO network call.
+     *
+     * On a developer's machine the lookup takes a millisecond and none of this
+     * matters. On a real deployment it is a round-trip over the internet, and
+     * a cashier scanning six of the same thing waited for six of them — which
+     * is what "the item appears a beat after the beep" was.
+     *
+     *   1. ALREADY IN THE BASKET. The commonest scan of all: multiples of one
+     *      item. The product in hand is the one the cart is holding, price and
+     *      all, so there is nothing to fetch.
+     *   2. ON THE WALL. `products`, not `shown` — the "in stock only" filter is
+     *      a view preference, and hiding a tile must not change what the
+     *      scanner can find.
+     *   3. SCANNED BEFORE on this till, within the last half minute.
+     */
+    const inCart = readPosDraft().items.find(
+      (line: CartItem) =>
+        line.product.barcode === code ||
+        line.product.sku.toLowerCase() === code.toLowerCase()
+    )?.product;
+    const onTheWall = (products ?? []).find(
       (p) => p.barcode === code || p.sku.toLowerCase() === code.toLowerCase()
     );
-    if (onTheWall) {
-      ring(onTheWall);
+    const known = inCart ?? onTheWall ?? recentScan(code);
+    if (known) {
+      ring(known);
       refocusSearch();
       return;
     }
@@ -231,6 +309,7 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
     try {
       const found = await PosService.lookupBarcode(code);
       if (found) {
+        rememberScan(code, found);
         ring(found);
       } else {
         // Not an error: the cashier may be typing a name, and the list below
@@ -415,13 +494,52 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
           })}
         </ChipScroller>
 
-        <button
-          type="button"
-          aria-label="More filters"
-          className="flex size-[40px] shrink-0 cursor-pointer items-center justify-center overflow-clip rounded-[10px] border border-solid border-[#eaeaea] bg-white text-[#1e1e1e] shadow-[0px_1px_2px_0px_rgba(82,88,102,0.06)] transition-colors hover:bg-[#fafafa]"
-        >
-          <MoreIcon />
-        </button>
+        <div className="relative shrink-0">
+          <button
+            type="button"
+            aria-label="More filters"
+            aria-expanded={filtersOpen}
+            aria-haspopup="true"
+            onClick={() => setFiltersOpen((open) => !open)}
+            className={`flex size-[40px] shrink-0 cursor-pointer items-center justify-center overflow-clip rounded-[10px] border border-solid bg-white shadow-[0px_1px_2px_0px_rgba(82,88,102,0.06)] transition-colors hover:bg-[#fafafa] ${
+              inStockOnly
+                ? "border-[#f5b800] text-[#f5b800]"
+                : "border-[#eaeaea] text-[#1e1e1e]"
+            }`}
+          >
+            <MoreIcon />
+          </button>
+
+          {filtersOpen && (
+            <>
+              {/* Tap anywhere else to close. Behind the panel, so the panel's
+                  own taps still land. */}
+              <div
+                aria-hidden
+                onClick={() => setFiltersOpen(false)}
+                className="fixed inset-0 z-20"
+              />
+              <div
+                role="dialog"
+                aria-label="Filters"
+                className="absolute top-[46px] right-0 z-30 w-[220px] rounded-[10px] border border-solid border-[#eaeaea] bg-white p-[12px] shadow-[0_8px_20px_-6px_rgba(16,24,40,0.12)]"
+              >
+                <label className="flex cursor-pointer items-center justify-between gap-[12px] text-[13px] leading-[1.4] text-[#1e1e1e]">
+                  <span>In stock only</span>
+                  <input
+                    type="checkbox"
+                    checked={inStockOnly}
+                    onChange={(e) => setInStockOnly(e.target.checked)}
+                    className="size-[18px] shrink-0 accent-[#f5b800]"
+                  />
+                </label>
+                <p className="mt-[8px] text-[12px] leading-[1.4] text-[#737373]">
+                  Hides what the till cannot sell on this page.
+                </p>
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Grid — 45:2197, 24px below the category row */}
@@ -530,9 +648,15 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
         // different facts, and neither is the failure state above.
         <EmptyState
           message={
-            term || categoryId
-              ? "No products match that search."
-              : "No products in the catalogue yet."
+            // The filter hides rows the SERVER counted, so a page can empty
+            // out while the pager beneath still reads "1-9 of 240". Saying
+            // which of the two emptied it is the difference between a filter
+            // and a fault.
+            inStockOnly && (products?.length ?? 0) > 0
+              ? "Everything on this page is out of stock."
+              : term || categoryId
+                ? "No products match that search."
+                : "No products in the catalogue yet."
           }
           compact
         />

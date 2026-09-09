@@ -10,8 +10,10 @@ import TablePagination from "@/components/shared/TablePagination";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Avatar from "@/components/shared/Avatar";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
-import { useQuery, queryKey, setQueryData } from "@/lib/query/useQuery";
-import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/QueryBoundary";
+import { useQuery, queryKey, setQueryData, invalidate } from "@/lib/query/useQuery";
+import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
+import { clampTypedAmount } from "@/lib/money";
+import { AmountLabel } from "@/components/shared/MaxButton";
 
 /**
  * Suppliers. There is no Figma frame for this screen, so it borrows the
@@ -87,6 +89,24 @@ export default function SuppliersPage() {
   const [editError, setEditError] = useState<string | null>(null);
   const [payOf, setPayOf] = useState<SupplierRecord | null>(null);
   const [payAmount, setPayAmount] = useState("");
+  const [payMethod, setPayMethod] = useState("CASH");
+  const [paying, setPaying] = useState(false);
+  /**
+   * One key for one PAYMENT, minted when the dialog opens.
+   *
+   * The ledger is insert-only, so a double-tapped Record posts the money twice
+   * and the only correction is a manual reversing entry. A key per ATTEMPT
+   * would make the header decorative.
+   */
+  const [payKey, setPayKey] = useState("");
+  /**
+   * A counter, not `Date.now()`.
+   *
+   * `Date.now()` in a render path is what makes a component non-deterministic
+   * between server and client; this only has to be unique within the session,
+   * and the supplier id already carries the rest of the identity.
+   */
+  const payKeyCounter = useRef(1);
   const [payError, setPayError] = useState<string | null>(null);
   const [toggleOf, setToggleOf] = useState<SupplierRecord | null>(null);
   const [deleteOf, setDeleteOf] = useState<SupplierRecord | null>(null);
@@ -162,7 +182,10 @@ export default function SuppliersPage() {
 
   const openPayment = (s: SupplierRecord) => {
     setPayAmount("");
+    setPayMethod("CASH");
     setPayError(null);
+    // A key per PAYMENT, not per attempt — see `payKey`.
+    setPayKey(`sup-pay-${s.id}-${payKeyCounter.current++}`);
     setPayOf(s);
   };
 
@@ -177,8 +200,8 @@ export default function SuppliersPage() {
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Search left, Add New right — the Purchase History header row */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
+      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
+        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
           <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
             <SearchIcon />
             <input
@@ -323,6 +346,19 @@ export default function SuppliersPage() {
 
         {/* Stacked cards below md — also tappable */}
         <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
+          {/* Below md there is no table, so the boundary around it never
+              speaks here. Without this the phone showed one blank card for
+              loading, for failure and for an empty list alike. */}
+          <CardListState
+            loading={loading}
+            error={error}
+            hasData={data !== undefined}
+            isEmpty={rows.length === 0}
+            errorMessage="Suppliers could not be loaded."
+            emptyMessage={term || status !== "All" ? "No suppliers match that search or filter." : "No suppliers yet."}
+            onRetry={refetch}
+            rows={4}
+          />
           {rows.length === 0 && (
             <p className="py-[24px] text-center text-[14px] text-[#525252]">
               No suppliers match that search or filter.
@@ -544,17 +580,48 @@ export default function SuppliersPage() {
               type="button"
               style={{ backgroundImage: GOLD_GRADIENT }}
               className={MODAL_PRIMARY}
-              onClick={() => {
-                if (!payOf) return;
+              onClick={async () => {
+                if (!payOf || paying) return;
                 const amount = Number(payAmount);
                 if (!payAmount.trim() || Number.isNaN(amount) || amount <= 0)
-                  return setPayError("Enter an amount greater than zero.");
+                  return setPayError("Enter an amount.");
                 if (amount > payOf.balance)
                   return setPayError(`That is more than the ${payOf.balanceFormatted} outstanding.`);
-                const left = payOf.balance - amount;
-                patch(payOf.id, { balance: left, balanceFormatted: money(left) });
-                setNote(`${money(amount)} paid to ${payOf.name}`);
-                setPayOf(null);
+
+                /**
+                 * IT NOW CALLS THE SERVER.
+                 *
+                 * This handler used to compute `payOf.balance - amount` and
+                 * hand it to `patch()` — a local edit of the cached row. The
+                 * balance fell on screen, the note said the money was paid,
+                 * and no request was ever made: nothing reached the supplier
+                 * ledger, the general ledger or the cash account, and the old
+                 * figure came back on the next refresh.
+                 *
+                 * `invalidate` rather than `patch`: the server owns the new
+                 * balance, and guessing it locally is how the two came apart
+                 * in the first place.
+                 */
+                setPaying(true);
+                setPayError(null);
+                try {
+                  await SupplierService.recordPayment(
+                    payOf.id,
+                    amount,
+                    `Payment to ${payOf.name}`,
+                    { paymentMethod: payMethod, idempotencyKey: payKey }
+                  );
+                  setNote(`${money(amount)} paid to ${payOf.name}`);
+                  setPayOf(null);
+                  setPayAmount("");
+                  // A supplier payment moves their balance, the payables
+                  // report, the cash account and the dashboard's P&L.
+                  invalidate("suppliers", "purchases", "dashboard");
+                } catch (err) {
+                  setPayError(SupplierService.describeError(err));
+                } finally {
+                  setPaying(false);
+                }
               }}
             >
               Record payment
@@ -568,19 +635,52 @@ export default function SuppliersPage() {
               <span className="font-medium text-[#1e1e1e]">{payOf.name}</span> has{" "}
               <span className="font-medium text-[#1e1e1e]">{payOf.balanceFormatted}</span> outstanding.
             </p>
-            <div className="flex flex-col gap-[6px]">
-              <label htmlFor="sup-pay" className={LABEL}>Amount</label>
-              <input
-                id="sup-pay"
-                inputMode="decimal"
-                value={payAmount}
-                onChange={(e) => {
-                  setPayAmount(e.target.value);
-                  setPayError(null);
-                }}
-                placeholder="0"
-                className={FIELD}
-              />
+            <div className="grid grid-cols-1 gap-[12px] sm:grid-cols-2">
+              <div className="flex flex-col gap-[6px]">
+                <AmountLabel
+                  htmlFor="sup-pay"
+                  className={LABEL}
+                  onMax={() => {
+                    setPayAmount(String(payOf?.balance ?? 0));
+                    setPayError(null);
+                  }}
+                  maxDisabled={!payOf?.balance}
+                >
+                  Amount
+                </AmountLabel>
+                <input
+                  id="sup-pay"
+                  inputMode="decimal"
+                  value={payAmount}
+                  onChange={(e) => {
+                    // Never more than is owed to them: over-typing is replaced
+                    // by the outstanding balance. See `@/lib/money`.
+                    setPayAmount(clampTypedAmount(e.target, payOf?.balance ?? 0));
+                    setPayError(null);
+                  }}
+                  placeholder="0"
+                  className={FIELD}
+                />
+              </div>
+              {/* HOW it was paid, because the general ledger credits the
+                  account the money actually moved through — cash out of the
+                  drawer, anything else out of the bank. It was assumed to be
+                  cash, which is the one account somebody counts by hand. */}
+              <div className="flex flex-col gap-[6px]">
+                <label htmlFor="sup-pay-method" className={LABEL}>Paid by</label>
+                <select
+                  id="sup-pay-method"
+                  value={payMethod}
+                  onChange={(e) => setPayMethod(e.target.value)}
+                  className={FIELD}
+                >
+                  <option value="CASH">Cash</option>
+                  <option value="BANK">Bank transfer</option>
+                  <option value="CARD">Card</option>
+                  <option value="MOBILE">Mobile banking</option>
+                  <option value="OTHER">Other</option>
+                </select>
+              </div>
             </div>
             {payError && <p className="text-[13px] text-[#e63946]">{payError}</p>}
           </div>

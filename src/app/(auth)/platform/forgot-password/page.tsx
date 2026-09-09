@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AuthShell, { AuthAlert, AuthButton, AuthField } from "@/components/auth/AuthShell";
 import { RegistrationService } from "@/services/registrationService";
+import { platformHref, useOnTenantHost } from "@/lib/realmUrl";
 
 /**
  * Forgotten password for our own staff, on the platform console.
@@ -14,15 +15,20 @@ import { RegistrationService } from "@/services/registrationService";
  * used to start a reset on one of our admin accounts — and the email would
  * look genuine.
  *
- * It has its own page and its own server route, and the address it is opened
- * on makes no difference. The banner below says so, and the server refuses it
- * either way.
+ * It has its own page and its own server route. The banner below has always
+ * said "it works only on the console address" — and until the server was given
+ * the matching check that was true of the wording alone: `is_platform_staff`
+ * scoped which ACCOUNT could be found, and nothing scoped where the request
+ * came FROM, so a customer's own subdomain could put a genuine console reset
+ * code into a staff mailbox. The server refuses that now, and this page sends
+ * the reader to the console rather than submitting into a silent 204.
  */
 export default function PlatformForgotPasswordPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const wrongHost = useOnTenantHost();
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -53,10 +59,21 @@ export default function PlatformForgotPasswordPage() {
         </>
       }
     >
-      <AuthAlert tone="info">
-        This resets a SortPi staff account, not a customer account. It works only
-        on the console address.
-      </AuthAlert>
+      {wrongHost ? (
+        <AuthAlert>
+          This resets a SortPi staff account and works only on the console
+          address.{" "}
+          <a href={platformHref("/platform/forgot-password")} className="font-medium underline">
+            Open it there
+          </a>
+          .
+        </AuthAlert>
+      ) : (
+        <AuthAlert tone="info">
+          This resets a SortPi staff account, not a customer account. It works
+          only on the console address.
+        </AuthAlert>
+      )}
 
       <AuthField
         label="Staff email"
@@ -70,7 +87,7 @@ export default function PlatformForgotPasswordPage() {
 
       {error && <AuthAlert>{error}</AuthAlert>}
 
-      <AuthButton type="submit" disabled={busy}>
+      <AuthButton type="submit" disabled={busy || wrongHost}>
         {busy ? "Sending…" : "Send code"}
       </AuthButton>
     </AuthShell>

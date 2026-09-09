@@ -11,7 +11,7 @@ import Avatar from "@/components/shared/Avatar";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
 import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
-import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/QueryBoundary";
+import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 
 /**
  * Payroll — Figma 75:5509.
@@ -52,6 +52,21 @@ function FilterIcon() {
   );
 }
 
+/** A plain chevron, for stepping a month at a time. */
+function ChevronIcon({ dir }: { dir: "left" | "right" }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden className="block">
+      <path
+        d={dir === "left" ? "M10 3.5 5.5 8l4.5 4.5" : "M6 3.5 10.5 8 6 12.5"}
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function CaretIcon({ open }: { open: boolean }) {
   return (
     <svg
@@ -88,6 +103,10 @@ export default function PayrollPage() {
   const [runOpen, setRunOpen] = useState(false);
   const [running, setRunning] = useState(false);
   const [period, setPeriod] = useState(() => PayrollService.monthBounds());
+  /** Which month the table is showing. Starts on this one. */
+  const [month, setMonth] = useState(() => PayrollService.monthKey());
+  const [monthOpen, setMonthOpen] = useState(false);
+  const monthRef = useRef<HTMLDivElement>(null);
   const [editOf, setEditOf] = useState<PayrollRecord | null>(null);
   const [form, setForm] = useState({ basicSalary: "", allowances: "", deductions: "" });
   const [saving, setSaving] = useState(false);
@@ -104,19 +123,42 @@ export default function PayrollPage() {
       page,
       limit: pageSize,
       search: term,
+      month,
       status: filter === "Payroll" ? undefined : filter,
     }),
     () =>
       PayrollService.getPayroll({
         search: term || undefined,
         status: filter === "Payroll" ? undefined : filter,
+        month,
         page,
         limit: pageSize,
       })
   );
 
+  /** Which months have anything in them, so the picker can offer them. */
+  const { data: monthsWithRuns } = useQuery(
+    queryKey("payroll-months"),
+    () => PayrollService.months(),
+    { staleMs: 60_000 }
+  );
+
   const rows = data?.data ?? [];
   const total = data?.total ?? 0;
+
+  useEffect(() => {
+    if (!monthOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (monthRef.current && !monthRef.current.contains(e.target as Node)) setMonthOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMonthOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [monthOpen]);
 
   useEffect(() => {
     if (!filterOpen) return;
@@ -183,8 +225,8 @@ export default function PayrollPage() {
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 75:5511 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
+      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
+        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
           <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
             <SearchIcon />
             <input
@@ -209,6 +251,85 @@ export default function PayrollPage() {
         </div>
 
         <div className="flex flex-col items-stretch gap-[12px] sm:flex-row sm:items-center sm:gap-[16px]">
+          {/* Which month. A step either way for the common case — last month,
+              the month before — and the name itself opens a list of the months
+              that actually have a run, so reaching last March is one click
+              rather than eighteen through screens that are empty for a reason
+              nobody can see. */}
+          <div ref={monthRef} className="relative shrink-0">
+            <div className="flex h-[48px] items-center rounded-[12px] border border-solid border-[#eaeaea] bg-white">
+              <button
+                type="button"
+                aria-label="Previous month"
+                onClick={() => {
+                  setMonth((m) => PayrollService.shiftMonth(m, -1));
+                  setPage(1);
+                }}
+                className="flex h-full w-[40px] cursor-pointer items-center justify-center rounded-l-[12px] text-[#525252] transition-colors hover:bg-[#fafafa]"
+              >
+                <ChevronIcon dir="left" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setMonthOpen((v) => !v)}
+                aria-haspopup="listbox"
+                aria-expanded={monthOpen}
+                className="h-full min-w-[150px] cursor-pointer px-[10px] text-[15px] leading-[24px] font-medium whitespace-nowrap text-[#1e1e1e] transition-colors hover:bg-[#fafafa]"
+              >
+                {PayrollService.monthLabel(month)}
+              </button>
+              <button
+                type="button"
+                aria-label="Next month"
+                onClick={() => {
+                  setMonth((m) => PayrollService.shiftMonth(m, 1));
+                  setPage(1);
+                }}
+                className="flex h-full w-[40px] cursor-pointer items-center justify-center rounded-r-[12px] text-[#525252] transition-colors hover:bg-[#fafafa]"
+              >
+                <ChevronIcon dir="right" />
+              </button>
+            </div>
+
+            {monthOpen && (
+              <ul
+                role="listbox"
+                aria-label="Months with a payroll run"
+                className="absolute left-0 z-30 mt-[6px] max-h-[280px] w-[220px] overflow-y-auto rounded-[10px] border border-[#eaeaea] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)]"
+              >
+                {/* This month is always offered even with no run yet — it is
+                    where somebody goes to MAKE one. */}
+                {Array.from(
+                  new Set([PayrollService.monthKey(), month, ...(monthsWithRuns ?? [])])
+                )
+                  .sort()
+                  .reverse()
+                  .map((m) => (
+                    <li key={m}>
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={m === month}
+                        onClick={() => {
+                          setMonth(m);
+                          setPage(1);
+                          setMonthOpen(false);
+                        }}
+                        className={`flex w-full cursor-pointer items-center justify-between gap-[8px] px-[14px] py-[9px] text-left text-[14px] transition-colors hover:bg-[#fdf7e6] ${
+                          m === month ? "bg-[#fdf7e6] font-medium text-[#1e1e1e]" : "text-[#525252]"
+                        }`}
+                      >
+                        {PayrollService.monthLabel(m)}
+                        {!(monthsWithRuns ?? []).includes(m) && (
+                          <span className="shrink-0 text-[11px] text-[#a3a3a3]">no run</span>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </div>
+
           <div ref={filterRef} className="relative shrink-0">
             <button
               type="button"
@@ -252,7 +373,11 @@ export default function PayrollPage() {
           <button
             type="button"
             onClick={() => {
-              setPeriod(PayrollService.monthBounds());
+              // The month on screen, not today's. With a switcher on the page,
+              // defaulting to the current month means somebody reviewing August
+              // and pressing Add New runs September — and a payroll run posts
+              // to the ledger.
+              setPeriod(PayrollService.boundsOfMonth(month));
               setRunOpen(true);
             }}
             style={{ backgroundImage: GOLD_GRADIENT }}
@@ -302,15 +427,19 @@ export default function PayrollPage() {
                 {rows.length === 0 && (
                   <div className="col-span-8">
                     <EmptyState
+                      // The month is named. With a switcher on the page,
+                      // "No payslips yet" reads as "this company has never run
+                      // payroll" when it means "not this month" — and the
+                      // remedy, Add New, would then be the wrong thing to press.
                       message={
                         term || filter !== "Payroll"
                           ? "No payslips match this view."
-                          : "No payslips yet."
+                          : `No payroll run for ${PayrollService.monthLabel(month)}.`
                       }
                       hint={
                         term || filter !== "Payroll"
                           ? undefined
-                          : "Use Add New to run payroll for this month."
+                          : "Use Add New to run it, or step to another month."
                       }
                       compact
                     />
@@ -359,6 +488,23 @@ export default function PayrollPage() {
 
         {/* Below md the grid cannot hold seven columns; each row becomes a card. */}
         <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
+          {/* Below md there is no table, so the boundary around it never
+              speaks here. Without this the phone showed one blank card for
+              loading, for failure and for an empty list alike. */}
+          <CardListState
+            loading={loading}
+            error={error}
+            hasData={data !== undefined}
+            isEmpty={rows.length === 0}
+            errorMessage={PayrollService.describeError(error)}
+            emptyMessage={
+              term || filter !== "Payroll"
+                ? "No payslips match this view."
+                : `No payroll run for ${PayrollService.monthLabel(month)}.`
+            }
+            onRetry={refetch}
+            rows={4}
+          />
           {rows.map((r) => (
             <div key={r.id} className="rounded-[10px] p-[12px] shadow-[inset_0_0_0_1px_#eaeaea]">
               <div className="flex items-center justify-between gap-[10px]">
@@ -419,7 +565,7 @@ export default function PayrollPage() {
           <p className="text-[14px] leading-[1.6] text-[#525252]">
             A payslip is created for every active employee in this period.
           </p>
-          <div className="grid grid-cols-2 gap-[12px]">
+          <div className="grid grid-cols-1 gap-[12px] sm:grid-cols-2">
             <label className="flex flex-col gap-[6px]">
               <span className="text-[13px] font-medium text-[#1e1e1e]">Period start</span>
               <input

@@ -1,6 +1,8 @@
 import { test, expect } from "@chromatic-com/playwright";
 import type { Locator } from "@playwright/test";
 
+import { stubApi } from "./stubApi";
+
 /**
  * Asserts each design-system primitive against the measurements in Figma
  * node 77:20535. Chromatic catches *that* something looks different; this
@@ -27,6 +29,20 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/ds-preview");
   await page.waitForLoadState("load");
   await page.evaluate(() => document.fonts.ready);
+});
+
+
+/**
+ * Every test here signs in against a stubbed API.
+ *
+ * Without it the guard sends each protected route to `/login?next=…`, and
+ * these tests then measured the SIGN-IN CARD while claiming to measure the
+ * dashboard, the sidebar and the design-system page. They passed or failed for
+ * reasons unrelated to what they name — the same vacuity `responsive.spec.ts`
+ * was written with and then corrected.
+ */
+test.beforeEach(async ({ page }) => {
+  await stubApi(page);
 });
 
 test("tokens resolve to the Figma values", async ({ page }) => {

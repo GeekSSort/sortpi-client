@@ -23,6 +23,21 @@ export interface SignupPayload {
   ownerName: string;
   email: string;
   phone?: string;
+  /** Which plan they picked. Absent means the platform's default. */
+  planCode?: string;
+}
+
+/** A plan as `/billing/plans/` lists it. A null limit means no ceiling. */
+export interface PublicPlan {
+  code: string;
+  name: string;
+  description: string;
+  price: number;
+  interval: string;
+  trialDays: number;
+  maxBranches: number | null;
+  maxUsers: number | null;
+  maxProducts: number | null;
 }
 
 export interface SignupStarted {
@@ -47,6 +62,47 @@ export class RegistrationService {
       method: "POST",
       anonymous: true,
       body: JSON.stringify(payload),
+    });
+  }
+
+  /**
+   * The plans a new company may choose from.
+   *
+   * `/billing/plans/` needs a session, which sign-up does not have. The public
+   * list is the same rows — public, active — so it is read from the platform's
+   * own anonymous endpoint rather than gated behind an account that does not
+   * exist yet.
+   */
+  static async publicPlans(): Promise<PublicPlan[]> {
+    const rows = await apiFetch<any>("/auth/signup/plans", {
+      method: "GET",
+      anonymous: true,
+    });
+    return (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      code: String(row?.code ?? ""),
+      name: String(row?.name ?? ""),
+      description: String(row?.description || ""),
+      price: Number(row?.price ?? 0),
+      interval: String(row?.interval || "MONTHLY"),
+      trialDays: Number(row?.trialDays ?? row?.trial_days ?? 0),
+      maxBranches: row?.maxBranches ?? row?.max_branches ?? null,
+      maxUsers: row?.maxUsers ?? row?.max_users ?? null,
+      maxProducts: row?.maxProducts ?? row?.max_products ?? null,
+    }));
+  }
+
+  /**
+   * Is this email free to register with? Checked as the person types.
+   *
+   * The same answer `startSignup` gives via EMAIL_IN_USE, two steps earlier.
+   * The form asks for an email at step one and the company at step two, so
+   * without this both halves were filled in before the first field turned out
+   * to be taken.
+   */
+  static async checkEmail(email: string): Promise<SubdomainAvailability> {
+    return apiFetch(`/auth/signup/email?value=${encodeURIComponent(email)}`, {
+      method: "GET",
+      anonymous: true,
     });
   }
 
@@ -126,6 +182,27 @@ export class RegistrationService {
     });
   }
 
+  /**
+   * Spend an owner invitation and set the password it was issued for.
+   *
+   * `uid` and `token` come from the emailed link, which IS the credential —
+   * there is no session yet, which is the whole point. The link works once:
+   * setting the password stops the token verifying, so a replay comes back
+   * INVITATION_INVALID.
+   *
+   * The endpoint has existed since invitations were written; nothing in this
+   * client called it, and no page was ever built for the address the emails
+   * point at. Every company provisioned by platform staff sent its owner to a
+   * 404.
+   */
+  static async acceptInvitation(uid: string, token: string, password: string): Promise<void> {
+    await apiFetch("/auth/accept-invitation", {
+      method: "POST",
+      anonymous: true,
+      body: JSON.stringify({ uid, token, password }),
+    });
+  }
+
   /** Wording a person can act on. */
   static describeError(error: unknown): string {
     if (error instanceof ApiError) {
@@ -142,6 +219,11 @@ export class RegistrationService {
           return "Too many attempts. Please wait a few minutes and try again.";
         case "TICKET_INVALID":
           return "This step has expired. Start again from the beginning.";
+        case "INVITATION_INVALID":
+          return (
+            "This invitation link has expired or has already been used. " +
+            "Ask whoever invited you to send another."
+          );
         case "EMAIL_IN_USE":
           return "An account already uses this email address.";
         case "SUBDOMAIN_IN_USE":

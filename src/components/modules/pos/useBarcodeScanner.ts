@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useSyncExternalStore } from "react";
+import { BEEP_GAIN, ERROR_GAIN, drive, scanVolume } from "./scanSound";
 
 /**
  * The till's barcode scanner.
@@ -89,7 +90,6 @@ export type ScannerState = {
    * tuning here would help. If it fills up and no code is rung up, the reader
    * below rejected it, and `rejected` says why.
    */
-  raw: RawKey[];
   /** Why the last burst was not treated as a scan. */
   rejected: string | null;
 };
@@ -100,7 +100,6 @@ const EMPTY: ScannerState = {
   count: 0,
   last: null,
   lastResult: null,
-  raw: [],
   rejected: null,
 };
 
@@ -112,6 +111,44 @@ const listeners = new Set<() => void>();
 function emit(next: Partial<ScannerState>): void {
   state = { ...state, ...next };
   listeners.forEach((l) => l());
+}
+
+/**
+ * The keystroke log, on a channel of its own.
+ *
+ * It used to live in `state`, appended on EVERY keydown before any judgement —
+ * so a thirteen-character barcode pushed thirteen store notifications through
+ * `useSyncExternalStore` in the ~100ms the scan took, re-rendering the status
+ * pill and the scanner panel thirteen times each, and copying the array
+ * thirteen times. Nothing on the till renders from `raw` except the diagnostic
+ * panel, which is closed.
+ *
+ * Same data, same limit, written the same way; only the notification is
+ * separate, so the cost is paid by whoever is actually looking at it.
+ */
+let rawLog: RawKey[] = [];
+const rawListeners = new Set<() => void>();
+
+function pushRaw(key: RawKey): void {
+  rawLog = [...rawLog.slice(-(RAW_LIMIT - 1)), key];
+  rawListeners.forEach((l) => l());
+}
+
+function subscribeRaw(listener: () => void): () => void {
+  rawListeners.add(listener);
+  return () => rawListeners.delete(listener);
+}
+
+const SERVER_RAW: RawKey[] = [];
+
+/**
+ * The keystroke log, for the diagnostic panel and nothing else.
+ *
+ * Subscribing to this is subscribing to a re-render per keystroke, which is
+ * why it is a separate hook rather than a field on `useScannerState()`.
+ */
+export function useScannerRaw(): RawKey[] {
+  return useSyncExternalStore(subscribeRaw, () => rawLog, () => SERVER_RAW);
 }
 
 function subscribe(listener: () => void): () => void {
@@ -139,7 +176,9 @@ const RAW_LIMIT = 120;
 
 /** Start the next test from a clean panel. */
 export function clearScannerLog(): void {
-  emit({ raw: [], rejected: null });
+  rawLog = [];
+  rawListeners.forEach((l) => l());
+  emit({ rejected: null });
 }
 
 /** What the status chip and the check panel both read. */
@@ -165,35 +204,192 @@ export function reportScanResult(ok: boolean, message: string): void {
  * offline. Every call is wrapped — a browser with no audio must not take the
  * sale down with it.
  */
+/**
+ * How loud the till is, 0 to 1.
+ *
+ * It was 0.05 — five per cent — which is audible in a quiet office and
+ * inaudible in a shop with a fan, a fridge and a queue. A scanner beep exists
+ * to be heard without looking, so a beep nobody hears is the same as no beep:
+ * the cashier turns to the screen to check, which is the thing it was meant to
+ * save them.
+ *
+ * A separate, louder level for the failure tone. The two must not be told
+ * apart only by pitch — that is exactly what a noisy room takes away — so the
+ * one that means "stop, something is wrong" is the one that carries.
+ */
+/**
+ * One AudioContext for the life of the page, created on first use.
+ *
+ * A context per beep is what this did, closed on a timer 800ms later. That is
+ * fine at a leisurely pace and wrong at the pace a scanner actually works:
+ * codes arrive faster than the timer, the contexts stack, and browsers cap how
+ * many a page may hold — Chrome at six. Past the cap `new AudioContext()`
+ * throws, the catch swallows it, and the till simply stops beeping with
+ * nothing to show why. Reusing one also removes the per-scan setup cost from
+ * the path this product is judged on.
+ */
+let audio: AudioContext | null = null;
+
+function audioContext(): AudioContext | null {
+  if (audio && audio.state !== "closed") return audio;
+  const Ctor =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!Ctor) return null;
+  audio = new Ctor();
+  return audio;
+}
+
 export function beep(ok: boolean): void {
   try {
-    const Ctor =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext?: typeof AudioContext })
-        .webkitAudioContext;
-    if (!Ctor) return;
-    const ctx = new Ctor();
-    const gain = ctx.createGain();
-    gain.gain.value = 0.05;
-    gain.connect(ctx.destination);
+    // Per till, and adjustable — the right level is a property of the counter
+    // the machine stands on. Zero means silent, and the tone is not produced at
+    // all rather than played at nothing, which also stops every scan waking the
+    // audio hardware on a till somebody has deliberately quietened.
+    const volume = scanVolume();
+    if (volume <= 0) return;
 
-    const tone = (frequency: number, start: number, length: number) => {
+    const ctx = audioContext();
+    if (!ctx) return;
+    // A context created before the first gesture starts suspended, and a
+    // suspended context plays nothing. Scans are keystrokes, so by the time
+    // this runs the page has been interacted with.
+    if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+
+    const push = drive(volume);
+    const base = ok ? BEEP_GAIN : ERROR_GAIN;
+    // The oscillators themselves stop at the shipped amplitude. There is no
+    // headroom above 1.0 and driving a square wave into it is not "louder", it
+    // is crackle. Everything past the default comes from the two lines below.
+    const level = base * Math.min(1, push);
+
+    /**
+     * Drive into a saturator, and take the output at just under full scale.
+     *
+     * Every arrangement of these parts was tried and measured. Raising the
+     * oscillator gain does nothing — it was already near full scale. A big
+     * makeup gain alone reached 6.5x the default but with peaks at 3.7, and
+     * everything above 1.0 is hard-clamped by the sound card: that is not
+     * loudness, it is crackle laid over the note. Putting a limiter after the
+     * makeup gain then gave the gain straight back, landing at 2.3x.
+     *
+     * What works is to drive the signal hard into a tanh curve, which bounds
+     * smoothly at ±1 instead of being sliced, and to take the result at 0.9.
+     * The saturator IS the limiter, so nothing downstream has to claw the gain
+     * back, and a square wave folded like this has an RMS close to its peak —
+     * which is as loud as a beep can physically be on the device.
+     *
+     * Below the default none of this is built: a single clean tone, exactly
+     * the sound the till has always made.
+     */
+    let chainInput: AudioNode;
+    if (push > 1) {
+      const shaper = ctx.createWaveShaper();
+      const curve = new Float32Array(2048);
+      for (let i = 0; i < curve.length; i += 1) {
+        const x = (i / (curve.length - 1)) * 2 - 1;
+        // Hard enough that anything past a third of full scale is already
+        // near the ceiling — this is what turns headroom into harmonics.
+        curve[i] = Math.tanh(x * 3.5);
+      }
+      shaper.curve = curve;
+      // No oversampling. Its anti-alias filters ring on a hard-saturated
+      // square and the overshoot measured 1.23 — past full scale, so clamped
+      // by the hardware, which is the crackle this chain exists to avoid.
+      shaper.oversample = "none";
+
+      // How hard the tones hit the curve. This is the slider, and past about
+      // 1.0 on it the curve is fully saturated — the point where the device
+      // has nothing more to give.
+      const preGain = ctx.createGain();
+      preGain.gain.value = Math.pow(push, 1.8);
+
+      // Just under full scale, so the peaks the curve produces are never
+      // clamped by the hardware.
+      const out = ctx.createGain();
+      out.gain.value = 0.9;
+
+      preGain.connect(shaper);
+      shaper.connect(out);
+      out.connect(ctx.destination);
+      chainInput = preGain;
+    } else {
+      const bus = ctx.createGain();
+      bus.gain.value = 1;
+      bus.connect(ctx.destination);
+      chainInput = bus;
+    }
+
+    /**
+     * One tone, with an attack and a release.
+     *
+     * A square wave switched on and off at full level clicks at both ends, and
+     * at this volume the click is louder than the note. Ramping in over a few
+     * milliseconds and out again removes it, and is the difference between
+     * "loud" and "harsh".
+     */
+    const tone = (frequency: number, start: number, length: number, share = 1) => {
       const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const at = ctx.currentTime + start;
+      const peak = Math.max(0.0002, level * share);
       osc.type = "square";
       osc.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.exponentialRampToValueAtTime(peak, at + 0.005);
+      gain.gain.setValueAtTime(peak, at + length - 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + length);
       osc.connect(gain);
-      osc.start(ctx.currentTime + start);
-      osc.stop(ctx.currentTime + start + length);
+      gain.connect(chainInput);
+      osc.start(at);
+      osc.stop(at + length + 0.01);
     };
 
+    /**
+     * Stacked partials, past the default.
+     *
+     * Three tones carry appreciably more energy than one, and a compressor in
+     * front of them turns that energy into level rather than into peaks. Below
+     * the default it stays a single tone — that is the sound the till has
+     * always made, and somebody turning the volume DOWN is not asking for a
+     * different beep.
+     */
+    const rich = push > 1;
+
     if (ok) {
-      tone(1760, 0, 0.06);
+      // 3136Hz, not 1760Hz. Human hearing peaks around 3–4kHz — the same
+      // amplitude up there is roughly ten decibels louder to the person
+      // standing at the counter, which is a bigger win than anything the gain
+      // could have given. It is also where every other shop's scanner sits.
+      //
+      // Longer when it is loud, too: below about 200ms the ear has not
+      // finished integrating a sound, so the same tone held longer is heard as
+      // louder for free.
+      const length = rich ? 0.16 : 0.1;
+      tone(3136, 0, length);
+      if (rich) {
+        // Partials either side of the fundamental. Five tones carry
+        // appreciably more energy than one, and the limiter turns that energy
+        // into level rather than into peaks.
+        tone(1568, 0, length, 0.7);
+        tone(2349, 0, length, 0.55);
+        tone(4699, 0, length * 0.8, 0.45);
+        tone(6272, 0, length * 0.6, 0.3);
+      }
     } else {
-      // Low and twice: an unknown barcode has to sound different from a sale.
-      tone(220, 0, 0.12);
-      tone(220, 0.16, 0.12);
+      // Low and twice: an unknown barcode has to sound different from a sale,
+      // and it must not be told apart from one by PITCH alone — a noisy room
+      // takes pitch away first.
+      for (const at of [0, 0.18]) {
+        tone(392, at, rich ? 0.2 : 0.15);
+        if (rich) {
+          tone(196, at, 0.2, 0.8);
+          tone(784, at, 0.2, 0.6);
+          tone(1176, at, 0.16, 0.4);
+          tone(1568, at, 0.12, 0.3);
+        }
+      }
     }
-    window.setTimeout(() => void ctx.close().catch(() => {}), 600);
   } catch {
     // Silence is survivable. A failed sale is not.
   }
@@ -323,15 +519,10 @@ export function useBarcodeScanner(
       // it — it would look identical whether the scanner was unplugged or its
       // output was being rejected here.
       const el = e.target as HTMLElement | null;
-      emit({
-        raw: [
-          ...state.raw.slice(-(RAW_LIMIT - 1)),
-          {
-            key: e.key,
-            gap: lastKeyAt === 0 ? 0 : Math.round(gap),
-            target: el?.tagName ? el.tagName.toLowerCase() : "page",
-          },
-        ],
+      pushRaw({
+        key: e.key,
+        gap: lastKeyAt === 0 ? 0 : Math.round(gap),
+        target: el?.tagName ? el.tagName.toLowerCase() : "page",
       });
 
       // A scanner sends no modifiers. Anything held down is a person.
