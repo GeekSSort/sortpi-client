@@ -14,8 +14,12 @@ export class PayrollService {
     const page = params?.page ?? 1;
     const limit = params?.limit ?? 8;
 
+    // The month is filtered by the SERVER now. This used to pull a hundred runs
+    // and slice them here, so every month a company had ever run arrived in one
+    // list and the hundred-and-first was invisible.
+    const qs = params?.month ? `&month=${encodeURIComponent(params.month)}` : "";
     const runs = await apiList<PayrollRun>(
-      "/hrm/payroll-runs/?limit=100",
+      `/hrm/payroll-runs/?limit=100${qs}`,
       { method: "GET" },
       (r) => r as PayrollRun
     );
@@ -36,6 +40,45 @@ export class PayrollService {
       limit,
       totalPages: Math.max(1, Math.ceil(filtered.length / limit)),
     };
+  }
+
+  /**
+   * The months that have a payroll run, newest first, as "YYYY-MM".
+   *
+   * So the switcher can offer them rather than making somebody step back
+   * through empty screens with no way to know when to stop.
+   */
+  static async months(): Promise<string[]> {
+    const res = await apiFetch<any>("/hrm/payroll-runs/months/", { method: "GET" });
+    const rows = Array.isArray(res?.months) ? res.months : [];
+    return rows.map((m: unknown) => String(m)).filter(Boolean);
+  }
+
+  /** First and last day of a "YYYY-MM" month, as the run endpoint wants them. */
+  static boundsOfMonth(month: string): { start: string; end: string } {
+    const [y, m] = month.split("-").map(Number);
+    return PayrollService.monthBounds(new Date(y, m - 1, 1));
+  }
+
+  /** "2026-09" for a date — the key the filter and the switcher both use. */
+  static monthKey(when: Date = new Date()): string {
+    return `${when.getFullYear()}-${String(when.getMonth() + 1).padStart(2, "0")}`;
+  }
+
+  /** "September 2026", for a person to read. */
+  static monthLabel(month: string): string {
+    const [y, m] = month.split("-").map(Number);
+    if (!y || !m) return month;
+    return new Date(y, m - 1, 1).toLocaleDateString(undefined, {
+      month: "long",
+      year: "numeric",
+    });
+  }
+
+  /** The month `step` months away from `month`, as "YYYY-MM". */
+  static shiftMonth(month: string, step: number): string {
+    const [y, m] = month.split("-").map(Number);
+    return PayrollService.monthKey(new Date(y, m - 1 + step, 1));
   }
 
   /** Correct the figures on one payslip; the server re-derives net pay. */
