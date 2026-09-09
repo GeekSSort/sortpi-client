@@ -99,7 +99,10 @@ export default function PlatformInvoicesPage() {
     { key: "company", label: "Company", width: "1.4fr", mobile: true, cell: (r) => <span className={BODY}>{nameOf(r)}</span> },
     { key: "total", label: "Amount", width: "1fr", mobile: true, cell: (r) => <span className={BODY}>{formatMoney(r.total)}</span> },
     {
-      key: "due",
+      // NOT "due". The column below is the due DATE and was keyed the same,
+      // so React rendered one header cell and dropped the other — two columns
+      // of data under one heading, and a console error nobody had chased.
+      key: "amount_due",
       label: "Still owed",
       width: "1fr",
       mobile: true,
@@ -110,7 +113,7 @@ export default function PlatformInvoicesPage() {
       ),
     },
     { key: "issued", label: "Issued", width: "1fr", mobile: true, cell: (r) => <span className={BODY}>{toDate(r.issuedAt)}</span> },
-    { key: "due", label: "Due", width: "1fr", cell: (r) => <span className={BODY}>{toDate(r.dueAt)}</span> },
+    { key: "due_date", label: "Due", width: "1fr", cell: (r) => <span className={BODY}>{toDate(r.dueAt)}</span> },
     {
       key: "status",
       label: "Status",

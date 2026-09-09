@@ -172,6 +172,23 @@ export class RoleService {
     await apiFetch(`/users/${id}/`, { method: "PATCH", body: JSON.stringify({ roles }) });
   }
 
+  /**
+   * Hand ownership of the company to somebody else.
+   *
+   * Grants the Admin role to that address, creating the account and emailing
+   * an invitation link if it is new. It ADDS an owner and removes none:
+   * stepping down is a separate edit, and the server refuses it while the
+   * caller is the only active Admin. `user.create`, `user.update` and
+   * `role.update` belong to Admin alone, so a company with none cannot add a
+   * user, grant a role or repair itself.
+   */
+  static async transferOwnership(email: string, fullName = ""): Promise<void> {
+    await apiFetch("/users/transfer-ownership/", {
+      method: "POST",
+      body: JSON.stringify({ email, full_name: fullName }),
+    });
+  }
+
   static async resendInvite(id: string): Promise<void> {
     await apiFetch(`/users/${id}/invite/`, { method: "POST", body: "{}" });
   }

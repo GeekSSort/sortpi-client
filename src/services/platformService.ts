@@ -24,6 +24,26 @@ export interface StaffRow {
   phone: string;
   isActive: boolean;
   createdAt: string;
+  /**
+   * What this console account may actually do.
+   *
+   * `IsPlatformStaff` is only the realm gate; the ROLE decides what is
+   * reachable, and an action whose code the caller does not hold is denied. So
+   * an account with no role signs in successfully and is refused by every
+   * screen — which is what happened to every account this console created,
+   * because neither the form nor the API call named a role.
+   */
+  roles: string[];
+}
+
+/** A console role, as `/platform/roles/` returns it. */
+export interface PlatformRoleRow {
+  id: string;
+  name: string;
+  description: string;
+  /** Seeded by `apps/platform/registry.py`; its NAME cannot be changed. */
+  isSystem: boolean;
+  permissions: string[];
 }
 
 export interface PlanRow {
@@ -33,6 +53,21 @@ export interface PlanRow {
   description: string;
   price: number;
   currency: string;
+  interval: string;
+  trialDays: number;
+  maxBranches: number | null;
+  maxUsers: number | null;
+  maxProducts: number | null;
+  isPublic: boolean;
+  isActive: boolean;
+}
+
+/** What the plan editor sends. A null ceiling is "no limit". */
+export interface PlanInput {
+  code: string;
+  name: string;
+  description: string;
+  price: number;
   interval: string;
   trialDays: number;
   maxBranches: number | null;
@@ -107,6 +142,17 @@ function toStaffRow(row: any): StaffRow {
     phone: String(row?.phone || "—"),
     isActive: row?.isActive !== false,
     createdAt: String(row?.createdAt ?? ""),
+    roles: Array.isArray(row?.roles) ? row.roles.map((r: unknown) => String(r)) : [],
+  };
+}
+
+function toPlatformRoleRow(row: any): PlatformRoleRow {
+  return {
+    id: String(row?.id ?? ""),
+    name: String(row?.name ?? ""),
+    description: String(row?.description || ""),
+    isSystem: row?.isSystem === true || row?.is_system === true,
+    permissions: Array.isArray(row?.permissions) ? row.permissions.map(String) : [],
   };
 }
 
@@ -167,6 +213,63 @@ export class PlatformService {
 
   static async listStaff(): Promise<PagedResult<StaffRow>> {
     return apiList<StaffRow>("/platform/staff/?limit=200", { method: "GET" }, toStaffRow);
+  }
+
+  /**
+   * The console roles a staff account can be given.
+   *
+   * Read-only on the server: the four seeded roles come from
+   * `apps/platform/registry.py` and are re-applied by a data migration, so one
+   * edited over HTTP would be silently reverted.
+   */
+  static async listPlatformRoles(): Promise<PlatformRoleRow[]> {
+    const rows = await apiFetch<any>("/platform/roles/", { method: "GET" });
+    return (Array.isArray(rows) ? rows : []).map(toPlatformRoleRow);
+  }
+
+  /** Every platform permission code, grouped for a role editor to draw. */
+  static async listPlatformPermissions(): Promise<PlatformRoleRow["permissions"]> {
+    const roles = await PlatformService.listPlatformRoles();
+    // Derived from the roles rather than fetched: the console has no
+    // permission-catalogue endpoint, and Platform Owner holds every code by
+    // definition, so the union across roles IS the catalogue. One request
+    // instead of two, and it cannot drift from what a role may actually hold.
+    return Array.from(new Set(roles.flatMap((r) => r.permissions))).sort();
+  }
+
+  /** Create a console role, or change what an existing one may do. */
+  static async savePlatformRole(
+    input: { name: string; description: string; permissions: string[] },
+    existingId?: string
+  ): Promise<void> {
+    const body = {
+      name: input.name,
+      description: input.description,
+      permissions: input.permissions,
+    };
+    if (existingId) {
+      await apiFetch(`/platform/roles/${existingId}/`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+      return;
+    }
+    await apiFetch("/platform/roles/", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  /**
+   * Hand the console to somebody else.
+   *
+   * Adds an owner and removes none — stepping down is a separate edit, and the
+   * server refuses it while the caller is the only active owner. So a handover
+   * interrupted half-way leaves two owners rather than a console nobody can
+   * administer.
+   */
+  static async transferOwnership(email: string, fullName = ""): Promise<void> {
+    await apiFetch("/platform/staff/transfer-ownership/", {
+      method: "POST",
+      body: JSON.stringify({ email, full_name: fullName }),
+    });
   }
 
   static async listPlans(): Promise<PagedResult<PlanRow>> {
@@ -278,6 +381,66 @@ export class PlatformService {
     });
   }
 
+  /**
+   * Retire a plan, or bring it back.
+   *
+   * There is no delete, deliberately: `Plan.subscriptions` is RESTRICT and
+   * every invoice stamps a plan code, so removing a row either fails on a live
+   * subscription or erases the terms an issued invoice was written under.
+   * `is_active=False` keeps the history and stops new sign-ups.
+   */
+  static async setPlanActive(code: string, isActive: boolean): Promise<void> {
+    await apiFetch(`/platform/plans/${code}/`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_active: isActive }),
+    });
+  }
+
+  /**
+   * Create a plan, or change one that exists.
+   *
+   * `POST /platform/plans/` and `PATCH /platform/plans/{code}/` have been on
+   * the server since billing was written — `plan.create` and `plan.update` are
+   * real permission codes with a service behind them — and nothing in this
+   * console called either. The plans screen offered one action, the on-sale
+   * toggle, so the price, the trial and every ceiling could only be changed by
+   * editing `apps/billing/defaults.py` and re-running a management command.
+   *
+   * `code` is sent only on CREATE. `PlanService.update` refuses a changed one
+   * with PLAN_CODE_IMMUTABLE, because an invoice stamps it and repointing a
+   * code at different terms would make historical invoices read as though they
+   * had been issued under the new ones.
+   *
+   * A null ceiling means "no limit" and is sent as null rather than omitted:
+   * omitting it on a PATCH would leave the old number in place, which is the
+   * opposite of what "Unlimited" was just typed to mean.
+   */
+  static async savePlan(input: PlanInput, existingCode?: string): Promise<void> {
+    const body: Record<string, unknown> = {
+      name: input.name,
+      description: input.description,
+      price: input.price.toFixed(4),
+      interval: input.interval,
+      trial_days: input.trialDays,
+      max_branches: input.maxBranches,
+      max_users: input.maxUsers,
+      max_products: input.maxProducts,
+      is_public: input.isPublic,
+      is_active: input.isActive,
+    };
+    if (existingCode) {
+      await apiFetch(`/platform/plans/${existingCode}/`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+      return;
+    }
+    await apiFetch("/platform/plans/", {
+      method: "POST",
+      body: JSON.stringify({ ...body, code: input.code }),
+    });
+  }
+
   static describeError(error: unknown): string {
     if (error instanceof ApiError) {
       if (error.code === "NETWORK_ERROR") return "Cannot reach the server.";
@@ -288,14 +451,53 @@ export class PlatformService {
     return "Something went wrong. Please try again.";
   }
 
-  static async createStaff(payload: { email: string; fullName: string; password: string }): Promise<void> {
+  /**
+   * Create a console account, WITH what it may do.
+   *
+   * `roles` used not to be sent — nor accepted — so every account this made
+   * held none, signed in fine and was refused by every console screen, with no
+   * route to repair it short of the Django admin.
+   */
+  static async createStaff(payload: {
+    email: string;
+    fullName: string;
+    password: string;
+    roles: string[];
+  }): Promise<void> {
     await apiFetch("/platform/staff/", {
       method: "POST",
       body: JSON.stringify({
         email: payload.email,
         full_name: payload.fullName,
         password: payload.password,
+        roles: payload.roles,
       }),
     });
+  }
+
+  /** Change what an existing console account may do. */
+  static async setStaffRoles(id: string, roles: string[]): Promise<void> {
+    await apiFetch(`/platform/staff/${id}/`, {
+      method: "PATCH",
+      body: JSON.stringify({ roles }),
+    });
+  }
+
+  /**
+   * The server's own words for a field, if it named one.
+   *
+   * `describeError` returns the first field message for ANY field, which is
+   * right for a banner and wrong for a form: the person needs to know that it
+   * was the PASSWORD that was rejected, under the password box. Django's
+   * password validators are the case that made this matter — "This password is
+   * too common." came back as an unattributed sentence at the top of a dialog,
+   * beside three fields, and read as "something went wrong".
+   */
+  static fieldError(error: unknown, field: string): string | null {
+    if (!(error instanceof ApiError)) return null;
+    const raw = (error.errors || {})[field];
+    if (Array.isArray(raw) && raw.length) return String(raw[0]);
+    if (typeof raw === "string" && raw) return raw;
+    return null;
   }
 }
