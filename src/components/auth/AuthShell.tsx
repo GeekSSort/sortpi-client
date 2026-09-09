@@ -15,12 +15,24 @@ export default function AuthShell({
   children,
   footer,
   onSubmit,
+  width = 480,
 }: {
   title: string;
   subtitle: string;
   children: React.ReactNode;
   footer?: React.ReactNode;
   onSubmit?: (e: React.FormEvent) => void;
+  /**
+   * How wide the card may grow, in px.
+   *
+   * 480 is right for a card of one column — sign in, a code, a password. A
+   * form with five fields at that width is a column taller than the viewport,
+   * so the person scrolls to find the button and cannot see what they typed at
+   * the same time. Sign-up passes a wider card and lays its fields two to a
+   * row; the shell stays responsive either way, because this is a MAXIMUM and
+   * the card is still `w-full` beneath it.
+   */
+  width?: number;
 }) {
   const Inner = onSubmit ? "form" : "div";
 
@@ -43,7 +55,8 @@ export default function AuthShell({
 
       <Inner
         {...(onSubmit ? { onSubmit } : {})}
-        className="relative flex w-full max-w-[549px] flex-col items-center gap-[24px] rounded-[10px] bg-white p-[24px] shadow-[0px_0px_28px_0px_rgba(207,207,207,0.16),inset_0px_0px_1px_0px_rgba(0,0,0,0.25)]"
+        style={{ maxWidth: width }}
+        className="relative flex w-full flex-col items-center gap-[24px] rounded-[10px] bg-white p-[24px] shadow-[0_1px_2px_0_rgba(16,24,40,0.04),0_8px_20px_-6px_rgba(16,24,40,0.08),0_28px_56px_-16px_rgba(16,24,40,0.12),inset_0_0_0_1px_rgba(16,24,40,0.05)]"
       >
         <Image
           src="/auth/logo.png"
@@ -75,19 +88,79 @@ export default function AuthShell({
   );
 }
 
+/** Eye with a slash — the password is hidden, tap to show. */
+function EyeOffIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
+      <path
+        d="M3.33 3.33 16.67 16.67M11.67 11.86A2.5 2.5 0 0 1 8.14 8.33M16.34 13.01c.48-.42.9-.83 1.27-1.22a2.5 2.5 0 0 0 0-3.58C15.98 6.5 13.18 4.17 10 4.17c-.74 0-1.46.13-2.16.34M5.42 5.67C4.2 6.45 3.16 7.4 2.39 8.21a2.5 2.5 0 0 0 0 3.58c1.63 1.72 4.43 4.04 7.61 4.04 1.56 0 3.02-.56 4.3-1.33"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/** The same eye, open — the password is showing. */
+function EyeOnIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
+      <path
+        d="M17.61 8.21a2.5 2.5 0 0 1 0 3.58C15.98 13.5 13.18 15.83 10 15.83S4.02 13.5 2.39 11.79a2.5 2.5 0 0 1 0-3.58C4.02 6.5 6.82 4.17 10 4.17s5.98 2.33 7.61 4.04Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+      <path
+        d="M12.5 10a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/**
+ * A labelled input. A password one carries its own show/hide eye.
+ *
+ * The eye was on the sign-in page and on none of the others, so somebody
+ * CHOOSING a password — set-password, an invitation, a console account — had to
+ * type it twice blind and got "both passwords must match" with no way to see
+ * which one was wrong. Choosing is the case that needs it most.
+ *
+ * Built in here rather than added to four call sites, so the next password
+ * field gets it without anybody remembering.
+ */
 export function AuthField({
   label,
   hint,
+  type,
   ...rest
 }: { label: string; hint?: React.ReactNode } & React.InputHTMLAttributes<HTMLInputElement>) {
+  const [revealed, setRevealed] = React.useState(false);
+  const isPassword = type === "password";
+
   return (
     <label className="flex w-full flex-col items-start gap-[8px]">
       <span className="w-full text-[18px] leading-[24px] font-medium text-[#525252]">{label}</span>
-      <div className="flex h-[56px] w-full items-center rounded-[12px] border border-solid border-[#f5b800] bg-white px-[16px] py-[8px]">
+      <div className="flex h-[56px] w-full items-center gap-[12px] rounded-[12px] border border-solid border-[#f5b800] bg-white px-[16px] py-[8px]">
         <input
           {...rest}
+          type={isPassword && revealed ? "text" : type}
           className="min-w-px flex-1 bg-transparent text-[16px] leading-[24px] font-normal text-[#525252] outline-none placeholder:text-[#a3a3a3]"
         />
+        {isPassword && (
+          <button
+            type="button"
+            onClick={() => setRevealed((v) => !v)}
+            aria-label={revealed ? "Hide password" : "Show password"}
+            className="flex size-[20px] shrink-0 cursor-pointer items-center justify-center text-[#525252]"
+          >
+            {revealed ? <EyeOnIcon /> : <EyeOffIcon />}
+          </button>
+        )}
       </div>
       {hint && <span className="text-[13px] leading-[1.4] text-[#737373]">{hint}</span>}
     </label>
@@ -146,7 +219,12 @@ export function OtpInput({
   };
 
   return (
-    <div className="flex w-full items-center justify-center gap-[10px]">
+    /* Six 52px boxes and five 10px gaps is 362px of content. Inside this card
+       on a 360px phone there are about 280px, so the last box or two sat
+       outside the card — on the screen whose only job is entering the code.
+       The boxes share the width instead and stop growing at 52px, so the
+       desktop layout is exactly as it was. */
+    <div className="flex w-full items-center justify-center gap-[6px] sm:gap-[10px]">
       {Array.from({ length }).map((_, i) => (
         <input
           key={i}
@@ -176,7 +254,7 @@ export function OtpInput({
               refs.current[Math.min(digits.length, length - 1)]?.focus();
             }
           }}
-          className="h-[64px] w-[52px] rounded-[12px] border border-solid border-[#f5b800] bg-white text-center text-[24px] font-semibold text-[#1e1e1e] outline-none focus:border-[#1e1e1e] disabled:opacity-60"
+          className="h-[56px] w-full min-w-0 max-w-[52px] flex-1 rounded-[12px] border border-solid border-[#f5b800] bg-white text-center text-[20px] font-semibold text-[#1e1e1e] outline-none focus:border-[#1e1e1e] disabled:opacity-60 sm:h-[64px] sm:text-[24px]"
         />
       ))}
     </div>

@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { SkeletonLine } from "./Skeleton";
+import { SkeletonBlock, SkeletonLine } from "./Skeleton";
 
 /**
  * The three states a screen can be in once the sample data is gone, and one
@@ -124,6 +124,55 @@ export function QueryBoundary({
   // handled by the caller. Only a failure with nothing to show takes over.
   if (error && !hasData) return <ErrorState message={errorMessage} onRetry={onRetry} />;
   return <>{children}</>;
+}
+
+/**
+ * The same three states, for the card list a phone gets instead of a table.
+ *
+ * Every list screen here wraps its TABLE in `QueryBoundary` and its card list
+ * in nothing at all. The table branch is `hidden md:block`, so below md the
+ * boundary renders inside something invisible and the phone falls through to a
+ * bare `rows.map` — which renders nothing while loading, nothing on failure,
+ * and nothing when the list is genuinely empty. Three different situations,
+ * one blank white card, no way to tell them apart and no Try again.
+ *
+ * Drop this in as the first child of the `md:hidden` container and it answers
+ * for all three, staying out of the way once there are rows to show. Same
+ * order and same wording as `QueryBoundary`, so the two views of one screen
+ * cannot disagree about what is happening.
+ */
+export function CardListState({
+  loading,
+  error,
+  hasData,
+  isEmpty,
+  emptyMessage,
+  errorMessage,
+  onRetry,
+  rows = 4,
+}: {
+  loading: boolean;
+  error: unknown;
+  hasData: boolean;
+  /** True when the answer arrived and held nothing. */
+  isEmpty: boolean;
+  emptyMessage: string;
+  errorMessage: string;
+  onRetry?: () => void;
+  /** How many card-shaped placeholders to wait with. */
+  rows?: number;
+}) {
+  if (loading && !hasData)
+    return (
+      <div className="flex flex-col gap-[10px]" aria-hidden>
+        {Array.from({ length: rows }).map((_, i) => (
+          <SkeletonBlock key={i} className="h-[92px] w-full" radius={10} />
+        ))}
+      </div>
+    );
+  if (error && !hasData) return <ErrorState message={errorMessage} onRetry={onRetry} compact />;
+  if (isEmpty) return <EmptyState message={emptyMessage} compact />;
+  return null;
 }
 
 /** A one-line placeholder for a value inside otherwise-loaded chrome. */

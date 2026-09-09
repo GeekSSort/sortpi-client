@@ -36,7 +36,7 @@ export default function MetricCards({ metrics, onCardClick }: MetricCardsProps) 
             key={item.id}
             type="button"
             onClick={() => onCardClick?.(item.id)}
-            className="flex cursor-pointer flex-col items-start overflow-clip rounded-[10px] bg-white p-[24px] text-left shadow-[inset_0_0_0_1px_#eaeaea] transition-shadow duration-200 ease-out select-none hover:shadow-[inset_0_0_0_1px_#f5b800]"
+            className="flex cursor-pointer flex-col items-start overflow-clip rounded-[10px] bg-white p-[24px] text-left shadow-[inset_0_0_0_1px_#eaeaea] transition-shadow duration-200 ease-out hover:shadow-[inset_0_0_0_1px_#f5b800]"
           >
             <div className="flex w-full items-start gap-[16px]">
               {/* Icons — 40px ring, 24px glyph (30:15395) */}

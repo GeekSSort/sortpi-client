@@ -37,7 +37,7 @@ export default function Headline({ name, date, onDateChange }: HeadlineProps) {
   };
 
   return (
-    <div className="flex w-full flex-col items-start gap-[16px] select-none sm:h-[54px] sm:flex-row sm:items-center sm:justify-between sm:gap-0">
+    <div className="flex w-full flex-col items-start gap-[16px] sm:h-[54px] sm:flex-row sm:items-center sm:justify-between sm:gap-0">
       {/* Text — 30:15373 */}
       <div className="flex min-w-0 flex-col justify-center gap-[4px] sm:whitespace-nowrap">
         <p className="text-[24px] leading-[1.2] font-medium tracking-[-0.72px] text-[#1e1e1e]">

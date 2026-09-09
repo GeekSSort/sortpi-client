@@ -65,13 +65,13 @@ export default function DesignSystemPreview() {
       </Section>
 
       <Section title="Field">
-        <div className="w-[501px]">
+        <div className="w-full max-w-[501px]">
           <Field label="Label" defaultValue="samcurrent@gmail.com" />
         </div>
       </Section>
 
       <Section title="Button">
-        <div className="w-[501px]">
+        <div className="w-full max-w-[501px]">
           <Button>Button</Button>
         </div>
       </Section>

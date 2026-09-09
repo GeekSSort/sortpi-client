@@ -9,8 +9,12 @@ const geist = Geist({
 });
 
 export const metadata: Metadata = {
-  // The tab text, and what a bookmark or a shared link is named.
-  title: "SortPi",
+  // The tab text, and what a bookmark or a shared link is named. The
+  // template names inner pages "Sales · SortPi" once a page sets its own title.
+  title: {
+    default: "SortPi — Smart POS for Retail",
+    template: "%s · SortPi",
+  },
   description:
     "Smart POS for retail — sell, track stock, manage purchases and customers across every branch.",
   applicationName: "SortPi",

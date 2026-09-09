@@ -42,6 +42,34 @@ function SearchIcon() {
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e] whitespace-nowrap";
 const CELL = "flex items-center px-[12px]";
 
+/**
+ * Two columns keyed the same render as one, and the other silently disappears.
+ *
+ * `/platform/invoices` had "Still owed" (an amount) and "Due" (a date) both
+ * keyed `due`: React kept one header cell, dropped the other, and logged a
+ * duplicate-key error that read like a framework complaint rather than a
+ * missing column. Nothing in a build or a type check can see it — the keys are
+ * plain strings in a literal — so the one component every console table passes
+ * through checks it, once, in development.
+ *
+ * A throw, not a warn: a table that quietly loses a column is worse than one
+ * that refuses to draw while somebody is writing it, and this cannot reach a
+ * production bundle.
+ */
+function assertUniqueKeys(columns: { key: string }[]): void {
+  if (process.env.NODE_ENV === "production") return;
+  const seen = new Set<string>();
+  for (const column of columns) {
+    if (seen.has(column.key)) {
+      throw new Error(
+        `ConsoleList: two columns share the key "${column.key}". ` +
+          "React renders one and drops the other — give each column its own key."
+      );
+    }
+    seen.add(column.key);
+  }
+}
+
 export default function ConsoleList<T extends { id: string }>({
   rows,
   columns,
@@ -116,6 +144,8 @@ export default function ConsoleList<T extends { id: string }>({
   }, [filterOpen]);
 
   const grid = useMemo(() => columns.map((c) => c.width).join(" "), [columns]);
+  // Development only, and beside the memo that already walks the same array.
+  assertUniqueKeys(columns);
   const shown = rows.slice((page - 1) * pageSize, page * pageSize);
   const primary = columns[1] ?? columns[0];
   const waiting = Boolean(loading) && !hasData;
@@ -163,9 +193,9 @@ export default function ConsoleList<T extends { id: string }>({
         ) : null)}
 
       {(onSearch || actions || filters) && (
-        <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
+        <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
           {onSearch ? (
-            <div className="flex h-[44px] w-full items-center gap-[6px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
+            <div className="flex h-[44px] w-full items-center gap-[6px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
               <SearchIcon />
               <input
                 value={query}

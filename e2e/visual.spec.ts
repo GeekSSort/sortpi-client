@@ -1,6 +1,8 @@
 import { test, expect } from "@chromatic-com/playwright";
 import type { Page } from "@playwright/test";
 
+import { stubApi } from "./stubApi";
+
 /**
  * Every route gets an automatic Chromatic snapshot at the end of its test.
  * The sidebar and header render on all of them, so chrome regressions are
@@ -45,6 +47,19 @@ async function settle(page: Page) {
   await page.evaluate(() => document.fonts.ready);
 }
 
+/**
+ * Every test here signs in against a stubbed API.
+ *
+ * Without it the guard sends each protected route to `/login?next=…`, and
+ * these tests then measured the SIGN-IN CARD while claiming to measure the
+ * dashboard, the sidebar and the design-system page. They passed or failed for
+ * reasons unrelated to what they name — the same vacuity `responsive.spec.ts`
+ * was written with and then corrected.
+ */
+test.beforeEach(async ({ page }) => {
+  await stubApi(page);
+});
+
 for (const [name, path] of routes) {
   test(name, async ({ page }) => {
     await page.goto(path);
@@ -56,8 +71,10 @@ test("Sidebar — submenu expanded", async ({ page }) => {
   await page.goto("/dashboard");
   await settle(page);
   // A section header is a button that expands its own submenu, not a link —
-  // it navigates nowhere, it reveals the routes underneath it.
-  await page.getByRole("button", { name: "Sales", exact: true }).click();
+  // it navigates nowhere, it reveals the routes underneath it. Its name is the
+  // SECTION's ("Sales & Return"); "Sales" is one of the links it reveals, and
+  // asking for a button by that name found nothing.
+  await page.getByRole("button", { name: "Sales & Return", exact: true }).click();
   await expect(page.getByRole("link", { name: "Return", exact: true })).toBeVisible();
 });
 
