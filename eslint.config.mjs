@@ -12,6 +12,13 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Playwright/Chromatic output. These are gitignored, but flat config does
+    // not read .gitignore, so without this a local `npm run lint` after
+    // `npm run test:e2e` reports hundreds of errors out of compiled bundles.
+    "test-results/**",
+    "playwright-report/**",
+    "blob-report/**",
+    "playwright/.cache/**",
   ]),
   {
     rules: {
