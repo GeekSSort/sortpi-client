@@ -13,11 +13,13 @@ import DateField from "@/components/shared/DateField";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
 import { toApiDay } from "@/lib/dateFilter";
 import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
-import { QueryBoundary, RefreshBar, EmptyState, ErrorState } from "@/components/shared/QueryBoundary";
+import { CardListState, EmptyState, ErrorState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import { DetailSkeleton } from "@/components/shared/Skeleton";
 import Receipt from "@/components/shared/Receipt";
 import { useShopProfile } from "@/components/shared/useShopProfile";
 import { formatMoney } from "@/lib/format";
+import { clampTypedAmount } from "@/lib/money";
+import { AmountLabel } from "@/components/shared/MaxButton";
 
 /**
  * Figma: SortPi — Purchase History 59:15218.
@@ -432,8 +434,8 @@ export default function PurchasesPage() {
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 59:15220 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
+      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
+        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
           <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
             <SearchIcon />
             <input
@@ -606,6 +608,19 @@ export default function PurchasesPage() {
 
         {/* Stacked cards below md — also tappable */}
         <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
+          {/* Below md there is no table, so the boundary around it never
+              speaks here. Without this the phone showed one blank card for
+              loading, for failure and for an empty list alike. */}
+          <CardListState
+            loading={loading}
+            error={error}
+            hasData={data !== undefined}
+            isEmpty={rows.length === 0}
+            errorMessage="Purchases could not be loaded."
+            emptyMessage={term || date ? "No purchases match that search or date." : "No purchases yet."}
+            onRetry={refetch}
+            rows={4}
+          />
           {rows.map((r) => (
             <button
               key={r.id}
@@ -1079,13 +1094,27 @@ export default function PurchasesPage() {
             {/* A supplier is often paid in instalments, so the amount is asked
                 for rather than assumed to be the whole invoice. */}
             {markOf.kind === "paid" && (
-              <label className="flex flex-col gap-[6px]">
-                <span className="text-[14px] font-medium tracking-[-0.28px] text-[#525252]">Amount</span>
+              <div className="flex flex-col gap-[6px]">
+                <AmountLabel
+                  htmlFor="pur-pay"
+                  onMax={() => {
+                    setPayAmount(String(markOf.row?.dueAmount ?? 0));
+                    setMarkError(null);
+                  }}
+                  maxDisabled={!markOf.row?.dueAmount}
+                >
+                  Amount
+                </AmountLabel>
                 <input
+                  id="pur-pay"
                   autoFocus
                   value={payAmount}
                   onChange={(e) => {
-                    setPayAmount(e.target.value.replace(/[^\d.]/g, ""));
+                    // Never more than the invoice still owes — the API refuses
+                    // an over-payment with an error naming the due, and being
+                    // told after typing is worse than not being able to. See
+                    // `@/lib/money`.
+                    setPayAmount(clampTypedAmount(e.target, markOf.row?.dueAmount ?? 0));
                     setMarkError(null);
                   }}
                   inputMode="decimal"
@@ -1093,7 +1122,7 @@ export default function PurchasesPage() {
                   aria-label="Payment amount"
                   className="flex h-[44px] items-center rounded-[10px] bg-white px-[12px] text-[14px] tracking-[-0.28px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] outline-none placeholder:text-[rgba(82,82,82,0.6)]"
                 />
-              </label>
+              </div>
             )}
 
             {markError && <p className="text-[13px] text-[#ef4444]">{markError}</p>}

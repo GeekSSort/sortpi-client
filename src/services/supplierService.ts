@@ -1,5 +1,5 @@
 import { SupplierRecord, SupplierQueryFilter, CreateSupplierPayload } from "@/types/suppliers";
-import { apiFetch, apiList } from "./apiClient";
+import { apiFetch, apiList, ApiError, toAmount } from "./apiClient";
 import { toSupplierRecord } from "./mappers/supplier";
 
 export class SupplierService {
@@ -39,6 +39,58 @@ export class SupplierService {
    *
    * No fallback here: a failure has to reach the form.
    */
+  /**
+   * Pay a supplier, against their outstanding balance.
+   *
+   * THIS DID NOT EXIST. The "Record payment" dialog on the suppliers screen
+   * called `patch()` — a local mutation of the cached row — and nothing else:
+   * the balance fell on screen, a note said the money had been paid, and NO
+   * REQUEST WAS MADE. Nothing reached the supplier ledger, the general ledger
+   * or the cash account, and the old balance came back on the next refresh.
+   * A shop reconciling against it would be short by every payment ever
+   * "recorded" this way.
+   *
+   * `POST /suppliers/{id}/payments/` is the same endpoint the customer side
+   * has always used — `_PartnerViewSet` serves both — so the sign, the
+   * ledger row and the general-ledger legs are all owned by the server.
+   *
+   * The idempotency key is REQUIRED, not optional: these ledgers are
+   * insert-only, so a retried request without one posts the payment twice and
+   * the only correction is a manual reversing entry. The caller mints one when
+   * the dialog opens, so a double-tap replays instead of paying twice.
+   */
+  static async recordPayment(
+    supplierId: string,
+    amount: number,
+    note = "",
+    options: { paymentMethod?: string; idempotencyKey?: string } = {}
+  ): Promise<{ balanceAfter: number }> {
+    const row = await apiFetch<any>(`/suppliers/${supplierId}/payments/`, {
+      method: "POST",
+      idempotencyKey: options.idempotencyKey ?? `sup-pay-${supplierId}`,
+      body: JSON.stringify({
+        amount: amount.toFixed(4),
+        reference_type: "PAYMENT",
+        note,
+        ...(options.paymentMethod ? { payment_method: options.paymentMethod } : {}),
+      }),
+    });
+    return { balanceAfter: toAmount(row?.balanceAfter ?? row?.balance_after) };
+  }
+
+  /** Wording a person can act on. */
+  static describeError(error: unknown): string {
+    if (error instanceof ApiError) {
+      if (error.code === "NETWORK_ERROR") return "Cannot reach the server.";
+      if (error.code === "ZERO_LEDGER_AMOUNT") return "Enter an amount above zero.";
+      if (error.status === 403) return "You do not have permission to pay a supplier.";
+      const field = Object.values(error.errors || {})[0];
+      if (Array.isArray(field) && field.length) return String(field[0]);
+      return error.message;
+    }
+    return "That payment could not be recorded.";
+  }
+
   static async createSupplier(payload: CreateSupplierPayload): Promise<SupplierRecord> {
     const code = await nextSupplierCode();
     const created = await apiFetch<any>("/suppliers/", {

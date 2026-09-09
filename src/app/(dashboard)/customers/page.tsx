@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { CustomerRecord } from "@/types/customer";
 import { CustomerService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
@@ -10,7 +11,10 @@ import TablePagination from "@/components/shared/TablePagination";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
 import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
-import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/QueryBoundary";
+import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
+import { clampTypedAmount } from "@/lib/money";
+import { AmountLabel } from "@/components/shared/MaxButton";
+import { isRowClick, isRowKey } from "@/lib/rowClick";
 
 /**
  * Customers — Figma 51:9099.
@@ -67,6 +71,7 @@ export default function CustomersPage() {
   const [term, setTerm] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
+  const router = useRouter();
   const [note, setNote] = useState<string | null>(null);
   const [profileOf, setProfileOf] = useState<CustomerRecord | null>(null);
   const [payFor, setPayFor] = useState<CustomerRecord | null>(null);
@@ -97,8 +102,8 @@ export default function CustomersPage() {
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 51:9100 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:items-center lg:justify-between lg:gap-0">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:w-[370px]">
+      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
+        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
           <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
             <SearchIcon />
             <input
@@ -173,9 +178,27 @@ export default function CustomersPage() {
                   />
                 )}
                 {rows.map((c, i) => (
+                  // A div with role="button", not a <button>: the Action cell
+                  // holds one and the browser refuses to nest them.
+                  //
+                  // `isRowClick` keeps the row's own controls working — the
+                  // action menu, and a drag to select a phone number to copy,
+                  // which ends in a click and would otherwise open the page on
+                  // top of the selection.
                   <div
                     key={c.id}
-                    className={`grid ${GRID} h-[54px] items-center ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open ${c.name}`}
+                    onClick={(e) => {
+                      if (isRowClick(e.target)) router.push(`/customers/${c.id}`);
+                    }}
+                    onKeyDown={(e) => {
+                      if (!isRowKey(e)) return;
+                      e.preventDefault();
+                      router.push(`/customers/${c.id}`);
+                    }}
+                    className={`grid ${GRID} h-[54px] cursor-pointer items-center transition-colors hover:bg-[#fafafa] ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}
                   >
                     <div className={`${CELL}`}><span className={`${TEXT} truncate`}>{c.customerId}</span></div>
                     <div className={`${CELL}`}><span className={`${TEXT} truncate`}>{c.name}</span></div>
@@ -191,7 +214,8 @@ export default function CustomersPage() {
                       <RowActionMenu
                         label={`Actions for ${c.customerId}`}
                         actions={[
-                          { label: "View profile", onSelect: () => setProfileOf(c) },
+                          { label: "Open", onSelect: () => router.push(`/customers/${c.id}`) },
+                          { label: "Quick profile", onSelect: () => setProfileOf(c) },
                           {
                             label: "Edit customer",
                             onSelect: () => setNote(`Edit ${c.name} — form not designed yet`),
@@ -217,6 +241,19 @@ export default function CustomersPage() {
 
         {/* Stacked cards below md */}
         <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
+          {/* Below md there is no table, so the boundary around it never
+              speaks here. Without this the phone showed one blank card for
+              loading, for failure and for an empty list alike. */}
+          <CardListState
+            loading={loading}
+            error={error}
+            hasData={data !== undefined}
+            isEmpty={rows.length === 0}
+            errorMessage="Customers could not be loaded."
+            emptyMessage={term ? "No customers match that search." : "No customers yet."}
+            onRetry={refetch}
+            rows={4}
+          />
           {rows.map((c) => (
             <div key={c.id} className="rounded-[10px] border border-solid border-[#eaeaea] p-[12px]">
               <div className="flex items-start justify-between gap-[10px]">
@@ -371,13 +408,25 @@ export default function CustomersPage() {
               <span className="font-medium text-[#1e1e1e]">{payFor.name}</span> owes{" "}
               <span className="font-medium text-[#1e1e1e]">{payFor.dueAmountFormatted}</span>.
             </p>
-            <label className="flex flex-col gap-[6px]">
-              <span className="text-[14px] font-medium tracking-[-0.28px] text-[#525252]">Amount</span>
+            <div className="flex flex-col gap-[6px]">
+              <AmountLabel
+                htmlFor="cus-pay"
+                onMax={() => {
+                  setPayAmount(String(payFor?.dueAmount ?? 0));
+                  setPayError(null);
+                }}
+                maxDisabled={!payFor?.dueAmount}
+              >
+                Amount
+              </AmountLabel>
               <input
+                id="cus-pay"
                 autoFocus
                 value={payAmount}
                 onChange={(e) => {
-                  setPayAmount(e.target.value.replace(/[^\d.]/g, ""));
+                  // Never more than the balance: over-typing is replaced by
+                  // what is owed. See `@/lib/money`.
+                  setPayAmount(clampTypedAmount(e.target, payFor?.dueAmount ?? 0));
                   setPayError(null);
                 }}
                 inputMode="decimal"
@@ -385,7 +434,7 @@ export default function CustomersPage() {
                 aria-label="Payment amount"
                 className="flex h-[44px] items-center rounded-[10px] bg-white px-[12px] text-[14px] tracking-[-0.28px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] outline-none placeholder:text-[rgba(82,82,82,0.6)]"
               />
-            </label>
+            </div>
             {payError && <p className="text-[13px] text-[#ef4444]">{payError}</p>}
           </div>
         )}
