@@ -377,16 +377,21 @@ export class PosService {
        * all of them are the same fix.
        */
       /**
-       * BOTH spellings, because the client camelCases the whole response.
+       * BOTH spellings, and deliberately so.
        *
-       * `apiClient` runs `snakeToCamelCase` over the ENTIRE body — it cannot
-       * tell a field name from a map key — so the server's
-       * `errors.grand_total` reaches here as `errors.grandTotal`. This read
+       * `apiClient` used to run `snakeToCamelCase` over the ENTIRE body — it
+       * cannot tell a field name from a map key — so the server's
+       * `errors.grand_total` arrived here as `errors.grandTotal`. This read
        * only the snake_case name, so `detail?.grand_total` was always
        * undefined and the whole re-price retry below was DEAD CODE: a till
        * whose total disagreed with the server showed the cashier
        * PAYMENT_EXCEEDS_TOTAL and stopped, which is the exact failure the
        * retry was written to prevent.
+       *
+       * `apiClient` now puts the `errors` map's own key names back, so the
+       * snake_case name is the live one. The camelCase read stays: it costs
+       * nothing, and it is what a response cached before that change still
+       * looks like.
        */
       const detail =
         error instanceof ApiError
