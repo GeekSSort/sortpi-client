@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
+import { frontDoor } from "@/lib/frontDoor";
+
 /**
  * Route guard. Called `proxy.ts` because Next 16 dropped `middleware.ts` —
  * same job, new filename.
@@ -14,9 +16,17 @@ const SESSION_COOKIE = "sp_session";
 const SCOPE_COOKIE = "sp_scope";
 
 /**
- * Back-office areas. A till-only account goes to /pos instead. Sign-in checks
- * `dashboard.view` and writes the answer to a cookie, because this file
- * cannot read permissions.
+ * Back-office areas. A till-only account goes to /pos instead.
+ *
+ * Sign-in writes the answer to the `sp_scope` cookie, because this file runs
+ * before the page and cannot read permissions. What it writes is "does this
+ * account have ANY back office" — `src/lib/pageAccess.ts` decides that from
+ * the page-to-permission map.
+ *
+ * It used to be `dashboard.view` alone, and only two of the five seeded roles
+ * hold that code: a Branch Manager and the Inventory role were both marked
+ * `pos` here and then redirected away from `/inventory`, `/purchases` and
+ * `/reports` — the pages their permissions exist for.
  */
 const BACK_OFFICE = [
   "/dashboard",
@@ -39,10 +49,10 @@ const BACK_OFFICE = [
 /**
  * The POS shell for a cashier, the main menu for everyone else.
  *
- * Someone with `dashboard.view` has every one of these screens in their own
- * sidebar, so sending them into the till's environment would swap their menu
- * for a smaller one and take the whole window. Old links and bookmarks land on
- * the back-office copy instead of a shell they no longer use.
+ * Someone with a back office reaches these screens from their own sidebar, so
+ * sending them into the till's environment would swap their menu for a smaller
+ * one and take the whole window. Old links and bookmarks land on the
+ * back-office copy instead of a shell they no longer use.
  */
 const POS_TO_BACK_OFFICE: Record<string, string> = {
   "/pos/sales": "/sales-pos/sales",
@@ -117,6 +127,37 @@ export function proxy(request: NextRequest) {
   }
 
   if (isPublic(pathname)) return NextResponse.next();
+
+  /**
+   * The bare domain, signed out.
+   *
+   * On the PLATFORM address that is somebody who typed sortpi.com, and what
+   * they want is almost never to sign in to an account they do not have — the
+   * apex exists so a new company can register. It sent them to /login, which
+   * is a form they cannot fill in and which offers sign-up only as a link
+   * below the button.
+   *
+   * On a COMPANY's address it is the opposite: nusrat.sortpi.com belongs to a
+   * shop whose staff are signing in, and registering a new company from
+   * somebody else's front door is the mix-up `realmUrl` exists to prevent. So
+   * that host still opens on /login — and so does a SINGLE-TENANT deployment,
+   * which has no apex to register at at all. `frontDoor` owns all three.
+   *
+   * Only for `/` — a signed-out visitor asking for any other page is still
+   * sent to sign in with `next` set, so the link they followed still works.
+   */
+  if (pathname === "/") {
+    return NextResponse.redirect(
+      new URL(
+        frontDoor({
+          host: request.headers.get("host"),
+          baseDomain: process.env.NEXT_PUBLIC_PLATFORM_BASE_DOMAIN,
+          platformHosts: process.env.NEXT_PUBLIC_PLATFORM_HOSTS,
+        }),
+        request.url
+      )
+    );
+  }
 
   // Remember where they were going, so signing in takes them there instead of
   // to the dashboard.

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AuthShell, { AuthAlert, AuthButton, AuthField } from "@/components/auth/AuthShell";
 import { RegistrationService } from "@/services/registrationService";
+import { useOnPlatformHost } from "@/lib/realmUrl";
 
 /**
  * Forgotten password for someone inside a company.
@@ -15,12 +16,23 @@ import { RegistrationService } from "@/services/registrationService";
  * being used to find out who is a customer of whom.
  *
  * Our own staff use /platform/forgot-password.
+ *
+ * On the PLATFORM address there is no company to look anybody up in, and the
+ * server now finds nobody there rather than searching every tenant — which it
+ * used to do, so the apex could mail a reset code to any customer's user whose
+ * address you could guess. Closing that on the server would leave this page
+ * silently doing nothing, so it says what to do instead.
  */
 export default function ForgotPasswordPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The host is a browser fact the server render cannot have, so it is read
+  // through useSyncExternalStore rather than an effect: the server answers
+  // `false` — the ordinary form — and the browser answers truthfully, with no
+  // cascading render between the two.
+  const needsCompanyAddress = useOnPlatformHost();
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,6 +61,15 @@ export default function ForgotPasswordPage() {
         </>
       }
     >
+      {needsCompanyAddress && (
+        <AuthAlert tone="info">
+          Open this page at your own company address — for example
+          <span className="font-medium"> yourcompany.{(process.env.NEXT_PUBLIC_PLATFORM_BASE_DOMAIN || "").trim()}/forgot-password</span>.
+          A reset started here cannot tell which company you belong to, so no
+          code is sent.
+        </AuthAlert>
+      )}
+
       <AuthField
         label="Email"
         type="email"
@@ -61,7 +82,7 @@ export default function ForgotPasswordPage() {
 
       {error && <AuthAlert>{error}</AuthAlert>}
 
-      <AuthButton type="submit" disabled={busy}>
+      <AuthButton type="submit" disabled={busy || needsCompanyAddress}>
         {busy ? "Sending…" : "Send code"}
       </AuthButton>
 

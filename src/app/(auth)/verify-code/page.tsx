@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Suspense, useState } from "react";
+import React, { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import AuthShell, { AuthAlert, AuthButton, OtpInput } from "@/components/auth/AuthShell";
 import { RegistrationService, Realm } from "@/services/registrationService";
@@ -12,6 +12,16 @@ import { RegistrationService, Realm } from "@/services/registrationService";
  * platform staff — because the step is identical. What differs is where the
  * person goes next, which `purpose` and `realm` carry through.
  */
+
+/**
+ * The server's own cooldown, mirrored.
+ *
+ * `OTP_RESEND_COOLDOWN_SECONDS` defaults to 60 and `otp.resend` refuses
+ * anything inside it with RESEND_TOO_SOON. A number here that disagreed would
+ * either offer a button that fails or hide one that would have worked, so if
+ * the setting is changed this changes with it.
+ */
+const RESEND_COOLDOWN_SECONDS = 60;
 
 function VerifyCodeInner() {
   const router = useRouter();
@@ -29,6 +39,23 @@ function VerifyCodeInner() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resent, setResent] = useState(false);
+  /**
+   * Seconds until another code may be asked for.
+   *
+   * The server refuses one inside `OTP_RESEND_COOLDOWN_SECONDS` (60) with
+   * RESEND_TOO_SOON, and this screen offered "Send another" the whole time —
+   * so the ordinary thing to do when a code has not arrived was to press a
+   * button and be told off. Counting down says WHEN instead, and the number
+   * here is the server's own cooldown rather than a guess.
+   *
+   * It starts at 60 on arrival because a code was just sent to get here.
+   */
+  const [cooldown, setCooldown] = useState(RESEND_COOLDOWN_SECONDS);
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const id = window.setTimeout(() => setCooldown((n) => n - 1), 1000);
+    return () => window.clearTimeout(id);
+  }, [cooldown]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,7 +76,12 @@ function VerifyCodeInner() {
   };
 
   const resend = async () => {
+    if (cooldown > 0) return;
     setError(null);
+    // Started before the request, not after it: the cooldown is what stops a
+    // second press while the first is still in flight, and a timer that only
+    // starts on success leaves the button live for the whole round-trip.
+    setCooldown(RESEND_COOLDOWN_SECONDS);
     try {
       await RegistrationService.resendCode(email, otpPurpose, realm);
       setResent(true);
@@ -66,8 +98,17 @@ function VerifyCodeInner() {
       footer={
         <>
           Did not get it?
-          <button type="button" onClick={resend} className="font-medium text-[#f5b800]">
-            Send another
+          <button
+            type="button"
+            onClick={resend}
+            disabled={cooldown > 0}
+            className={
+              cooldown > 0
+                ? "font-medium text-[#a3a3a3]"
+                : "cursor-pointer font-medium text-[#f5b800]"
+            }
+          >
+            {cooldown > 0 ? `Send another in ${cooldown}s` : "Send another"}
           </button>
         </>
       }
