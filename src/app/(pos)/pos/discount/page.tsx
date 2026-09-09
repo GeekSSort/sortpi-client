@@ -52,6 +52,25 @@ const SORTS: { key: SortKey; label: string }[] = [
 const ROW =
   "grid grid-cols-[34px_minmax(180px,1fr)_120px_100px_110px_110px_100px_52px] items-center gap-[8px]";
 
+/**
+ * Run a pile of writes a few at a time, and stop at the first failure.
+ *
+ * `Promise.all` over the whole list starts every request at once. That was
+ * fine while the only bulk action was a page of sixteen; pricing a whole
+ * catalogue is hundreds, and a browser will not open hundreds of connections —
+ * it queues them, so the tail waits anyway while the API takes the burst.
+ *
+ * Eight keeps the connection pool busy and is small enough that a failure is
+ * noticed after eight wasted requests rather than six hundred. The screen
+ * reloads the server's answer on failure either way, so stopping early leaves
+ * less to reconcile, not more.
+ */
+async function runInBatches<T>(thunks: (() => Promise<T>)[], size = 8): Promise<void> {
+  for (let i = 0; i < thunks.length; i += size) {
+    await Promise.all(thunks.slice(i, i + size).map((run) => run()));
+  }
+}
+
 const money = (n: number) => `৳${Math.round(n).toLocaleString("en-IN")}`;
 
 /* ── Icons ─────────────────────────────────────────────────────────────── */
@@ -282,15 +301,35 @@ export default function PosDiscountPage() {
 
       const byId = new Map(products.map((p) => [p.id, p]));
       const touched = new Set([...Object.keys(before), ...Object.keys(next)]);
-      const writes: Promise<unknown>[] = [];
+      /**
+       * Thunks, not promises.
+       *
+       * Calling `DiscountService.set(...)` inside the loop STARTS the request
+       * there and then, so pricing a whole catalogue would fire one fetch per
+       * product all at once — hundreds the moment somebody uses "Price all". A
+       * browser queues past six per host and the API sees a burst it has no
+       * reason to absorb. Deferring the call lets them run in batches below.
+       */
+      const writes: (() => Promise<unknown>)[] = [];
 
       touched.forEach((variantId) => {
         const product = byId.get(variantId);
         if (!product) return;
         const was = before[variantId];
         const now = next[variantId];
+        // A zero is not an offer, and the API refuses one — "A discount must be
+        // greater than zero. Remove it instead." An unpriced product reaches
+        // here with exactly that: `capped()` works a flat amount out as a share
+        // of the price, and a share of nothing is nothing. Applying a flat
+        // discount to a selection containing one unpriced product failed the
+        // whole batch on its account.
+        if (now && now.value <= 0) {
+          if (was) writes.push(() => DiscountService.clear(product.productId, { variantId }));
+          delete next[variantId];
+          return;
+        }
         if (now && (!was || was.mode !== now.mode || was.value !== now.value)) {
-          writes.push(
+          writes.push(() =>
             DiscountService.set(product.productId, {
               mode: now.mode === "flat" ? "FLAT" : "PERCENT",
               value: now.value,
@@ -298,23 +337,22 @@ export default function PosDiscountPage() {
             })
           );
         } else if (!now && was) {
-          writes.push(DiscountService.clear(product.productId, { variantId }));
+          writes.push(() => DiscountService.clear(product.productId, { variantId }));
         }
       });
 
       if (writes.length === 0) return;
-      void Promise.all(writes)
+      void runInBatches(writes)
         .then(() => {
           // The till's wall prices its tiles by this, and the products table
           // shows it: both read the same key.
           invalidate("discounts", "pos-products", "inventory");
         })
         .catch((err) => {
-          setSaveError(
-            err instanceof Error && err.message
-              ? `Not everything saved: ${err.message}`
-              : "Not everything saved."
-          );
+          // "Not everything saved: Validation failed." named nothing a
+          // shopkeeper could act on. The API puts the reason in `errors`,
+          // keyed by field, and it was being thrown away.
+          setSaveError(`Not everything saved: ${DiscountService.describeError(err)}`);
           void refetchRates();
         });
     },
@@ -401,6 +439,15 @@ export default function PosDiscountPage() {
 
   const pageIds = shown.map((p) => p.id);
   const allOnPagePicked = pageIds.length > 0 && pageIds.every((id) => picked.has(id));
+  /** Everything the current filters match, across every page. */
+  const visibleIds = useMemo(() => visible.map((p) => p.id), [visible]);
+  const allMatchingPicked =
+    visibleIds.length > 0 && visibleIds.every((id) => picked.has(id));
+  /** The page is full but there is more behind it — the case that misled. */
+  const moreBeyondThisPage =
+    allOnPagePicked && !allMatchingPicked && visible.length > shown.length;
+
+  const pickEveryMatch = () => setPicked(new Set(visibleIds));
 
   const togglePage = () =>
     setPicked((prev) => {
@@ -491,64 +538,22 @@ export default function PosDiscountPage() {
   const HEAD = "text-[12px] leading-[16px] font-medium text-[#8f8d87]";
 
   return (
-    <div className="relative flex h-full min-h-0 w-full flex-col gap-[14px]">
+    // The same shell as Customers, Inventory and Purchases: a column that
+    // flows and lets the PAGE scroll, not a full-height flex whose table
+    // scrolls inside itself. The two behave differently under the same header
+    // and that difference is most of why this screen read as a different
+    // product.
+    <div className="relative flex w-full flex-col gap-[14px]">
       <RefreshBar active={fetching} />
-      {/* ── What the offers add up to ─────────────────────────────────── */}
-      <div className="flex shrink-0 flex-col gap-[12px]">
-        <div className="flex flex-wrap items-center justify-between gap-[12px]">
-          <div className="flex min-w-0 items-center gap-[10px]">
-            <span className="flex size-[38px] shrink-0 items-center justify-center rounded-[10px] bg-[#fdf7e6] text-[#f5b800]">
-              <TagIcon size={20} />
-            </span>
-            <span className="flex min-w-0 flex-col">
-              <span className="text-[17px] leading-[24px] font-semibold text-[#1e1e1e]">Discounts</span>
-              <span className="text-[12px] text-[#8f8d87]">
-                {readOnly
-                  ? "You can see the shop's offers but not change them."
-                  : `Pick a product to set what comes off. Up to ${cap}% — the shop's limit.`}
-              </span>
-            </span>
-          </div>
-
-          <div className="flex items-center gap-[8px]">
-            {saveError && (
-              <span className="flex h-[36px] items-center rounded-[9px] bg-[#fef6f5] px-[12px] text-[13px] font-medium text-[#ef4444]">
-                {saveError}
-              </span>
-            )}
-            {undoState && (
-              <button
-                type="button"
-                onClick={undo}
-                className="sp-fade flex h-[36px] cursor-pointer items-center gap-[6px] rounded-[9px] bg-[#1e1e1e] px-[12px] text-[13px] font-medium text-white transition-opacity hover:opacity-90"
-              >
-                <UndoIcon />
-                Undo — {undoState.what}
-              </button>
-            )}
-            {!readOnly && summary.count > 0 && (
-              <button
-                type="button"
-                onClick={clearAll}
-                className="flex h-[36px] cursor-pointer items-center rounded-[9px] border border-solid border-[#eaeaea] bg-white px-[14px] text-[13px] font-medium text-[#525252] transition-colors hover:border-[#e63946] hover:text-[#e63946]"
-              >
-                Clear all
-              </button>
-            )}
-          </div>
-        </div>
-
-      </div>
-
-      {/* ── Finding a product ──────────────────────────────────────────── */}
-      {/* Laid out like every other list screen in the app: a 370px search box
-          on the left of the row, the controls that narrow the list on the
-          right. The search used to be `flex-1`, so on a wide till it ran the
-          whole width of the page and nothing else on the row lined up with
-          the screens beside it. */}
-      <div className="flex shrink-0 flex-col gap-[10px]">
-        <div className="flex w-full flex-col items-stretch gap-[10px] lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex h-[44px] w-full items-center gap-[8px] rounded-[10px] bg-white px-[12px] shadow-[inset_0_0_0_1px_#eaeaea] focus-within:shadow-[inset_0_0_0_1.5px_#f5b800] lg:w-[370px]">
+      {/* ── Headline row ───────────────────────────────────────────────
+          One row, the same shape Customers / Inventory / Purchases use: a
+          370px search box on the left, everything that acts on the list on the
+          right, 48px tall on a wide screen. This screen used to carry TWO
+          header rows — an action strip above a filter strip — which is why it
+          did not line up with the pages either side of it in the sidebar. */}
+      <div className="flex w-full flex-col gap-[10px]">
+        <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
+          <div className="flex h-[44px] w-full items-center gap-[8px] rounded-[10px] bg-white px-[12px] shadow-[inset_0_0_0_1px_#eaeaea] focus-within:shadow-[inset_0_0_0_1.5px_#f5b800] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
             <span className="text-[#8f8d87]">
               <SearchIcon />
             </span>
@@ -570,6 +575,35 @@ export default function PosDiscountPage() {
           </div>
 
           <div className="flex shrink-0 flex-wrap items-center gap-[10px]">
+            {readOnly && (
+              <span className="text-[12px] text-[#8f8d87]">
+                You can see the shop&apos;s offers but not change them.
+              </span>
+            )}
+            {saveError && (
+              <span className="flex h-[44px] items-center rounded-[10px] bg-[#fef6f5] px-[12px] text-[13px] font-medium text-[#ef4444]">
+                {saveError}
+              </span>
+            )}
+            {undoState && (
+              <button
+                type="button"
+                onClick={undo}
+                className="sp-fade flex h-[44px] cursor-pointer items-center gap-[6px] rounded-[10px] bg-[#1e1e1e] px-[12px] text-[13px] font-medium text-white transition-opacity hover:opacity-90"
+              >
+                <UndoIcon />
+                Undo — {undoState.what}
+              </button>
+            )}
+            {!readOnly && summary.count > 0 && (
+              <button
+                type="button"
+                onClick={clearAll}
+                className="flex h-[44px] cursor-pointer items-center rounded-[10px] border border-solid border-[#eaeaea] bg-white px-[14px] text-[13px] font-medium text-[#525252] transition-colors hover:border-[#e63946] hover:text-[#e63946]"
+              >
+                Clear all
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -659,7 +693,7 @@ export default function PosDiscountPage() {
         </ChipScroller>
       </div>
       {/* ── The table ──────────────────────────────────────────────────── */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className="relative flex w-full flex-col overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
         {/* What is picked, and what can be done to it — above the head so it
             never scrolls away mid-selection. */}
         {!readOnly && !loading && visible.length > 0 && (
@@ -700,27 +734,62 @@ export default function PosDiscountPage() {
                 >
                   Clear selection
                 </button>
+                {/* Every row on screen is ticked and there are more behind it.
+                    Said plainly, because "select all" meaning "this page" is
+                    exactly the assumption that priced sixteen products and
+                    looked like it had priced the shop. */}
+                {moreBeyondThisPage && (
+                  <span className="flex items-center gap-[6px] text-[12px] text-[#8f8d87]">
+                    All {shown.length} on this page.
+                    <button
+                      type="button"
+                      onClick={pickEveryMatch}
+                      className="cursor-pointer font-semibold text-[#f5b800] underline underline-offset-2"
+                    >
+                      Select all {visible.length}
+                      {category !== "All Categories" ? ` in ${category}` : ""}
+                    </button>
+                  </span>
+                )}
               </>
             )}
 
-            {category !== "All Categories" && picked.size === 0 && (
+            {/* The tick at the head of the table selects THIS PAGE — sixteen
+                products — and nothing said so where it could be read. The one
+                control that priced more than a page was this button, and it
+                was hidden unless a category had been chosen: in the "All
+                Categories" view, the view somebody uses to price the whole
+                shop, there was no way to do it at all. Ticking the header and
+                setting 5% looked like it had, and had priced sixteen.
+
+                So it is offered whenever nothing is selected, and it prices
+                what the filters MATCH — the same number quoted beside it —
+                rather than a category, which ignored the search box. */}
+            {picked.size === 0 && (
               <button
                 type="button"
-                onClick={() => openFor(products.filter((p) => p.category === category))}
+                onClick={() => openFor(visible)}
                 className="ml-auto flex h-[30px] shrink-0 cursor-pointer items-center rounded-[8px] bg-white px-[10px] text-[12px] font-medium text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:text-[#f5b800]"
               >
-                Price all of {category}
+                Price all {visible.length}
+                {category !== "All Categories" ? ` in ${category}` : ""}
               </button>
             )}
           </div>
         )}
 
         {/* One scroller for head and rows together, so the columns stay in
-            step when the table is wider than the window. */}
-        <div className="min-h-0 flex-1 overflow-auto">
+            step when the table is wider than the window.
+
+            `overflow-x-auto`, like the other list screens: the card no longer
+            fills the window, so the PAGE scrolls vertically and this only has
+            to carry the horizontal overflow. It was `flex-1 overflow-auto`,
+            which gave this one table its own vertical scrollbar while every
+            other screen in the app scrolled the page. */}
+        <div className="overflow-x-auto">
           <div className="min-w-[880px]">
             <div
-              className={`${ROW} sticky top-0 z-10 border-b border-solid border-[#eaeaea] bg-[#fafafa] px-[12px] py-[10px]`}
+              className={`${ROW} border-b border-solid border-[#eaeaea] bg-[#fafafa] px-[12px] py-[10px]`}
             >
               <button
                 type="button"

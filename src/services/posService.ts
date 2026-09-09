@@ -124,10 +124,43 @@ export class PosService {
    * cashier needs to know the difference between an unknown barcode and a till
    * that cannot reach the server.
    */
+  /**
+   * A scanned code -> the product, as fast as the network allows.
+   *
+   * This is the hot path of the whole till, and it used to cost up to NINE
+   * round-trips, chained one after another:
+   *
+   *     lookup the barcode
+   *       -> then sellingBranch()
+   *         -> then sellingWarehouse()
+   *           -> then the ENTIRE stock list, up to six pages of 200 rows
+   *
+   * — all of it to learn the stock figure for ONE sku, all of it serial, and
+   * all of it on every single scan. A cashier scanning a queue through watched
+   * each item appear a beat after the beep, which is the difference between a
+   * till that feels like a tool and one that feels broken.
+   *
+   * Two changes, and both are about the shape rather than the speed of any one
+   * request:
+   *
+   *   * the stock figure comes from `/inventory/stock/?variant=…&limit=1`,
+   *     which is ONE row, not the whole warehouse;
+   *   * it is fetched in PARALLEL with the barcode lookup rather than after
+   *     it, because neither answer depends on the other.
+   *
+   * A scan is therefore one round-trip's worth of waiting, and a repeat scan of
+   * something already on the wall or already in the basket never leaves the
+   * browser at all — see `ProductGrid.submitScan`.
+   *
+   * The warehouse id is resolved once per session and remembered, because it
+   * cannot change without the cashier switching branch, and switching branch
+   * reloads the till.
+   */
   static async lookupBarcode(barcode: string): Promise<ProductItem | null> {
     const code = barcode.trim();
     if (!code) return null;
     try {
+      const warehousePromise = PosService.sellingWarehouseId();
       const found = await apiFetch<any>(
         `/products/lookup/?barcode=${encodeURIComponent(code)}`,
         { method: "GET" }
@@ -136,12 +169,62 @@ export class PosService {
       // separately. `toProductItem` reads a product row carrying its variants,
       // so the three are put back together here rather than duplicated.
       const variant = { ...(found?.variant ?? {}), price: found?.price, isDefault: true };
-      const stockBySku = await PosService.stockOnThisTill().catch(() => new Map<string, number>());
+
+      // One row, for the one sku that was scanned. `available`, not
+      // `quantity`: the tile has to show what can be SOLD, and a reserved unit
+      // is not that.
+      const warehouseId = await warehousePromise;
+      const stockBySku = new Map<string, number>();
+      if (warehouseId && variant?.id) {
+        const rows = await apiList<any>(
+          `/inventory/stock/?variant=${encodeURIComponent(String(variant.id))}` +
+            `&warehouse=${encodeURIComponent(warehouseId)}&limit=1`,
+          { method: "GET" },
+          (r) => r
+        ).catch(() => ({ data: [] as any[] }));
+        const row = rows.data[0];
+        if (row && String(row?.sku ?? "")) {
+          stockBySku.set(String(row.sku), Number(row?.available ?? 0));
+        }
+      }
       return toProductItem({ ...(found?.product ?? {}), variants: [variant] }, { stockBySku });
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) return null;
       throw err;
     }
+  }
+
+  /**
+   * The warehouse this till sells from, resolved once.
+   *
+   * Two requests — the branch, then its warehouse — and neither can change
+   * without the cashier switching branch, which reloads the till. Resolving
+   * them on every scan was two thirds of the round-trips a scan used to make.
+   *
+   * The in-flight promise is what is cached, not the answer, so ten scans in
+   * the first second share one resolution instead of starting ten.
+   */
+  private static warehouseIdPromise: Promise<string> | null = null;
+
+  static sellingWarehouseId(): Promise<string> {
+    if (!PosService.warehouseIdPromise) {
+      PosService.warehouseIdPromise = (async () => {
+        try {
+          return await sellingWarehouse(await sellingBranch());
+        } catch {
+          // Unknown means "do not claim a stock figure", which the caller
+          // handles: a tile with no stock badge is honest, a wrong one is not.
+          PosService.warehouseIdPromise = null;
+          return "";
+        }
+      })();
+    }
+    return PosService.warehouseIdPromise;
+  }
+
+  /** Forget the remembered warehouse — called when the branch changes. */
+  static forgetSellingWarehouse(): void {
+    PosService.warehouseIdPromise = null;
   }
 
   /**
@@ -293,12 +376,24 @@ export class PosService {
        * changed in Settings since the page loaded: all of them land here, and
        * all of them are the same fix.
        */
-      const detail = error instanceof ApiError ? (error.errors as { grand_total?: string }) : null;
-      if (
-        error instanceof ApiError &&
-        error.code === "PAYMENT_EXCEEDS_TOTAL" &&
-        detail?.grand_total
-      ) {
+      /**
+       * BOTH spellings, because the client camelCases the whole response.
+       *
+       * `apiClient` runs `snakeToCamelCase` over the ENTIRE body — it cannot
+       * tell a field name from a map key — so the server's
+       * `errors.grand_total` reaches here as `errors.grandTotal`. This read
+       * only the snake_case name, so `detail?.grand_total` was always
+       * undefined and the whole re-price retry below was DEAD CODE: a till
+       * whose total disagreed with the server showed the cashier
+       * PAYMENT_EXCEEDS_TOTAL and stopped, which is the exact failure the
+       * retry was written to prevent.
+       */
+      const detail =
+        error instanceof ApiError
+          ? (error.errors as { grand_total?: string; grandTotal?: string })
+          : null;
+      const serverTotal = detail?.grand_total ?? detail?.grandTotal;
+      if (error instanceof ApiError && error.code === "PAYMENT_EXCEEDS_TOTAL" && serverTotal) {
         /**
          * A different body under the same key is a 409 by design, so the
          * re-priced attempt gets its own key. Safe: the first attempt was
@@ -308,7 +403,7 @@ export class PosService {
         sale = await apiFetch<any>("/sales/", {
           method: "POST",
           idempotencyKey: `${key}-repriced`,
-          body: buildBody(Number(detail.grand_total).toFixed(2)),
+          body: buildBody(Number(serverTotal).toFixed(2)),
         });
       } else {
         throw error;

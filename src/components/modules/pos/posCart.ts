@@ -247,6 +247,19 @@ export function clearPosDraft(): void {
   patchPosDraft(EMPTY_DRAFT);
 }
 
+/**
+ * The draft as it is right now, without subscribing to it.
+ *
+ * For code that needs to LOOK at the cart during an event — the scanner asking
+ * "is this already in the basket?" — rather than render from it. Subscribing
+ * the product wall to the cart would re-render sixty tiles on every tap of a
+ * quantity stepper.
+ */
+export function readPosDraft(): PosDraft {
+  syncToBranch();
+  return current;
+}
+
 export function usePosDraft(): PosDraft {
   return useSyncExternalStore(
     subscribe,

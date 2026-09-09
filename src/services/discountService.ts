@@ -1,4 +1,4 @@
-import { apiFetch, apiList, toAmount } from "./apiClient";
+import { ApiError, apiFetch, apiList, toAmount } from "./apiClient";
 
 /**
  * Shop offers, from the server.
@@ -80,6 +80,36 @@ export class DiscountService {
       }),
     });
     return toDiscount(row);
+  }
+
+  /**
+   * Wording a shopkeeper can act on.
+   *
+   * The screen showed `err.message`, which for a rejected field is the API's
+   * generic "Validation failed." — true, and useless. The field that was
+   * refused is in `errors`, so it is read out here.
+   */
+  static describeError(error: unknown): string {
+    if (error instanceof ApiError) {
+      if (error.code === "NETWORK_ERROR") return "Cannot reach the server.";
+      if (error.status === 403) return "You do not have permission to change discounts.";
+      if (error.code === "INVALID_DISCOUNT_VALUE" || error.code === "INVALID_DISCOUNT_MODE") {
+        return error.message;
+      }
+      const first = Object.entries(error.errors || {})[0];
+      if (first) {
+        const [field, detail] = first;
+        const text = Array.isArray(detail) ? String(detail[0]) : String(detail);
+        // `variant` and `branch` name our own request shape, not anything the
+        // reader chose, so they are translated rather than echoed.
+        if (field === "variant" || field === "branch") {
+          return "That product could not be matched. Refresh and try again.";
+        }
+        return field === "non_field_errors" ? text : `${field}: ${text}`;
+      }
+      return error.message;
+    }
+    return "Those discounts could not be saved.";
   }
 
   /** Remove it. Removing the shop-wide offer does not remove a branch's. */
