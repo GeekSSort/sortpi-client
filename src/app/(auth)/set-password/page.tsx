@@ -99,21 +99,43 @@ function SetPasswordInner() {
 
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
+    let tick: ReturnType<typeof setInterval>;
     let attempts = 0;
+    const startedAt = Date.now();
+
+    // A floor under the wait, on top of the probe.
+    //
+    // The probe answers "did the handshake work", which is the question that
+    // matters, but a certificate installed a fraction of a second ago has
+    // succeeded once and can still lose a race with the redirect. Five seconds
+    // costs nothing against the minute the person just spent signing up, and it
+    // makes the guard visible — without it a fast issuance releases the button
+    // instantly and there is no way to tell the check ran at all.
+    const MIN_WAIT_MS = 5000;
+
+    const release = () => {
+      if (cancelled) return;
+      const left = MIN_WAIT_MS - (Date.now() - startedAt);
+      if (left > 0) timer = setTimeout(() => !cancelled && setAddressReady(true), left);
+      else setAddressReady(true);
+    };
+
+    // Drives the counter on screen, so the wait reads as progress rather than
+    // as the page having hung.
+    tick = setInterval(() => !cancelled && setWaited(Math.round((Date.now() - startedAt) / 1000)), 500);
 
     const probe = async () => {
       attempts += 1;
-      setWaited(attempts * 2);
       try {
         await fetch(new URL("/health/", done).toString(), {
           mode: "no-cors",
           cache: "no-store",
         });
-        if (!cancelled) setAddressReady(true);
+        release();
       } catch {
         if (cancelled) return;
         // ~60s, then let them through regardless.
-        if (attempts >= 30) setAddressReady(true);
+        if (attempts >= 30) release();
         else timer = setTimeout(probe, 2000);
       }
     };
@@ -122,6 +144,7 @@ function SetPasswordInner() {
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      clearInterval(tick);
     };
   }, [done, purpose, subdomain]);
 
@@ -162,9 +185,12 @@ function SetPasswordInner() {
           {addressReady ? "Go to sign in" : "Preparing your address…"}
         </AuthButton>
         {!addressReady && (
-          <p className="w-full text-center text-[13px] text-[#737373]">
-            Securing {subdomain ? `${subdomain}.` : "your address"} — this takes a few seconds.
-            {waited >= 10 && ` (${waited}s)`}
+          <p className="flex w-full items-center justify-center gap-[8px] text-center text-[13px] text-[#737373]">
+            <span
+              aria-hidden
+              className="inline-block h-[13px] w-[13px] animate-spin rounded-full border-[2px] border-[#d4d4d4] border-t-[#525252]"
+            />
+            Securing your address — a few seconds{waited > 0 ? ` (${waited}s)` : ""}
           </p>
         )}
         <p className="w-full text-center text-[13px] break-all text-[#737373]">{done}</p>
