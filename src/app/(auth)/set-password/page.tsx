@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Suspense, useMemo, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import AuthShell, { AuthAlert, AuthButton, AuthField } from "@/components/auth/AuthShell";
 import { RegistrationService, Realm } from "@/services/registrationService";
@@ -34,6 +34,8 @@ function SetPasswordInner() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  const [addressReady, setAddressReady] = useState(false);
+  const [waited, setWaited] = useState(0);
 
   const passed = useMemo(() => RULES.map((r) => r.test(password)), [password]);
   const strong = passed.every(Boolean);
@@ -62,6 +64,66 @@ function SetPasswordInner() {
     }
     return "/login";
   };
+
+  /**
+   * Wait for the new company address to actually answer before offering it.
+   *
+   * A brand new subdomain has no certificate at the instant it is created. The
+   * proxy issues one on demand, which takes a few seconds, and until it lands
+   * the browser shows a full-page security warning rather than a login form —
+   * `Strict-Transport-Security` carries `includeSubDomains`, so there is not
+   * even a "proceed anyway" to click. The person's very first sight of their
+   * own company is an interstitial telling them it is unsafe.
+   *
+   * So this polls the address instead of guessing at a delay. A fixed timer is
+   * either too short on a slow issuance or wasted time on a fast one; a probe
+   * releases the button the moment the handshake succeeds, which is usually
+   * immediate because the certificate was requested when they STARTED signing
+   * up, not now.
+   *
+   * `no-cors` because the answer is irrelevant — an opaque response still means
+   * the TLS handshake completed, and a bad certificate rejects the promise
+   * instead. `/health/` rather than the login page: it is the cheapest route
+   * the proxy serves and it touches no session state.
+   *
+   * The wait is capped. If issuance is genuinely broken the button still
+   * unlocks, because stranding somebody on a dead screen is worse than sending
+   * them to a warning they can at least reload past.
+   */
+  useEffect(() => {
+    if (!done) return;
+    if (!(purpose === "signup" && subdomain)) {
+      setAddressReady(true);
+      return;
+    }
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let attempts = 0;
+
+    const probe = async () => {
+      attempts += 1;
+      setWaited(attempts * 2);
+      try {
+        await fetch(new URL("/health/", done).toString(), {
+          mode: "no-cors",
+          cache: "no-store",
+        });
+        if (!cancelled) setAddressReady(true);
+      } catch {
+        if (cancelled) return;
+        // ~60s, then let them through regardless.
+        if (attempts >= 30) setAddressReady(true);
+        else timer = setTimeout(probe, 2000);
+      }
+    };
+
+    probe();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [done, purpose, subdomain]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,9 +154,19 @@ function SetPasswordInner() {
             : "Your password has been changed. Sign in with it now."
         }
       >
-        <AuthButton type="button" onClick={() => (window.location.href = done)}>
-          Go to sign in
+        <AuthButton
+          type="button"
+          disabled={!addressReady}
+          onClick={() => (window.location.href = done)}
+        >
+          {addressReady ? "Go to sign in" : "Preparing your address…"}
         </AuthButton>
+        {!addressReady && (
+          <p className="w-full text-center text-[13px] text-[#737373]">
+            Securing {subdomain ? `${subdomain}.` : "your address"} — this takes a few seconds.
+            {waited >= 10 && ` (${waited}s)`}
+          </p>
+        )}
         <p className="w-full text-center text-[13px] break-all text-[#737373]">{done}</p>
       </AuthShell>
     );
