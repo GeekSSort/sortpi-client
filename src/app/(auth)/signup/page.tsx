@@ -2,9 +2,22 @@
 
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import AuthShell, { AuthAlert, AuthButton, AuthField } from "@/components/auth/AuthShell";
+import AuthShell, {
+  AuthAlert,
+  AuthButton,
+  AuthField,
+  PhoneField,
+} from "@/components/auth/AuthShell";
 import { PublicPlan, RegistrationService } from "@/services/registrationService";
 import { platformHref, useOnTenantHost } from "@/lib/realmUrl";
+import {
+  COUNTRIES,
+  DEFAULT_COUNTRY,
+  findCountry,
+  isValidNational,
+  phoneProblem,
+  toE164,
+} from "@/lib/phone";
 
 /**
  * A new company signs itself up.
@@ -79,6 +92,7 @@ export default function SignupPage() {
   const [ownerName, setOwnerName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [phoneCountry, setPhoneCountry] = useState(DEFAULT_COUNTRY);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -199,6 +213,11 @@ export default function SignupPage() {
     };
   }, [email, step]);
 
+  const phoneCountryInfo = findCountry(phoneCountry);
+  /** Empty is allowed; anything typed has to be a real number for that country. */
+  const phoneOk = !phone.trim() || isValidNational(phone, phoneCountryInfo);
+  const phoneIssue = phoneProblem(phone, phoneCountryInfo);
+
   /** What to show under the email box, derived rather than stored. */
   const emailState: "idle" | "checking" | "free" | "taken" = (() => {
     const value = email.trim();
@@ -230,7 +249,9 @@ export default function SignupPage() {
         subdomain: subdomain.trim(),
         ownerName: ownerName.trim(),
         email: email.trim(),
-        phone: phone.trim() || undefined,
+        // E.164, always: `+` and digits. What the person typed is a local
+        // habit; what leaves here is the one shape a gateway can dial.
+        phone: phone.trim() ? toE164(phone, phoneCountryInfo) : undefined,
         planCode: planCode || undefined,
       });
       router.push(
@@ -259,7 +280,14 @@ export default function SignupPage() {
 
   // A taken address stops step one rather than step two: continuing would mean
   // choosing a company name and a web address that are about to be thrown away.
-  const personalDone = Boolean(ownerName.trim() && email.trim() && emailState !== "taken");
+  // A half-typed phone number stops step one. It is optional, so an EMPTY box
+  // is fine — but a number that is present and wrong is a number that will be
+  // wrong in the tenant record forever, and the person is right here able to
+  // fix it. Catching it on the step it was typed on beats a server error two
+  // screens later.
+  const personalDone = Boolean(
+    ownerName.trim() && email.trim() && emailState !== "taken" && phoneOk
+  );
   const companyDone = Boolean(companyName.trim() && subdomain.trim().length >= 3);
 
   return (
@@ -300,12 +328,20 @@ export default function SignupPage() {
             required
           />
 
-          <AuthField
+          <PhoneField
             label="Phone (optional)"
+            countries={COUNTRIES}
+            countryIso={phoneCountry}
+            onCountryChange={setPhoneCountry}
             value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="+8801700000000"
-            autoComplete="tel"
+            // Punctuation is stripped as it is typed rather than on submit, so
+            // the box always shows what will actually be sent. Pasting a number
+            // with spaces or dashes in it just works.
+            onChange={(e) => setPhone(e.target.value.replace(/[^\d+\s-]/g, ""))}
+            placeholder={phoneCountryInfo.example}
+            maxLength={18}
+            hint={`Digits only, without the leading zero. Example: ${phoneCountryInfo.example}`}
+            problem={phoneIssue}
           />
 
           <div className="sm:col-span-2">

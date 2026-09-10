@@ -167,6 +167,86 @@ export function AuthField({
   );
 }
 
+/**
+ * A phone box whose country is chosen rather than typed.
+ *
+ * One control, not two: the select sits INSIDE the same bordered box as the
+ * input, so it reads as a single field and the dialling code looks like a
+ * prefix on the number instead of a separate question. The select is sized to
+ * its content and the input takes the rest, which keeps `+880` and `+1` from
+ * shifting the field width as the country changes.
+ *
+ * `inputMode="numeric"` rather than `type="number"`: a number input gives
+ * phones the right keypad but also spinner arrows, silent scroll-wheel edits,
+ * and a value that drops leading zeros — all wrong for a phone number.
+ */
+export function PhoneField({
+  label,
+  hint,
+  problem,
+  countries,
+  countryIso,
+  onCountryChange,
+  ...rest
+}: {
+  label: string;
+  hint?: React.ReactNode;
+  problem?: string | null;
+  countries: { iso: string; name: string; dial: string }[];
+  countryIso: string;
+  onCountryChange: (iso: string) => void;
+} & React.InputHTMLAttributes<HTMLInputElement>) {
+  const dial = countries.find((c) => c.iso === countryIso)?.dial ?? "";
+
+  return (
+    <label className="flex w-full flex-col items-start gap-[8px]">
+      <span className="w-full text-[18px] leading-[24px] font-medium text-[#525252]">{label}</span>
+      <div
+        className={`flex h-[56px] w-full items-center gap-[8px] rounded-[12px] border border-solid bg-white px-[16px] py-[8px] ${
+          problem ? "border-[#c0392b]" : "border-[#f5b800]"
+        }`}
+      >
+        <div className="flex shrink-0 items-center gap-[4px]">
+          <select
+            value={countryIso}
+            onChange={(e) => onCountryChange(e.target.value)}
+            aria-label="Country calling code"
+            className="max-w-[92px] cursor-pointer appearance-none bg-transparent text-[16px] leading-[24px] font-medium text-[#525252] outline-none"
+          >
+            {countries.map((c) => (
+              // The option text carries the country NAME because a bare list
+              // of dialling codes is unreadable when it is open; the closed
+              // control shows only "+880" beside it, which is all that needs
+              // to be visible once chosen.
+              <option key={c.iso} value={c.iso}>
+                {c.iso} +{c.dial}
+              </option>
+            ))}
+          </select>
+          <span aria-hidden className="text-[#a3a3a3]">
+            |
+          </span>
+        </div>
+        <input
+          {...rest}
+          type="tel"
+          inputMode="numeric"
+          autoComplete="tel-national"
+          className="min-w-px flex-1 bg-transparent text-[16px] leading-[24px] font-normal text-[#525252] outline-none placeholder:text-[#a3a3a3]"
+        />
+        <span aria-hidden className="shrink-0 text-[13px] text-[#a3a3a3]">
+          +{dial}
+        </span>
+      </div>
+      {problem ? (
+        <span className="text-[13px] leading-[1.4] font-medium text-[#c0392b]">{problem}</span>
+      ) : (
+        hint && <span className="text-[13px] leading-[1.4] text-[#737373]">{hint}</span>
+      )}
+    </label>
+  );
+}
+
 export function AuthButton({
   children,
   ...rest
