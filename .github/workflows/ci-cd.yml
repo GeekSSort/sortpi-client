@@ -318,6 +318,61 @@ jobs:
 
             # BUILD_SHA reaches the image through the compose build arg.
             export BUILD_SHA
+
+            # Free host 3500 BEFORE anything tries to bind it.
+            #
+            # `up --force-recreate` starts the replacement while the old
+            # container may still own the published port. Compose removes the
+            # old one, but the `docker-proxy` that published the port can
+            # outlive it, and an ORPHAN container left by an earlier project
+            # name is never removed at all. Either way the new container cannot
+            # bind and the deploy dies with "Bind for :::3500 failed: port is
+            # already allocated" — AFTER a five-minute image build, which is
+            # what makes it read as a build failure when it is a port failure.
+            #
+            # Taking the service down through compose releases the port through
+            # the same machinery that took it.
+            docker compose -p "$PROJECT" $FLAGS rm -sf "$SERVICE" || true
+
+            # Whatever still holds 3500 now is not ours to recreate.
+            #
+            # A `docker-proxy` with no container behind it is a leaked
+            # publisher, and killing it is the remedy. Anything else is a real
+            # process — on this box it has been a container from a previous
+            # compose project — and killing a production listener by port
+            # number is how an unrelated service disappears. So one is cleaned
+            # up and the other is NAMED and the deploy stops.
+            if ss -ltnp 2>/dev/null | grep -qE ':3500\s'; then
+              echo "===== still holding host 3500 after removing $SERVICE ====="
+              ss -ltnp 2>/dev/null | grep -E ':3500\s' || true
+              HOLDER=$(docker ps --filter publish=3500 --format '{{.Names}}' 2>/dev/null | head -1 || true)
+              if [ -z "$HOLDER" ]; then
+                # A docker too old for `--filter publish` answers with an
+                # error, not an empty list, and treating that as "no container
+                # holds it" would send the branch below on to kill a LIVE
+                # container's docker-proxy. Read the Ports column instead.
+                HOLDER=$(docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null | grep -E ':3500->' | cut -f1 | head -1 || true)
+              fi
+              if [ -n "$HOLDER" ]; then
+                echo "::error::Host port 3500 is published by container '$HOLDER', which is not the '$SERVICE' service of compose project '$PROJECT'. Remove it on the box (docker rm -f $HOLDER) — this deploy will not take a port from a container it does not own."
+                exit 1
+              fi
+              # No container claims it, so the listener is a leaked
+              # docker-proxy. Nothing is behind it to serve traffic anyway.
+              echo "No container publishes 3500 — inspecting what is holding it."
+              for pid in $(ss -ltnp 2>/dev/null | grep -E ':3500\s' | grep -oP 'pid=\K[0-9]+' | sort -u); do
+                proc=$(ps -p "$pid" -o comm= 2>/dev/null || echo "")
+                if [ "$proc" = "docker-proxy" ]; then
+                  echo "killing leaked docker-proxy pid $pid"
+                  kill "$pid" 2>/dev/null || true
+                else
+                  echo "::error::Host port 3500 is held by pid $pid ($proc), which is not a docker-proxy. Stop it on the box before deploying."
+                  exit 1
+                fi
+              done
+              sleep 2
+            fi
+
             # --force-recreate because `up -d` leaves a running container alone
             # when it decides the image is unchanged.
             docker compose -p "$PROJECT" $FLAGS up -d --build --force-recreate "$SERVICE"
