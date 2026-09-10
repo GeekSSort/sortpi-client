@@ -319,6 +319,19 @@ jobs:
             # BUILD_SHA reaches the image through the compose build arg.
             export BUILD_SHA
 
+            # Without it there is nothing to verify against.
+            #
+            # `NEXT_PUBLIC_BUILD_SHA: ${BUILD_SHA:-unknown}` in the compose
+            # file swallows an absent value and bakes the string "unknown",
+            # which builds and deploys perfectly and then fails the check at
+            # the end with "expected <sha>, got unknown" — twelve times, after
+            # the deploy already worked. Fail here, where the cause is.
+            if [ -z "${BUILD_SHA:-}" ]; then
+              echo "::error::BUILD_SHA did not reach the box. Check the step's env: block and the action's envs: list."
+              exit 1
+            fi
+            echo "building $SERVICE at $BUILD_SHA"
+
             # Free host 3500 BEFORE anything tries to bind it.
             #
             # `up --force-recreate` starts the replacement while the old
@@ -340,7 +353,14 @@ jobs:
             # npm was still installing. Building while the old container is
             # still serving cuts the window where nothing answers down to the
             # few seconds between removing one container and starting another.
-            docker compose -p "$PROJECT" $FLAGS build "$SERVICE"
+            # --build-arg explicitly, rather than trusting the value to
+            # survive into the environment compose interpolates from. It did
+            # not: the site came up carrying both of this commit's changes and
+            # a build id of "unknown", so the code reached the image and the
+            # SHA did not. Passed on the command line there is nothing left to
+            # lose it.
+            docker compose -p "$PROJECT" $FLAGS build \
+              --build-arg NEXT_PUBLIC_BUILD_SHA="$BUILD_SHA" "$SERVICE"
 
             docker compose -p "$PROJECT" $FLAGS rm -sf "$SERVICE" || true
 
@@ -393,6 +413,25 @@ jobs:
 
             echo "===== host port 3500 after ====="
             ss -ltnp 2>/dev/null | grep -E ':3500\s' || echo "nothing on 3500"
+
+            # Ask the CONTAINER before asking the internet.
+            #
+            # Two different failures used to look identical from the public
+            # URL: an image built without the SHA, and a correct image that
+            # nothing routes to. This separates them — if the container on
+            # 3500 answers with the right commit and sortpi.com does not, the
+            # problem is in front of the container, not in the build.
+            local_sha=""
+            for attempt in $(seq 1 20); do
+              local_sha=$(curl -sS -m 5 http://127.0.0.1:3500/build-id 2>/dev/null || echo "")
+              [ -n "$local_sha" ] && break
+              sleep 3
+            done
+            echo "container on 3500 reports: '${local_sha:-no answer}'"
+            if [ "$local_sha" != "$BUILD_SHA" ]; then
+              echo "::error::The container on host 3500 reports '${local_sha:-no answer}', not $BUILD_SHA. The image does not carry this commit, so nothing in front of it can serve it."
+              exit 1
+            fi
 
       # The deployed commit adds this route; the build that has been live since
       # before it does not have it. Asking the public address for it covers the
