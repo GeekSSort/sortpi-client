@@ -37,7 +37,7 @@ export default function AuthShell({
   const Inner = onSubmit ? "form" : "div";
 
   return (
-    <div className="relative flex min-h-screen min-h-dvh w-full items-center justify-center overflow-x-hidden bg-[#FDFDFD] px-[16px] py-[24px] sm:p-[24px]">
+    <div className="relative flex min-h-screen min-h-dvh w-full items-start justify-center overflow-x-hidden bg-[#FDFDFD] px-[clamp(12px,4vw,24px)] py-[clamp(16px,5vw,32px)]">
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0"
@@ -55,8 +55,8 @@ export default function AuthShell({
 
       <Inner
         {...(onSubmit ? { onSubmit } : {})}
-        style={{ maxWidth: width }}
-        className="relative flex w-full flex-col items-center gap-[16px] rounded-[10px] bg-white p-[20px] sm:gap-[24px] sm:p-[24px] shadow-[0_1px_2px_0_rgba(16,24,40,0.04),0_8px_20px_-6px_rgba(16,24,40,0.08),0_28px_56px_-16px_rgba(16,24,40,0.12),inset_0_0_0_1px_rgba(16,24,40,0.05)]"
+        style={{ maxWidth: `clamp(300px,92vw,${width}px)` }}
+        className="relative my-auto flex w-full flex-col items-center gap-[clamp(12px,3.2vw,24px)] rounded-[10px] bg-white p-[clamp(16px,4vw,24px)] shadow-[0_1px_2px_0_rgba(16,24,40,0.04),0_8px_20px_-6px_rgba(16,24,40,0.08),0_28px_56px_-16px_rgba(16,24,40,0.12),inset_0_0_0_1px_rgba(16,24,40,0.05)]"
       >
         <Image
           src="/auth/logo.png"
@@ -64,14 +64,14 @@ export default function AuthShell({
           width={106}
           height={100}
           priority
-          className="h-[72px] w-[76px] shrink-0 rounded-[18px] object-cover sm:h-[100px] sm:w-[106px] sm:rounded-[24px]"
+          className="h-[clamp(60px,14vw,100px)] w-[clamp(64px,15vw,106px)] shrink-0 rounded-[clamp(14px,3.5vw,24px)] object-cover"
         />
 
         <div className="flex w-full flex-col items-center gap-[8px] text-center">
-          <h1 className="text-[20px] leading-[1.2] font-semibold tracking-[-0.72px] text-[#1e1e1e] sm:text-[24px]">
+          <h1 className="text-[clamp(18px,4.6vw,24px)] leading-[1.2] font-semibold tracking-[-0.72px] text-[#1e1e1e]">
             {title}
           </h1>
-          <p className="text-[14px] leading-[1.5] font-normal tracking-[-0.28px] text-[#525252]">
+          <p className="text-[clamp(12.5px,3.2vw,14px)] leading-[1.5] font-normal tracking-[-0.28px] text-[#525252]">
             {subtitle}
           </p>
         </div>
@@ -144,10 +144,10 @@ export function AuthField({
 
   return (
     <label className="flex w-full flex-col items-start gap-[8px]">
-      <span className="w-full text-[16px] leading-[24px] font-medium text-[#525252] sm:text-[18px]">
+      <span className="w-full text-[clamp(15px,3.8vw,18px)] leading-[1.35] font-medium text-[#525252]">
         {label}
       </span>
-      <div className="flex h-[52px] w-full items-center gap-[12px] rounded-[12px] border border-solid border-[#f5b800] bg-white px-[16px] py-[8px] sm:h-[56px]">
+      <div className="flex h-[clamp(48px,12vw,56px)] w-full items-center gap-[12px] rounded-[12px] border border-solid border-[#f5b800] bg-white px-[clamp(12px,3.5vw,16px)] py-[8px]">
         <input
           {...rest}
           type={isPassword && revealed ? "text" : type}
@@ -164,7 +164,9 @@ export function AuthField({
           </button>
         )}
       </div>
-      {hint && <span className="text-[13px] leading-[1.4] text-[#737373]">{hint}</span>}
+      {hint && (
+        <span className="text-[clamp(12px,3vw,13px)] leading-[1.4] text-[#737373]">{hint}</span>
+      )}
     </label>
   );
 }
@@ -212,6 +214,11 @@ export function PhoneField({
 } & React.InputHTMLAttributes<HTMLInputElement>) {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
+  // Where the panel goes and how tall it may be, decided against the real
+  // viewport when it opens. A list that always drops downward runs off the
+  // bottom of a short window — 1280x600 is an ordinary laptop with a browser
+  // on it, not an edge case — and a fixed max-height cannot know that.
+  const [panel, setPanel] = React.useState({ up: false, max: 280 });
   const boxRef = React.useRef<HTMLDivElement>(null);
   const searchRef = React.useRef<HTMLInputElement>(null);
 
@@ -231,6 +238,19 @@ export function PhoneField({
   // Every close goes through here so the search never survives into the next
   // opening — reopening the list to find a country you have already filtered
   // out is the kind of small wrongness nobody reports and everybody notices.
+  const openList = React.useCallback(() => {
+    const r = boxRef.current?.getBoundingClientRect();
+    if (r) {
+      const below = window.innerHeight - r.bottom - 12;
+      const above = r.top - 12;
+      // Flip only when below is genuinely cramped AND above is roomier;
+      // dropping upward when both are tight just moves the problem.
+      const up = below < 220 && above > below;
+      setPanel({ up, max: Math.max(160, Math.min(280, up ? above : below)) });
+    }
+    setOpen(true);
+  }, []);
+
   const close = React.useCallback(() => {
     setOpen(false);
     setQuery("");
@@ -262,19 +282,19 @@ export function PhoneField({
 
   return (
     <div className="flex w-full flex-col items-start gap-[8px]">
-      <span className="w-full text-[16px] leading-[24px] font-medium text-[#525252] sm:text-[18px]">
+      <span className="w-full text-[clamp(15px,3.8vw,18px)] leading-[1.35] font-medium text-[#525252]">
         {label}
       </span>
 
       <div ref={boxRef} className="relative w-full">
         <div
-          className={`flex h-[52px] w-full items-center gap-[10px] rounded-[12px] border border-solid bg-white pr-[16px] pl-[12px] sm:h-[56px] ${
+          className={`flex h-[clamp(48px,12vw,56px)] w-full items-center gap-[8px] rounded-[12px] border border-solid bg-white pr-[clamp(12px,3.5vw,16px)] pl-[8px] ${
             problem ? "border-[#c0392b]" : "border-[#f5b800]"
           }`}
         >
           <button
             type="button"
-            onClick={() => (open ? close() : setOpen(true))}
+            onClick={() => (open ? close() : openList())}
             aria-haspopup="listbox"
             aria-expanded={open}
             aria-label={`Country: ${chosen?.name ?? ""}`}
@@ -303,7 +323,11 @@ export function PhoneField({
         {open && (
           <div
             role="listbox"
-            className="absolute top-[58px] left-0 z-20 flex max-h-[min(280px,50dvh)] w-full flex-col overflow-hidden rounded-[12px] border border-solid border-[#eaeaea] bg-white shadow-[0_12px_28px_rgba(0,0,0,0.12)]"
+            style={{
+              maxHeight: panel.max,
+              ...(panel.up ? { bottom: "calc(100% + 4px)" } : { top: "calc(100% + 4px)" }),
+            }}
+            className="absolute left-0 z-20 flex w-full flex-col overflow-hidden rounded-[12px] border border-solid border-[#eaeaea] bg-white shadow-[0_12px_28px_rgba(0,0,0,0.12)]"
           >
             <div className="shrink-0 border-b border-solid border-[#f0f0f0] p-[8px]">
               <input
@@ -358,7 +382,7 @@ export function AuthButton({
   return (
     <button
       {...rest}
-      className="flex h-[52px] w-full cursor-pointer items-center justify-center rounded-[12px] bg-[#f5b800] text-[16px] leading-[24px] font-semibold text-white sm:h-[56px] sm:text-[18px] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+      className="flex h-[clamp(48px,12vw,56px)] w-full cursor-pointer items-center justify-center rounded-[12px] bg-[#f5b800] text-[clamp(15px,3.9vw,18px)] leading-[24px] font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
     >
       {children}
     </button>

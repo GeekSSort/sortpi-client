@@ -34,7 +34,7 @@ function SetPasswordInner() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
-  const [addressReady, setAddressReady] = useState(false);
+  const [probePassed, setProbePassed] = useState(false);
   const [waited, setWaited] = useState(0);
 
   const passed = useMemo(() => RULES.map((r) => r.test(password)), [password]);
@@ -90,16 +90,19 @@ function SetPasswordInner() {
    * unlocks, because stranding somebody on a dead screen is worse than sending
    * them to a warning they can at least reload past.
    */
+  // Only a brand new company address needs the wait. A password reset goes
+  // back to a host that has been serving for months.
+  const needsAddressWait = purpose === "signup" && Boolean(subdomain);
+  // Derived, not stored. Setting "ready" from inside the effect for the case
+  // that never needed to wait is a second render for a value already known at
+  // render time — and React's lint rule is right to refuse it.
+  const addressReady = !needsAddressWait || probePassed;
+
   useEffect(() => {
-    if (!done) return;
-    if (!(purpose === "signup" && subdomain)) {
-      setAddressReady(true);
-      return;
-    }
+    if (!done || !needsAddressWait) return;
 
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
-    let tick: ReturnType<typeof setInterval>;
     let attempts = 0;
     const startedAt = Date.now();
 
@@ -116,13 +119,16 @@ function SetPasswordInner() {
     const release = () => {
       if (cancelled) return;
       const left = MIN_WAIT_MS - (Date.now() - startedAt);
-      if (left > 0) timer = setTimeout(() => !cancelled && setAddressReady(true), left);
-      else setAddressReady(true);
+      if (left > 0) timer = setTimeout(() => !cancelled && setProbePassed(true), left);
+      else setProbePassed(true);
     };
 
     // Drives the counter on screen, so the wait reads as progress rather than
     // as the page having hung.
-    tick = setInterval(() => !cancelled && setWaited(Math.round((Date.now() - startedAt) / 1000)), 500);
+    const tick = setInterval(
+      () => !cancelled && setWaited(Math.round((Date.now() - startedAt) / 1000)),
+      500
+    );
 
     const probe = async () => {
       attempts += 1;
@@ -146,7 +152,7 @@ function SetPasswordInner() {
       clearTimeout(timer);
       clearInterval(tick);
     };
-  }, [done, purpose, subdomain]);
+  }, [done, needsAddressWait]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();

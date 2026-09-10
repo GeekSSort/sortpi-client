@@ -318,7 +318,7 @@ export default function SignupPage() {
        */
     >
       {step === 1 ? (
-        <div className="flex w-full flex-col items-start gap-[16px]">
+        <div className="flex w-full flex-col items-start gap-[clamp(12px,3.2vw,16px)]">
           <AuthField
             label="Your name"
             value={ownerName}
@@ -375,7 +375,7 @@ export default function SignupPage() {
           </div>
         </div>
       ) : (
-        <div className="flex w-full flex-col items-start gap-[16px]">
+        <div className="flex w-full flex-col items-start gap-[clamp(12px,3.2vw,16px)]">
           <AuthField
             label="Company name"
             value={companyName}
@@ -489,7 +489,7 @@ export default function SignupPage() {
               setError(null);
               setStep(1);
             }}
-            className="flex h-[52px] shrink-0 cursor-pointer items-center justify-center rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[20px] text-[16px] font-medium text-[#525252] transition-colors hover:bg-[#fafafa] sm:h-[56px] sm:px-[24px]"
+            className="flex h-[clamp(48px,12vw,56px)] shrink-0 cursor-pointer items-center justify-center rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[clamp(16px,4vw,24px)] text-[clamp(15px,3.9vw,16px)] font-medium text-[#525252] transition-colors hover:bg-[#fafafa]"
           >
             Back
           </button>
