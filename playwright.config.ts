@@ -48,5 +48,28 @@ export default defineConfig({
     url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 180_000,
+    /**
+     * The tenancy configuration the suite asserts against.
+     *
+     * `.env.local` is untracked, so a developer had these and CI did not, and
+     * "the platform's root opens on sign-up" passed here and failed there:
+     * `frontDoor` reads an unset `NEXT_PUBLIC_PLATFORM_BASE_DOMAIN` as "no
+     * tenancy configured" and sends the apex to /login, which is the right
+     * answer for a single-tenant deployment and the wrong one for the
+     * deployment these tests describe. Setting it here makes the run say which
+     * deployment it is testing instead of inheriting one.
+     *
+     * `NEXT_PUBLIC_*` is inlined at build time and the command builds, so
+     * these reach both the bundle and the route guard. Next leaves variables
+     * already present in `process.env` alone, so this wins over `.env.local`
+     * and the two machines run the same deployment.
+     *
+     * `localhost` is the base domain because `baseURL` is on it: the Host
+     * header is `localhost:3500`, and `frontDoor` drops the port.
+     */
+    env: {
+      NEXT_PUBLIC_PLATFORM_BASE_DOMAIN: "localhost",
+      NEXT_PUBLIC_PLATFORM_HOSTS: "localhost,127.0.0.1",
+    },
   },
 });
