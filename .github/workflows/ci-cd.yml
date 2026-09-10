@@ -192,13 +192,16 @@ jobs:
           # ends, which is the point: nothing long-lived is left on the server.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
+          # Baked into the bundle and served at /build-id. The verify step
+          # asserts the live site returns this exact value.
+          BUILD_SHA: ${{ github.sha }}
         with:
           host: ${{ env.DEPLOY_HOST }}
           username: "root"
           key: ${{ env.DEPLOY_KEY }}
           port: 22
           command_timeout: 30m
-          envs: GH_TOKEN,GH_REPO
+          envs: GH_TOKEN,GH_REPO,BUILD_SHA
           script: |
             set -euxo pipefail
 
@@ -306,27 +309,46 @@ jobs:
               FLAGS="-f docker-compose.prod.yml"
             fi
 
+            # What actually holds the port Traefik sends traffic to. Printed
+            # every run, because the failure this pipeline could not see was a
+            # STRAY listener on host 3500 serving an older build while the
+            # compose container beside it was rebuilt and never reached.
+            echo "===== host port 3500 before ====="
+            ss -ltnp 2>/dev/null | grep -E ':3500\s' || echo "nothing on 3500"
+
+            # BUILD_SHA reaches the image through the compose build arg.
+            export BUILD_SHA
             # --force-recreate because `up -d` leaves a running container alone
             # when it decides the image is unchanged.
             docker compose -p "$PROJECT" $FLAGS up -d --build --force-recreate "$SERVICE"
             docker compose -p "$PROJECT" $FLAGS ps
+
+            echo "===== host port 3500 after ====="
+            ss -ltnp 2>/dev/null | grep -E ':3500\s' || echo "nothing on 3500"
 
       # The deployed commit adds this route; the build that has been live since
       # before it does not have it. Asking the public address for it covers the
       # whole chain — source, image, container and the proxy in front of them —
       # so green means the new build is being served, not merely that some
       # container restarted.
-      - name: Verify the new build is what the site serves
+      # The old check asked https://sortpi.com/accept-invitation for a 200.
+      # That route exists in every build, so it passed while the site was
+      # serving something months old — the pipeline reported success and
+      # nothing had changed. Assert the DEPLOYED COMMIT instead: /build-id
+      # returns the SHA baked into the bundle, so this can only pass when the
+      # site is serving the build this run produced.
+      - name: Verify the site serves THIS commit
+        env:
+          BUILD_SHA: ${{ github.sha }}
         run: |
-          set -x
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            code=$(curl -sSk -m 15 -o /dev/null -w '%{http_code}' https://sortpi.com/accept-invitation || echo 000)
-            if [ "$code" = "200" ]; then
-              echo "Serving the current build."
+          for attempt in $(seq 1 12); do
+            live=$(curl -sSk -m 15 https://sortpi.com/build-id || echo "")
+            if [ "$live" = "$BUILD_SHA" ]; then
+              echo "Serving $live — this is the commit that was just built."
               exit 0
             fi
-            echo "Attempt $attempt: /accept-invitation returned $code; waiting for the container."
+            echo "Attempt $attempt: site reports '${live:-no answer}', expected $BUILD_SHA"
             sleep 15
           done
-          echo "::error::https://sortpi.com is still serving a build without /accept-invitation. The deploy ran but the site did not change."
+          echo "::error::sortpi.com is not serving $BUILD_SHA. The deploy ran but the site did not change — check which process holds host port 3500 in the step above."
           exit 1
