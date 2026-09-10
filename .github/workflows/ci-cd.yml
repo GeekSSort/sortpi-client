@@ -205,6 +205,16 @@ jobs:
           script: |
             set -euxo pipefail
 
+            # The commit, substituted into the script TEXT by Actions before
+            # this is ever sent to the box.
+            #
+            # It is also passed through the action's `envs:` list, and that is
+            # the route that failed: the site came up carrying the deployed
+            # code and a build id of "unknown", so the checkout reached the
+            # server and the variable did not. Nothing here can lose a value
+            # that was already part of the script when it arrived.
+            BUILD_SHA="${{ github.sha }}"
+
             # The compose project that owns the running client service.
             #
             # `config_files` matters as much as the directory: this project's
@@ -461,7 +471,20 @@ jobs:
               exit 0
             fi
             if [ "$code" != "200" ]; then
-              echo "Attempt $attempt: /build-id answered HTTP $code with '${live:-no body}' — it is not being served directly. Check the route guard in src/proxy.ts."
+              case "$code" in
+                50*|000)
+                  # Nothing is answering behind the proxy. That is a container
+                  # that has not come up, not a routing or guard problem, and
+                  # the two need opposite fixes.
+                  echo "Attempt $attempt: /build-id answered HTTP $code — nothing is serving behind the proxy yet."
+                  ;;
+                3*)
+                  echo "Attempt $attempt: /build-id answered HTTP $code with '${live:-no body}' — it is being redirected rather than served. Check the route guard in src/proxy.ts."
+                  ;;
+                *)
+                  echo "Attempt $attempt: /build-id answered HTTP $code with '${live:-no body}'."
+                  ;;
+              esac
             else
               echo "Attempt $attempt: site reports '${live:-no answer}', expected $BUILD_SHA"
             fi
