@@ -104,6 +104,10 @@ jobs:
 
   # =========================================================================
   # 3. Continuous Delivery / Deployment Stage (SSH to Contabo)
+  #
+  # Split into one step per stage on purpose. A step conclusion is readable
+  # from the API without admin rights on the logs, so when a deploy goes wrong
+  # the run itself says which stage broke instead of only that something did.
   # =========================================================================
   cd-deploy:
     name: Deploy Client to Contabo Server
@@ -122,6 +126,9 @@ jobs:
     # through `env` rather than testing the secret directly.
     env:
       DEPLOY_KEY: ${{ secrets.SSH_PRIVATE_KEY || secrets.SERVER_SSH_KEY }}
+      DEPLOY_HOST: "13.140.141.131"
+      CLIENT_DIR: /opt/apps/sortpi/client
+      SERVER_DIR: /opt/apps/sortpi/server
 
     steps:
       # Green used to mean "deployed" and "no key configured" alike. If the
@@ -133,53 +140,107 @@ jobs:
           echo "::error::No SSH deploy key. Set SSH_PRIVATE_KEY (or SERVER_SSH_KEY) in repository secrets."
           exit 1
 
-      - name: Deploy via SSH to Contabo
+      # Every remote script below opens with `set -euxo pipefail` and ends on
+      # its last real command.
+      #
+      # `script_stop: true` was the intended guard and is NOT an input of
+      # ssh-action v1.2.2 — it was removed, and an unknown input is ignored
+      # rather than rejected. So the remote script has been running without
+      # `set -e` throughout, and every version of it closed with
+      # `echo "...Completed Successfully!"`, whose exit status is the one the
+      # action reports. A failing `cd` on the first line still produced a green
+      # step, in two seconds, having done nothing at all — which is why a
+      # deploy that "succeeded" kept leaving the old UI up.
+
+      - name: Check the deploy checkouts are where the script expects
         uses: appleboy/ssh-action@v1.2.2
         with:
-          host: "13.140.141.131"
+          host: ${{ env.DEPLOY_HOST }}
           username: "root"
           key: ${{ env.DEPLOY_KEY }}
           port: 22
-          # Without this the action runs the script without `set -e`: a failed
-          # `git pull` or a broken build would scroll past, the closing echo
-          # would still exit 0, and the job would report a deployment that did
-          # not happen — the same false green as the skipped step above.
-          script_stop: true
           script: |
-            set -x
+            set -euxo pipefail
+            test -d "${{ env.CLIENT_DIR }}/.git"
+            test -f "${{ env.CLIENT_DIR }}/docker-compose.prod.yml"
+            docker compose version
+            test -f "${{ env.SERVER_DIR }}/docker-compose.prod.yml"
 
-            CLIENT_DIR=/opt/apps/sortpi/client
-            SERVER_DIR=/opt/apps/sortpi/server
-
-            # `git pull` merges into whatever the box is on and reports success
-            # when it does nothing — a detached HEAD, a stale remote or a local
-            # edit all leave the tree behind main while the deploy goes green.
-            # Fetch and reset instead: the tree is main, or the step fails.
-            # Nothing on a deploy checkout is worth keeping.
-            cd "$CLIENT_DIR"
+      - name: Update the client source
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ env.DEPLOY_HOST }}
+          username: "root"
+          key: ${{ env.DEPLOY_KEY }}
+          port: 22
+          command_timeout: 5m
+          script: |
+            set -euxo pipefail
+            cd "${{ env.CLIENT_DIR }}"
+            # `git pull` merges into whatever the box is on and exits 0 when it
+            # changes nothing, so a detached HEAD, a remote left on the old
+            # repository name, or one local edit leaves the tree behind main
+            # with the deploy still green. Fetch and reset: the tree is main,
+            # or this step fails. Nothing on a deploy checkout is worth keeping.
             git remote -v
             git fetch origin main
             git reset --hard origin/main
             git log -1 --oneline
 
-            # --force-recreate because `up -d` leaves a running container alone
-            # when it decides the image did not change, and a deploy that skips
-            # the container is the failure being fixed here.
+      # What nginx serves is the `client` service of the SERVER stack:
+      # `server/nginx/nginx.conf` proxies / to the `client:3500` upstream on
+      # that project's network, and `server/docker-compose.prod.yml` builds it
+      # from `../client` — the checkout updated above. Rebuilding only the
+      # client repo's own compose project updates a container nginx never talks
+      # to. Both are built from the one checkout, so whichever this box serves
+      # is current.
+      #
+      # --force-recreate because `up -d` leaves a running container alone when
+      # it decides the image is unchanged.
+      - name: Rebuild the served client service
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ env.DEPLOY_HOST }}
+          username: "root"
+          key: ${{ env.DEPLOY_KEY }}
+          port: 22
+          command_timeout: 30m
+          script: |
+            set -euxo pipefail
+            cd "${{ env.SERVER_DIR }}"
+            docker compose -f docker-compose.prod.yml up -d --build --force-recreate client
+            docker compose -f docker-compose.prod.yml ps client
+
+      - name: Rebuild the client repo's own stack
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ env.DEPLOY_HOST }}
+          username: "root"
+          key: ${{ env.DEPLOY_KEY }}
+          port: 22
+          command_timeout: 30m
+          script: |
+            set -euxo pipefail
+            cd "${{ env.CLIENT_DIR }}"
             docker compose -f docker-compose.prod.yml up -d --build --force-recreate
             docker compose -f docker-compose.prod.yml ps
 
-            # What nginx actually serves is the `client` service of the SERVER
-            # stack — `server/nginx/nginx.conf` proxies / to `client:3500` on
-            # that project's network, and `server/docker-compose.prod.yml`
-            # builds it from `../client`, this very directory. Rebuilding only
-            # the client project's own container updates a container nginx
-            # never talks to, which is why a green deploy left the old UI up.
-            # Source is pulled once, above; both stacks build from it.
-            if [ -f "$SERVER_DIR/docker-compose.prod.yml" ]; then
-              cd "$SERVER_DIR"
-              docker compose -f docker-compose.prod.yml up -d --build --force-recreate client
-              docker compose -f docker-compose.prod.yml ps
+      # The deployed commit adds this route; the build that has been live since
+      # before it does not have it. Asking the public address for it is the one
+      # check that covers the whole chain — source, image, container and the
+      # proxy in front of them — so a green deploy means the new build is being
+      # served, not merely that some container restarted.
+      - name: Verify the new build is what the site serves
+        run: |
+          set -x
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            code=$(curl -sSk -m 15 -o /dev/null -w '%{http_code}' https://sortpi.com/accept-invitation || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "Serving the current build."
+              exit 0
             fi
-
-            echo "Client Deployment Completed Successfully!"
-
+            echo "Attempt $attempt: /accept-invitation returned $code; waiting for the container."
+            sleep 15
+          done
+          echo "::error::https://sortpi.com is still serving a build without /accept-invitation. The deploy ran but the site did not change."
+          exit 1
