@@ -1,6 +1,8 @@
 import { PayrollRecord, PayrollQueryFilter } from "@/types/payroll";
 import { apiFetch, apiList, ApiError, PagedResult } from "./apiClient";
 import { PayrollRun, toPayrollRows } from "./mappers/payroll";
+import { HrmService } from "./hrmService";
+import { formatMoney } from "@/lib/format";
 
 /**
  * Payslips, read through payroll runs.
@@ -24,7 +26,23 @@ export class PayrollService {
       (r) => r as PayrollRun
     );
 
-    const rows = toPayrollRows(runs.data);
+    let rows = toPayrollRows(runs.data);
+
+    /**
+     * A month nobody has run yet still has wages owed on it.
+     *
+     * The screen showed "No payroll run for September 2026" and stopped, so
+     * the one question a shop asks at the end of a month — who still has to be
+     * paid — had no answer until somebody pressed a button first. These are
+     * the ACTIVE roster's own figures, exactly what a run would calculate, and
+     * they carry `preview` so a row can say it has no payslip behind it yet.
+     *
+     * Only when the month is genuinely empty: a run that exists is the truth
+     * about that month, including a run somebody deliberately made for nobody.
+     */
+    if (rows.length === 0 && params?.month) {
+      rows = await PayrollService.previewMonth(params.month);
+    }
     const needle = params?.search?.trim().toLowerCase();
     const filtered = rows.filter((r) => {
       if (params?.status && r.status.toLowerCase() !== params.status.toLowerCase()) return false;
@@ -40,6 +58,63 @@ export class PayrollService {
       limit,
       totalPages: Math.max(1, Math.ceil(filtered.length / limit)),
     };
+  }
+
+  /**
+   * What a month's payroll WOULD be, from the roster.
+   *
+   * Never written anywhere and never counted as money — nothing here posts.
+   * It exists so an unrun month lists who is owed instead of an empty table,
+   * and every row is `preview`, which is what stops the screen offering to
+   * edit a payslip that does not exist.
+   */
+  private static async previewMonth(month: string): Promise<PayrollRecord[]> {
+    const { start, end } = PayrollService.boundsOfMonth(month);
+    const roster = await HrmService.getRoster({ active: true, page: 1, limit: 200 });
+
+    // Filtered HERE as well as asked for, because the employees endpoint has
+    // no `is_active` filter — it takes search, department, attendance status
+    // and day, and ignores anything else. So the request above is a no-op and
+    // an unrun month would list everybody who has ever worked here, including
+    // the people who left.
+    return roster.data
+      .filter((employee) => employee.isActive)
+      .map((employee, i) => {
+        const basic = employee.basicSalary ?? 0;
+        const allowances = employee.allowances ?? 0;
+        const deductions = employee.deductions ?? 0;
+        const net = basic + allowances - deductions;
+        return {
+          id: `preview:${employee.id}`,
+          preview: true,
+          periodStart: start,
+          periodEnd: end,
+          // There is no payslip to correct yet.
+          editable: false,
+          index: String(i + 1).padStart(2, "0"),
+          employee: { name: employee.name, avatar: "" },
+          basicSalary: basic,
+          basicSalaryFormatted: formatMoney(basic),
+          allowances,
+          allowancesFormatted: formatMoney(allowances),
+          deductions,
+          deductionsFormatted: formatMoney(deductions),
+          netSalary: net,
+          netSalaryFormatted: formatMoney(net),
+          status: "Not Paid" as const,
+        };
+    });
+  }
+
+  /**
+   * Settle one person's wage.
+   *
+   * Writes the salary expense and BOTH its ledger legs on the server, so the
+   * money lands on the Income & Expense screen and the P&L in the same call —
+   * there is nothing for the client to post afterwards.
+   */
+  static async payPayslip(payslipId: string): Promise<void> {
+    await apiFetch(`/hrm/payslips/${payslipId}/pay/`, { method: "POST" });
   }
 
   /**
@@ -97,19 +172,50 @@ export class PayrollService {
   }
 
   /** Pay everyone for a period. The server builds one payslip per employee. */
-  static async runPayroll(periodStart: string, periodEnd: string): Promise<void> {
+  /**
+   * Calculate a month's payroll.
+   *
+   * `payNow` defaults FALSE here: calculating a month and paying it are two
+   * events, often days apart, and running them together meant a shop could
+   * never see who was still owed — every payslip existed only after the money
+   * had already left the drawer. The run lands as a set of unpaid payslips and
+   * `payPayslip` settles them one at a time.
+   */
+  static async runPayroll(
+    periodStart: string,
+    periodEnd: string,
+    payNow = false
+  ): Promise<void> {
     await apiFetch("/hrm/payroll-runs/run/", {
       method: "POST",
-      body: JSON.stringify({ period_start: periodStart, period_end: periodEnd }),
+      body: JSON.stringify({
+        period_start: periodStart,
+        period_end: periodEnd,
+        pay_now: payNow,
+      }),
     });
   }
 
   /** First and last day of the month a date falls in, as "YYYY-MM-DD". */
+  /**
+   * The first and last day of a month, as the run endpoint wants them.
+   *
+   * Formatted from the LOCAL parts, not through `toISOString()`.
+   * `new Date(2026, 8, 1)` is local midnight, and in any zone ahead of UTC
+   * that is the previous day in UTC — so in Dhaka (+6) September's period ran
+   * from 2026-08-31 to 2026-09-29. Both ends were wrong: the start overlapped
+   * August's posted run and the server refused the whole thing with "already
+   * posted and overlaps this period", and the end silently dropped the last
+   * day of the month from every payroll period.
+   */
   static monthBounds(when: Date = new Date()): { start: string; end: string } {
-    const iso = (d: Date) => d.toISOString().slice(0, 10);
+    const day = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+        d.getDate()
+      ).padStart(2, "0")}`;
     return {
-      start: iso(new Date(when.getFullYear(), when.getMonth(), 1)),
-      end: iso(new Date(when.getFullYear(), when.getMonth() + 1, 0)),
+      start: day(new Date(when.getFullYear(), when.getMonth(), 1)),
+      end: day(new Date(when.getFullYear(), when.getMonth() + 1, 0)),
     };
   }
 

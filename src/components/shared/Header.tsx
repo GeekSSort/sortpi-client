@@ -77,6 +77,8 @@ function subtitleForPath(pathname: string): string | null {
   if (pathname.startsWith("/reports")) return "Sales, payments and stock movement over a period you choose.";
   if (pathname.startsWith("/discount")) return "Create and manage discounts, offers and coupon codes.";
   if (pathname.startsWith("/sales-pos/sales")) return "View & manage all sales, invoice or order";
+  if (pathname.startsWith("/sales-pos/return/new"))
+    return "Find the sale, choose what came back, and refund it.";
   if (pathname.startsWith("/sales-pos/return")) return "View & manage all returns and refunds";
   if (pathname.startsWith("/customers")) return "Manage all customers, transactions, and outstanding balances.";
   if (pathname.startsWith("/inventory/add"))
@@ -84,6 +86,8 @@ function subtitleForPath(pathname: string): string | null {
   if (pathname.startsWith("/inventory/stock/add")) return "Add new stock to your inventory.";
   if (pathname.startsWith("/inventory/stock"))
     return "Track current inventory levels across all branches and warehouses.";
+  if (pathname.startsWith("/inventory/transfers/add"))
+    return "Draft a transfer: where it comes from, where it goes, and what is on it.";
   if (pathname.startsWith("/inventory/transfers"))
     return "Manage and track product transfers between branches or warehouses.";
   if (pathname === "/purchases" || pathname.startsWith("/purchases/history"))
@@ -120,11 +124,13 @@ function subtitleForPath(pathname: string): string | null {
 function titleForPath(pathname: string): string {
   if (pathname === "/pos") return "POS";
   if (pathname.startsWith("/sales-pos/sales")) return "Sales";
+  if (pathname.startsWith("/sales-pos/return/new")) return "New Return";
   if (pathname.startsWith("/sales-pos/return")) return "Returns";
 
   if (pathname.startsWith("/customers")) return "Customers";
   if (pathname.startsWith("/inventory/stock/add")) return "Add Stock";
   if (pathname.startsWith("/inventory/stock")) return "Stocks";
+  if (pathname.startsWith("/inventory/transfers/add")) return "Add Transfer";
   if (pathname.startsWith("/inventory/transfers")) return "Transfers";
   if (pathname.startsWith("/inventory/add")) return "Add New Product";
   if (pathname.startsWith("/inventory")) return "Products";

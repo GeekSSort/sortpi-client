@@ -32,8 +32,8 @@ const BODY =
 const MONEY_FIELD =
   "h-[44px] w-full rounded-[10px] bg-white px-[12px] text-[14px] text-[#1e1e1e] shadow-[inset_0_0_0_1px_#eaeaea] outline-none focus:shadow-[inset_0_0_0_1.5px_#f5b800]";
 
-const STATUS_TONE: Record<PayrollRecord["status"], Tone> = { Paid: "green", Pending: "gold" };
-const FILTERS = ["Payroll", "Paid", "Pending"] as const;
+const STATUS_TONE: Record<PayrollRecord["status"], Tone> = { Paid: "green", "Not Paid": "rose" };
+const FILTERS = ["Payroll", "Paid", "Not Paid"] as const;
 
 function SearchIcon() {
   return (
@@ -100,6 +100,9 @@ export default function PayrollPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
   const [note, setNote] = useState<string | null>(null);
+  /** Which wage is mid-payment, so its row can say so. */
+  const [paying, setPaying] = useState<string | null>(null);
+  const [payingAll, setPayingAll] = useState(false);
   const [runOpen, setRunOpen] = useState(false);
   const [running, setRunning] = useState(false);
   const [period, setPeriod] = useState(() => PayrollService.monthBounds());
@@ -175,6 +178,105 @@ export default function PayrollPage() {
   }, [filterOpen]);
 
   /** Open the edit dialog with the row's own figures. */
+  /**
+   * Settle one person's wage.
+   *
+   * The server writes the expense and both its ledger legs, so the money is on
+   * the Income & Expense screen and the P&L the moment this returns — those
+   * caches are dropped rather than left to go stale.
+   */
+  const payOne = async (row: PayrollRecord) => {
+    setPaying(row.id);
+    try {
+      // A preview row has no payslip behind it — the month has not been
+      // calculated yet. Paying somebody is a perfectly reasonable way to say
+      // "run this month", so it runs it (unpaid) and then settles the one
+      // person, rather than refusing and pointing at another button.
+      let payslipId = row.id;
+      if (row.preview) {
+        // The bounds of the month ON SCREEN, not `period` — that belongs to
+        // the Run payroll dialog and can be pointing at a different month
+        // entirely.
+        const bounds = PayrollService.boundsOfMonth(month);
+        await PayrollService.runPayroll(bounds.start, bounds.end, false);
+        const fresh = await PayrollService.getPayroll({ month, limit: 200, page: 1 });
+        const match = fresh.data.find((r) => r.employee.name === row.employee.name);
+        if (!match || match.preview) {
+          throw new Error("The month was calculated but that payslip could not be found.");
+        }
+        payslipId = match.id;
+      }
+      await PayrollService.payPayslip(payslipId);
+      setNote(`${row.employee.name} marked as paid.`);
+      invalidate("payroll", "finance-summary", "finance-transactions", "dashboard");
+      await refetch();
+    } catch (e) {
+      setNote(e instanceof Error && e.message ? e.message : "That wage could not be paid.");
+    } finally {
+      setPaying(null);
+    }
+  };
+
+  /**
+   * Settle every wage still owed on the month showing.
+   *
+   * One at a time rather than a bulk endpoint, because each payment is its own
+   * expense and its own pair of ledger legs — a partial failure has to leave
+   * the people already paid paid, not roll the whole month back out of the
+   * books.
+   */
+  const payAll = async () => {
+    const owed = rows.filter((r) => r.status === "Not Paid");
+    if (owed.length === 0) return;
+
+    setPayingAll(true);
+    try {
+      // Calculate the month first if it has never been run — every row would
+      // otherwise be a preview and each would try to run it again.
+      let toPay = owed;
+      if (owed.some((r) => r.preview)) {
+        const bounds = PayrollService.boundsOfMonth(month);
+        await PayrollService.runPayroll(bounds.start, bounds.end, false);
+        const fresh = await PayrollService.getPayroll({ month, limit: 200, page: 1 });
+        toPay = fresh.data.filter((r) => r.status === "Not Paid" && !r.preview);
+      }
+
+      let paid = 0;
+      const failures: string[] = [];
+      for (const row of toPay) {
+        try {
+          await PayrollService.payPayslip(row.id);
+          paid += 1;
+        } catch (e) {
+          failures.push(
+            `${row.employee.name}: ${e instanceof Error ? e.message : "could not be paid"}`
+          );
+        }
+      }
+
+      setNote(
+        failures.length === 0
+          ? `${paid} wage${paid === 1 ? "" : "s"} marked as paid.`
+          : `${paid} paid, ${failures.length} could not be — ${failures[0]}`
+      );
+      invalidate("payroll", "finance-summary", "finance-transactions", "dashboard");
+      await refetch();
+    } catch (e) {
+      setNote(e instanceof Error && e.message ? e.message : "The wages could not be paid.");
+    } finally {
+      setPayingAll(false);
+    }
+  };
+
+  const actionsFor = (row: PayrollRecord) => [
+    ...(row.status === "Not Paid"
+      ? [{ label: paying === row.id ? "Paying…" : "Mark as paid", onSelect: () => void payOne(row) }]
+      : []),
+    // A preview row has no payslip to correct — the figures on it are the
+    // employee's own, and those are edited on the employee.
+    ...(row.preview ? [] : [{ label: "Edit payroll", onSelect: () => openEdit(row) }]),
+  ];
+
   const openEdit = (row: PayrollRecord) => {
     setForm({
       basicSalary: String(row.basicSalary),
@@ -209,12 +311,16 @@ export default function PayrollPage() {
     setRunning(true);
     try {
       await PayrollService.runPayroll(period.start, period.end);
-      setNote(`Payroll run for ${period.start} to ${period.end}.`);
+      setNote(
+        `Payroll calculated for ${period.start} to ${period.end}. ` +
+          "Nobody is paid yet — mark each wage as paid from the rows below."
+      );
       setRunOpen(false);
       setPage(1);
-      // A run writes a payslip per employee and posts the wage bill, so the
-      // roster and the dashboard's expense figures move with it.
-      invalidate("payroll", "employees", "dashboard");
+      // A run writes a payslip per employee and NOTHING to the ledger — the
+      // wage bill posts as each one is paid. So only the payroll list changes
+      // here; the finance caches move when `payOne` does.
+      invalidate("payroll", "employees");
     } catch (e) {
       setNote(PayrollService.describeError(e));
     } finally {
@@ -370,6 +476,18 @@ export default function PayrollPage() {
             )}
           </div>
 
+          {/* Settle the whole month in one press. Shown only while something
+              is actually owed, so it is not a button that does nothing. */}
+          {rows.some((r) => r.status === "Not Paid") && (
+            <button
+              type="button"
+              onClick={() => void payAll()}
+              disabled={payingAll}
+              className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center rounded-[12px] bg-white px-[16px] text-[15px] font-semibold whitespace-nowrap text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {payingAll ? "Paying…" : "Mark all as paid"}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -473,9 +591,7 @@ export default function PayrollPage() {
                       <div className={`${CELL} h-[54px] justify-center border-b border-solid border-[#eaeaea]`}>
                         <RowActionMenu
                           label={`Actions for ${r.employee.name}`}
-                          actions={[
-                            { label: "Edit payroll", onSelect: () => openEdit(r) },
-                          ]}
+                          actions={actionsFor(r)}
                         />
                       </div>
                     </React.Fragment>

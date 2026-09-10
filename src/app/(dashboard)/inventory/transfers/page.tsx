@@ -1,18 +1,17 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
+import Link from "next/link";
 import { TransferRecord } from "@/types/transfers";
-import { StockItem } from "@/types/stock";
-import { StockService, TransferService } from "@/services";
+import { TransferService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import TablePagination from "@/components/shared/TablePagination";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
 import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
-import { useSession } from "@/services/useSession";
 import { isRowClick, isRowKey } from "@/lib/rowClick";
 import DateField from "@/components/shared/DateField";
-import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
+import Modal, { GOLD_GRADIENT, MODAL_GHOST } from "@/components/shared/Modal";
 import { toApiDay } from "@/lib/dateFilter";
 
 /**
@@ -72,39 +71,14 @@ const GRID = "grid-cols-[135fr_165fr_165fr_130fr_110fr_170fr_130fr_120fr]";
 const CELL = "flex min-w-0 items-center p-[12px]";
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e]";
 const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
-const FORM_FIELD =
-  "flex h-[44px] items-center rounded-[10px] bg-white px-[12px] text-[14px] tracking-[-0.28px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] outline-none placeholder:text-[rgba(82,82,82,0.6)]";
 
-// Warehouse ids and a stock line — a transfer moves a specific variant between
-// two specific warehouses, so names were never enough to send one.
-const blank = { from: "", to: "" };
-
-/** One product on a transfer note: the stock line it came from, and how many.
-    A transfer takes as many of these as the storeman is loading into the van —
-    the API has always accepted a list and this screen sent exactly one. */
-interface TransferLine {
-  /** The stock row picked from the source warehouse. */
-  stockLineId: string;
-  variantId: string;
-  name: string;
-  sku: string;
-  available: number;
-  quantity: number;
-}
 
 /** The three things this screen can do to a transfer. `undo` is the only one
     that goes backwards, and it writes a reversing pair rather than deleting
     what it reverses — the ledger is insert-only. */
 type TransferMove = "dispatch" | "receive" | "undo";
 
-/** A unique reference for one transfer. Module scope, because reading the
-    clock is a side effect and does not belong in a component body. */
-function transferRef(): string {
-  return `TRF-${Date.now()}`;
-}
-
 export default function TransfersPage() {
-  const session = useSession();
   const [query, setQuery] = useState("");
   /** The debounce settles the term before it reaches the cache key, so typing
       makes one request rather than one per letter — and a slow answer for "TR"
@@ -115,15 +89,6 @@ export default function TransfersPage() {
   const [pageSize, setPageSize] = useState(8);
   const [note, setNote] = useState<string | null>(null);
   const [detailOf, setDetailOf] = useState<TransferRecord | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [draft, setDraft] = useState({ ...blank });
-  /** The note's lines, in the order they were added. */
-  const [lines, setLines] = useState<TransferLine[]>([]);
-  /** What is being typed into the product box before it becomes a line. */
-  const [pickQuery, setPickQuery] = useState("");
-  const [pickOpen, setPickOpen] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
   /** Which transfer is mid-dispatch or mid-receive. */
   const [movingId, setMovingId] = useState<string | null>(null);
 
@@ -147,36 +112,8 @@ export default function TransfersPage() {
   );
 
   // The two ends of a transfer. Shared with Add Stock, which offers the same
-  // list — a shop's warehouses do not change while a form is being filled in.
-  const warehouseQuery = useQuery(queryKey("warehouses"), () =>
-    TransferService.getWarehouses()
-  );
-  // MAIN warehouses only. TRANSIT is machinery — `dispatch` routes the stock
-  // through the SOURCE branch's transit warehouse by itself — so naming one as
-  // an end of a transfer is not a choice a storeman has, and offering it made
-  // the list twice as long as the number of places stock can actually go.
-  const warehouses = (warehouseQuery.data ?? []).filter((w) => w.type !== "TRANSIT");
 
-  /**
-   * This branch's own shelf. One end of every transfer has to be it.
-   *
-   * A transfer is a shop sending stock somewhere or expecting it from
-   * somewhere, and either way this branch is standing at one end of it.
-   * Drafting Chattogram → Dhaka from Head Office is a movement between two
-   * places the person is not, arranged on their behalf, and the API refuses it
-   * anyway: `perform_create` checks the caller may write to the SOURCE, so the
-   * pair could be typed in full and only fail on save.
-   */
-  const here = useMemo(
-    () => warehouses.find((w) => w.branchId === session.user?.activeBranch?.id) ?? null,
-    [warehouses, session.user?.activeBranch?.id]
-  );
 
-  /** The other end: anywhere but here. */
-  const elsewhere = useMemo(
-    () => warehouses.filter((w) => w.id !== here?.id),
-    [warehouses, here]
-  );
 
   /**
    * Pin this branch to whichever end the person did not just choose.
@@ -185,43 +122,8 @@ export default function TransfersPage() {
    * you are receiving. Pick one to send TO and this branch becomes the source —
    * you are sending. Choosing this branch on one side leaves the other free.
    */
-  const pickEnd = (end: "from" | "to", warehouseId: string) => {
-    const next = { ...draft, [end]: warehouseId };
-    if (here && warehouseId && warehouseId !== here.id) {
-      next[end === "from" ? "to" : "from"] = here.id;
-    }
-    setDraft(next);
-    // Only when the SOURCE actually moved. Changing the destination leaves the
-    // note alone — those lines still came off the shelf they came off.
-    if (next.from !== draft.from) {
-      setLines([]);
-      setPickQuery("");
-    }
-    setFormError(null);
-  };
 
-  // The branch the source shelf belongs to. When it is not the branch the
-  // person is standing in — an INBOUND transfer, stock coming here from
-  // somewhere else — the read has to say so, or the branch scope answers empty
-  // and the product picker looks like an empty warehouse.
-  const sourceBranchId = warehouses.find((w) => w.id === draft.from)?.branchId ?? "";
-  const asBranch = sourceBranchId && sourceBranchId !== here?.branchId ? sourceBranchId : undefined;
 
-  // What is actually on the source shelf. A transfer cannot send what is not
-  // there, and this is where the variant id comes from. `enabled` keeps the
-  // request from going out before a source has been picked.
-  const sourceStockQuery = useQuery(
-    queryKey("stock", { warehouse: draft.from, limit: 200, as: asBranch ?? "" }),
-    () => StockService.getStock({ warehouse: draft.from, limit: 200 }, asBranch),
-    { enabled: draft.from !== "" }
-  );
-  // Memoised: a fresh array on every render would make `pickable` recompute on
-  // every keystroke of every other field in the dialog.
-  const sourceRows = sourceStockQuery.data?.data;
-  const sourceStock: StockItem[] = useMemo(
-    () => (draft.from ? (sourceRows ?? []).filter((r) => r.available > 0) : []),
-    [draft.from, sourceRows]
-  );
 
   const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -231,104 +133,10 @@ export default function TransfersPage() {
 
   /** What the product box offers: on the source shelf, not already on the
       note, and matching what has been typed. */
-  const pickable = useMemo(() => {
-    const q = pickQuery.trim().toLowerCase();
-    const taken = new Set(lines.map((l) => l.stockLineId));
-    return sourceStock
-      .filter((r) => !taken.has(r.id))
-      .filter(
-        (r) => !q || r.name.toLowerCase().includes(q) || r.sku.toLowerCase().includes(q)
-      )
-      .slice(0, 40);
-  }, [sourceStock, lines, pickQuery]);
 
-  const addLine = (row: StockItem) => {
-    // The variant is what the API moves; a line without one cannot be sent, so
-    // it is checked here rather than at submit, where the storeman has already
-    // built the whole note.
-    const variantId = row.variantId;
-    if (!variantId) return setFormError("That line is missing its variant.");
-    setLines((current) => [
-      ...current,
-      {
-        stockLineId: row.id,
-        variantId,
-        name: row.name,
-        sku: row.sku,
-        available: row.available,
-        // One to start with: the storeman came here to send at least one.
-        quantity: 1,
-      },
-    ]);
-    setPickQuery("");
-    setPickOpen(false);
-    setFormError(null);
-  };
 
-  const setLineQuantity = (stockLineId: string, next: number) =>
-    setLines((current) =>
-      current.map((l) =>
-        l.stockLineId === stockLineId
-          ? { ...l, quantity: Math.max(0, Math.min(l.available, next)) }
-          : l
-      )
-    );
 
-  const removeLine = (stockLineId: string) =>
-    setLines((current) => current.filter((l) => l.stockLineId !== stockLineId));
 
-  const createTransfer = async () => {
-    if (!draft.from) return setFormError("Pick a source warehouse.");
-    if (!draft.to) return setFormError("Pick a destination warehouse.");
-    if (draft.from === draft.to) return setFormError("Source and destination must differ.");
-    // This branch stands at one end or the other. Two branches that are both
-    // somewhere else are moving stock between two places nobody here is, and
-    // the API refuses it on save anyway.
-    if (here && draft.from !== here.id && draft.to !== here.id) {
-      return setFormError(`A transfer has to start or end at ${here.name}.`);
-    }
-    if (lines.length === 0) return setFormError("Add at least one product to send.");
-
-    const empty = lines.find((l) => l.quantity <= 0);
-    if (empty) return setFormError(`Enter a quantity for ${empty.name}.`);
-    const over = lines.find((l) => l.quantity > l.available);
-    if (over) return setFormError(`Only ${over.available} of ${over.name} available there.`);
-
-    setSaving(true);
-    setFormError(null);
-    try {
-      // A draft. Nothing leaves the shelf until it is dispatched — the screen
-      // used to build a record in local state and call it created.
-      const created = await TransferService.createTransfer(
-        {
-          referenceNo: transferRef(),
-          fromWarehouseId: draft.from,
-          toWarehouseId: draft.to,
-          items: lines.map((l) => ({ variantId: l.variantId, quantity: l.quantity })),
-        },
-        // Drafting stock OUT of another branch is asking that branch to send
-        // it. The API checks the caller may write to the SOURCE, so the request
-        // says which branch it is being made on behalf of. Nothing moves either
-        // way: only the source branch can dispatch it.
-        asBranch
-      );
-      setNote(`${created.transferId} drafted — dispatch it to move the stock`);
-      setDraft({ ...blank });
-      setLines([]);
-      setPickQuery("");
-      setCreateOpen(false);
-      setPage(1);
-      // A draft holds stock in place but does not move it yet, so the list is
-      // the thing that changed.
-      invalidate("transfers");
-    } catch (err) {
-      setFormError(
-        err instanceof Error && err.message ? err.message : "The transfer could not be created."
-      );
-    } finally {
-      setSaving(false);
-    }
-  };
 
   /**
    * Move a transfer along: source -> transit on dispatch, transit ->
@@ -404,24 +212,14 @@ export default function TransfersPage() {
             }}
             ariaLabel="Filter transfers by date"
           />
-          <button
-            type="button"
-            onClick={() => {
-              // Sending out is the common case, so this branch starts as the
-              // source. Picking another branch on either side flips it — see
-              // `pickEnd`.
-              setDraft({ ...blank, from: here?.id ?? "" });
-              setLines([]);
-              setPickQuery("");
-              setFormError(null);
-              setCreateOpen(true);
-            }}
+          <Link
+            href="/inventory/transfers/add"
             style={{ backgroundImage: GOLD_GRADIENT }}
             className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
           >
             <AddIcon />
             Add New
-          </button>
+          </Link>
         </div>
       </div>
 
@@ -722,186 +520,6 @@ export default function TransfersPage() {
       </Modal>
 
       {/* New transfer — no Figma frame; built in the app's own language. */}
-      <Modal
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        title="New transfer"
-        width={460}
-        footer={
-          <>
-            <button type="button" className={MODAL_GHOST} onClick={() => setCreateOpen(false)}>
-              Cancel
-            </button>
-            <button
-              type="button"
-              style={{ backgroundImage: GOLD_GRADIENT }}
-              className={MODAL_PRIMARY}
-              disabled={saving}
-              onClick={createTransfer}
-            >
-              {saving ? "Creating…" : "Create transfer"}
-            </button>
-          </>
-        }
-      >
-        <div className="flex flex-col gap-[14px]">
-          {(["from", "to"] as const).map((k) => {
-            const other = k === "from" ? draft.to : draft.from;
-            return (
-            <label key={k} className="flex flex-col gap-[6px]">
-              <span className="text-[14px] font-medium tracking-[-0.28px] text-[#525252]">
-                {k === "from" ? "From" : "To"}
-              </span>
-              <select
-                value={draft[k]}
-                aria-label={k === "from" ? "Transfer from" : "Transfer to"}
-                onChange={(e) => pickEnd(k, e.target.value)}
-                className={`${FORM_FIELD} cursor-pointer`}
-              >
-                <option value="">Select a warehouse</option>
-                {/* This branch, plus everywhere else. The OTHER end is left
-                    off — the API refuses a transfer to the warehouse it came
-                    from (TRANSFER_SAME_WAREHOUSE), so offering it is offering a
-                    choice that can only end in an error message. */}
-                {(here ? [here, ...elsewhere] : warehouses)
-                  .filter((w) => w.id !== other)
-                  .map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.name}
-                      {here && w.id === here.id ? " (here)" : ""}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            );
-          })}
-
-          {/* Says what just happened, because the other end filling itself in
-              is otherwise a surprise. */}
-          {here && (draft.from || draft.to) && (
-            <p className="text-[12px] leading-[1.5] text-[#8a8a8a]">
-              {draft.from === here.id && draft.to
-                ? `Sending out of ${here.name}.`
-                : draft.to === here.id && draft.from
-                  ? `Receiving into ${here.name} — only ${
-                      warehouses.find((w) => w.id === draft.from)?.name ?? "that branch"
-                    } can dispatch it.`
-                  : `${here.name} is one end of every transfer you make here.`}
-            </p>
-          )}
-
-          {/* Type a name, pick it, set how many — as many times as the van
-              holds. The API has always taken a list of lines; this screen sent
-              exactly one, so a shop moving six products drafted six transfers. */}
-          <div className="flex flex-col gap-[6px]">
-            <span className="text-[14px] font-medium tracking-[-0.28px] text-[#525252]">
-              Products
-            </span>
-            <div className="relative">
-              <input
-                value={pickQuery}
-                disabled={!draft.from}
-                onChange={(e) => {
-                  setPickQuery(e.target.value);
-                  setPickOpen(true);
-                  setFormError(null);
-                }}
-                onFocus={() => setPickOpen(true)}
-                // A click on an option has to land before the list closes.
-                onBlur={() => window.setTimeout(() => setPickOpen(false), 140)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && pickable.length > 0) {
-                    e.preventDefault();
-                    addLine(pickable[0]);
-                  }
-                  if (e.key === "Escape") setPickOpen(false);
-                }}
-                placeholder={
-                  draft.from
-                    ? "Search a product in that warehouse…"
-                    : "Pick a source warehouse first"
-                }
-                aria-label="Product to transfer"
-                className={`${FORM_FIELD} disabled:opacity-60`}
-              />
-              {pickOpen && draft.from && (
-                <div className="absolute top-[48px] right-0 left-0 z-40 max-h-[220px] overflow-y-auto rounded-[10px] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)] ring-1 ring-[#eaeaea]">
-                  {sourceStockQuery.loading && (
-                    <p className="px-[14px] py-[9px] text-[13px] text-[#8f8d87]">Loading stock…</p>
-                  )}
-                  {!sourceStockQuery.loading && pickable.length === 0 && (
-                    <p className="px-[14px] py-[9px] text-[13px] text-[#8f8d87]">
-                      {pickQuery.trim()
-                        ? "Nothing in that warehouse matches."
-                        : "Everything in stock there is already on this note."}
-                    </p>
-                  )}
-                  {pickable.map((r) => (
-                    <button
-                      key={r.id}
-                      type="button"
-                      onClick={() => addLine(r)}
-                      className="flex w-full cursor-pointer items-center justify-between gap-[10px] px-[14px] py-[9px] text-left transition-colors hover:bg-[#fafafa]"
-                    >
-                      <span className="min-w-0 truncate text-[13px] text-[#525252]">
-                        {r.name}
-                        <span className="text-[#a3a3a3]"> · {r.sku}</span>
-                      </span>
-                      <span className="shrink-0 text-[12px] tabular-nums text-[#8f8d87]">
-                        {r.available} available
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {lines.length > 0 && (
-            <div className="flex flex-col gap-[6px] rounded-[10px] border border-solid border-[#eaeaea] p-[8px]">
-              {lines.map((l) => (
-                <div key={l.stockLineId} className="flex items-center gap-[8px]">
-                  <span className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate text-[13px] text-[#1e1e1e]">{l.name}</span>
-                    <span className="truncate text-[11px] text-[#8f8d87]">
-                      {l.sku} · {l.available} available
-                    </span>
-                  </span>
-                  <input
-                    value={String(l.quantity)}
-                    onChange={(e) => {
-                      setLineQuantity(l.stockLineId, Number(e.target.value.replace(/[^\d]/g, "")) || 0);
-                      setFormError(null);
-                    }}
-                    inputMode="numeric"
-                    aria-label={`Quantity of ${l.name}`}
-                    className="h-[36px] w-[70px] shrink-0 rounded-[8px] bg-white text-center text-[13px] tabular-nums text-[#1e1e1e] shadow-[inset_0_0_0_1px_#eaeaea] outline-none focus:shadow-[inset_0_0_0_1.5px_#f5b800]"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removeLine(l.stockLineId)}
-                    aria-label={`Remove ${l.name}`}
-                    className="shrink-0 cursor-pointer px-[4px] text-[16px] leading-none text-[#a3a3a3] transition-colors hover:text-[#ef4444]"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-              <p className="pt-[2px] text-[12px] text-[#8a8a8a]">
-                {lines.length} product{lines.length === 1 ? "" : "s"} ·{" "}
-                {lines.reduce((n, l) => n + l.quantity, 0)} units
-              </p>
-            </div>
-          )}
-
-          <p className="text-[12px] text-[#8a8a8a]">
-            A new transfer is a draft. Dispatching it takes the stock off the source
-            branch&rsquo;s shelf; receiving it puts the same units on the destination
-            branch&rsquo;s. Nothing moves until then.
-          </p>
-          {formError && <p className="text-[13px] text-[#ef4444]">{formError}</p>}
-        </div>
-      </Modal>
     </div>
   );
 }

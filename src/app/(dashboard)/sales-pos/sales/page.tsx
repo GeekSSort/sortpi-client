@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { SaleRecord } from "@/types/sales";
 import { SalesService, ReturnService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
@@ -10,8 +11,8 @@ import TableSkeleton from "@/components/shared/TableSkeleton";
 import DateField from "@/components/shared/DateField";
 import { toApiDay } from "@/lib/dateFilter";
 import { formatMoney } from "@/lib/format";
-import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
-import { useQuery, queryKey, setQueryData } from "@/lib/query/useQuery";
+import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
+import { useQuery, queryKey } from "@/lib/query/useQuery";
 import { CardListState, EmptyState, ErrorState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import { DetailSkeleton } from "@/components/shared/Skeleton";
 import Receipt from "@/components/shared/Receipt";
@@ -71,6 +72,7 @@ const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#52
 const MONEY = { decimals: 2 } as const;
 
 export default function SalesPage() {
+  const router = useRouter();
   const [query, setQuery] = useState("");
   /** The debounce settles the term before it reaches the cache key: typing is
       one request rather than one per letter, and a slow reply for "ah" can no
@@ -84,8 +86,6 @@ export default function SalesPage() {
   const [note, setNote] = useState<string | null>(null);
   const [invoiceOf, setInvoiceOf] = useState<SaleRecord | null>(null);
   const [receiptOf, setReceiptOf] = useState<SaleRecord | null>(null);
-  const [refundOf, setRefundOf] = useState<SaleRecord | null>(null);
-  const [refunding, setRefunding] = useState(false);
   const [withdrawOf, setWithdrawOf] = useState<SaleRecord | null>(null);
   const [withdrawing, setWithdrawing] = useState(false);
 
@@ -104,7 +104,7 @@ export default function SalesPage() {
    */
   // The refund dialog is included: it has to say which products go back on
   // the shelf, and that is on the sale's lines rather than on the list row.
-  const openSaleId = invoiceOf?.id ?? receiptOf?.id ?? refundOf?.id ?? null;
+  const openSaleId = invoiceOf?.id ?? receiptOf?.id ?? null;
   const {
     data: saleDetail,
     loading: saleDetailLoading,
@@ -329,7 +329,23 @@ export default function SalesPage() {
                                 {
                                   label: "Refund",
                                   tone: "danger" as const,
-                                  onSelect: () => setRefundOf(s),
+                                  // To the returns FORM, carrying the invoice.
+                                  //
+                                  // This opened a modal that refunded the
+                                  // WHOLE sale — there was nowhere in it to say
+                                  // "two of the four came back", so a partial
+                                  // return meant closing it, walking to
+                                  // /sales-pos/return/new and typing the
+                                  // invoice number off the row you had just
+                                  // been looking at. That page already picks
+                                  // lines and quantities; this hands it the
+                                  // invoice.
+                                  onSelect: () =>
+                                    router.push(
+                                      `/sales-pos/return/new?invoice=${encodeURIComponent(
+                                        s.invoiceNo
+                                      )}`
+                                    ),
                                 },
                               ]
                             : [
@@ -799,103 +815,6 @@ export default function SalesPage() {
         )}
       </Modal>
 
-      {/* Refund sale */}
-      <Modal
-        open={refundOf !== null}
-        onClose={() => {
-          if (!refunding) setRefundOf(null);
-        }}
-        title="Refund sale"
-        width={440}
-        footer={
-          <>
-            <button
-              type="button"
-              disabled={refunding}
-              className={MODAL_GHOST}
-              onClick={() => setRefundOf(null)}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={refunding}
-              style={{ backgroundImage: RED_GRADIENT }}
-              className={MODAL_PRIMARY}
-              onClick={async () => {
-                if (!refundOf) return;
-                setRefunding(true);
-                try {
-                  await SalesService.refundSale(refundOf.id);
-                  if (data) {
-                    setQueryData(key, {
-                      ...data,
-                      data: data.data.map((x) =>
-                        x.id === refundOf.id ? { ...x, status: "Refunded" } : x
-                      ),
-                    });
-                  }
-                  await refetch();
-                  setNote(`${refundOf.invoiceNo} marked as refunded`);
-                  setRefundOf(null);
-                } catch (err: any) {
-                  setNote(err?.message || "Failed to refund sale");
-                } finally {
-                  setRefunding(false);
-                }
-              }}
-            >
-              {refunding ? "Refunding…" : "Confirm refund"}
-            </button>
-          </>
-        }
-      >
-        {refundOf && (
-          <div className="flex flex-col gap-[14px]">
-            <p className="text-[14px] leading-[1.6] text-[#525252]">
-              Refund invoice <span className="font-medium text-[#1e1e1e]">{refundOf.invoiceNo}</span>{" "}
-              for <span className="font-medium text-[#1e1e1e]">{refundOf.customerName}</span>? The
-              whole sale is cancelled and marked as Refunded.
-            </p>
-
-            {/* What the refund actually does, before it is done. It used to
-                name a figure and nothing else, so nobody could see which
-                products were about to come back into stock — the one part of a
-                refund that is hard to undo. */}
-            <div className="flex flex-col gap-[8px] rounded-[10px] bg-[#fafafa] p-[12px]">
-              <p className="text-[13px] font-medium text-[#1e1e1e]">Back into stock</p>
-              {saleDetailLoading && !saleDetail ? (
-                <p className="text-[13px] text-[#9e9e9e]">Loading the sale&apos;s lines…</p>
-              ) : saleDetail && saleDetail.items.length > 0 ? (
-                <ul className="flex flex-col gap-[6px]">
-                  {saleDetail.items.map((line, i) => (
-                    <li key={`${line.sku}-${i}`} className="flex items-start justify-between gap-[12px]">
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[13px] text-[#1e1e1e]">{line.name}</span>
-                        <span className="block truncate text-[11px] text-[#9e9e9e]">{line.sku}</span>
-                      </span>
-                      <span className="shrink-0 text-[13px] font-medium whitespace-nowrap text-[#00b837]">
-                        +{line.quantity}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="text-[13px] text-[#9e9e9e]">
-                  Could not read this sale&apos;s lines. The refund still restocks whatever it sold.
-                </p>
-              )}
-            </div>
-
-            <div className="flex items-center justify-between gap-[12px] border-t border-solid border-[#eaeaea] pt-[12px]">
-              <span className="text-[14px] text-[#525252]">Off revenue</span>
-              <span className="text-[16px] font-semibold text-[#e5484d]">
-                −{refundOf.totalAmountFormatted}
-              </span>
-            </div>
-          </div>
-        )}
-      </Modal>
     </div>
   );
 }

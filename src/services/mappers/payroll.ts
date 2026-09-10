@@ -18,14 +18,27 @@ export interface PayrollRun {
   payslips?: any[];
 }
 
-function statusOf(run: string | undefined): PayrollRecord["status"] {
-  return String(run || "").toUpperCase() === "POSTED" ? "Paid" : "Pending";
+/**
+ * Paid means the money left the drawer for THIS person.
+ *
+ * `is_paid` is the server's own signal — `Payslip.expense`, set only by the
+ * one path that writes an expense and both its ledger legs. It used to be
+ * derived from the RUN's status, so a month read Paid or Not Paid for
+ * everybody at once and a shop settling person by person could not see who
+ * was still owed.
+ *
+ * The run's status is the fallback for a payslip from before `is_paid`
+ * existed: a POSTED run had every wage posted, so its slips are paid.
+ */
+function statusOf(slip: any, run: string | undefined): PayrollRecord["status"] {
+  const paid =
+    slip?.isPaid ?? slip?.is_paid ?? (String(run || "").toUpperCase() === "POSTED");
+  return paid ? "Paid" : "Not Paid";
 }
 
 export function toPayrollRows(runs: PayrollRun[]): PayrollRecord[] {
   const rows: PayrollRecord[] = [];
   for (const run of runs) {
-    const status = statusOf(run.status);
     for (const slip of run.payslips || []) {
       const basicSalary = toAmount(slip?.basicSalary);
       const allowances = toAmount(slip?.allowances);
@@ -51,7 +64,7 @@ export function toPayrollRows(runs: PayrollRun[]): PayrollRecord[] {
         deductionsFormatted: formatMoney(deductions),
         netSalary,
         netSalaryFormatted: formatMoney(netSalary),
-        status,
+        status: statusOf(slip, run.status),
       });
     }
   }

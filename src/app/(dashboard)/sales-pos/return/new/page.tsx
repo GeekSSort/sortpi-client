@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import React, { Suspense, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ReturnService } from "@/services";
 import { ReturnableSale } from "@/types/returns";
 import { formatMoney } from "@/lib/format";
@@ -44,13 +44,64 @@ const FIELD =
   "h-[44px] w-full rounded-[10px] bg-white px-[12px] text-[14px] text-[#1e1e1e] shadow-[inset_0_0_0_1px_#eaeaea] outline-none focus:shadow-[inset_0_0_0_1.5px_#f5b800]";
 const LABEL = "text-[13px] font-medium text-[#1e1e1e]";
 
-export default function NewReturnPage() {
+/**
+ * The next free `RET-…` reference for an invoice.
+ *
+ * `reference_no` is unique per organization (`uq_sreturn_org_ref`) and this
+ * screen suggested `RET-{invoice}` and nothing else. That was survivable while
+ * a refund meant the whole sale, because there was only ever one. Partial
+ * refunds are the normal case now — two of the four came back today, the other
+ * two next week — so the second return against an invoice collided with the
+ * first and the desk got "A return already uses that reference." about a field
+ * this screen had filled in itself.
+ *
+ * The suffix SKIPS taken names rather than counting them: a return deleted, or
+ * created at another till, would otherwise put the count straight back onto a
+ * number in use.
+ *
+ * Module scope, and a plain function: as a `useMemo` the React Compiler could
+ * not preserve the loop, and picking a free name from a list is not state.
+ */
+function nextReference(
+  invoiceNo: string | undefined,
+  itemCount: number,
+  prior: { returnNo: string }[] | undefined
+): string {
+  if (!invoiceNo || itemCount === 0) return "";
+  const base = `RET-${invoiceNo}`;
+  const taken = new Set((prior ?? []).map((r) => r.returnNo));
+  if (!taken.has(base)) return base.slice(0, 50);
+  for (let n = 2; n < 100; n += 1) {
+    const candidate = `${base}-${n}`;
+    if (!taken.has(candidate)) return candidate.slice(0, 50);
+  }
+  return `${base}-${Date.now().toString().slice(-5)}`.slice(0, 50);
+}
+
+function NewReturnForm() {
   const router = useRouter();
 
-  const [invoiceQuery, setInvoiceQuery] = useState("");
+  /**
+   * The invoice this page was sent here to refund.
+   *
+   * Refund on the Sales screen used to open a modal that refunded the WHOLE
+   * sale — there was nowhere in it to say "two of the four came back", so a
+   * partial return meant leaving the modal, coming here, and typing the
+   * invoice number off the row you had just been looking at. It links here
+   * with the invoice instead, and this page is the one that can already pick
+   * lines and quantities.
+   *
+   * `useSearchParams` needs a Suspense boundary in the App Router, which is
+   * why the page is split around one below.
+   */
+  const params = useSearchParams();
+  const fromLink = (params.get("invoice") ?? "").trim();
+
+  const [invoiceQuery, setInvoiceQuery] = useState(fromLink);
   /** The invoice actually asked for, which is what the cache is keyed on.
-      Typing does not send a request; pressing Find does. */
-  const [lookingUp, setLookingUp] = useState("");
+      Typing does not send a request; pressing Find does — or arriving with one
+      in the URL, which is the same intent expressed by the link. */
+  const [lookingUp, setLookingUp] = useState(fromLink);
 
   /** Quantity being returned, per sale-item id. */
   const [picked, setPicked] = useState<Record<string, number>>({});
@@ -92,11 +143,38 @@ export default function NewReturnPage() {
     if (wanted === lookingUp) void lookup.refetch();
   };
 
-  // A reference the shop can read off the slip, tied to the invoice it is
-  // against rather than to the clock alone. Derived, so it appears with the
-  // sale rather than a render later, and anything typed over it wins.
-  const suggestedReference =
-    sale && sale.items.length > 0 ? `RET-${sale.invoiceNo}`.slice(0, 50) : "";
+  /**
+   * What has already come back against this invoice.
+   *
+   * Needed for the reference below, and only once a sale is on screen.
+   */
+  const priorReturns = useQuery(
+    queryKey("returns", { invoice: sale?.invoiceNo ?? "none" }),
+    () => ReturnService.getReturnsForInvoice(sale!.invoiceNo),
+    { enabled: !!sale }
+  );
+
+  /**
+   * A reference the shop can read off the slip — and a DIFFERENT one each time.
+   *
+   * `reference_no` is unique per organization (`uq_sreturn_org_ref`), and this
+   * suggested `RET-{invoice}` and nothing else. That was survivable while a
+   * refund meant the whole sale, because there was only ever one. Partial
+   * refunds are the normal case now — two of the four came back today, the
+   * other two next week — so the second return against an invoice collided
+   * with the first and the desk got "A return already uses that reference."
+   * with no hint that the fix was to edit a field it had filled in itself.
+   *
+   * So the suffix counts what is already there, and skips any reference that
+   * exists rather than trusting the count: a return deleted or created
+   * elsewhere would otherwise land straight back on a taken number.
+   */
+  const suggestedReference = nextReference(
+    sale?.invoiceNo,
+    sale?.items.length ?? 0,
+    priorReturns.data
+  );
+
   const reference = referenceNo || suggestedReference;
 
   const { mutate: createReturn, pending: saving } = useMutation(
@@ -150,8 +228,25 @@ export default function NewReturnPage() {
       // Long enough to read, short enough not to feel stuck.
       setTimeout(() => router.push("/sales-pos/return"), 1200);
     } catch (error) {
-      // The server's own message is the useful one: it names the line that
-      // exceeded what is returnable, or the permission that is missing.
+      // A reference collision is the one failure the desk cannot act on: the
+      // field was filled in by this screen, so "already uses that reference"
+      // reads as a bug rather than an instruction. The suggestion is computed
+      // from the returns that existed when the sale was looked up, so another
+      // till taking a return in between still lands on a taken number.
+      //
+      // Re-read them and say which reference to use, rather than leaving
+      // somebody to invent one.
+      const message = error instanceof Error ? error.message : "";
+      if (/already uses that reference/i.test(message)) {
+        await priorReturns.refetch();
+        setSaveError(
+          "Another return took that reference a moment ago. The suggestion has " +
+            "been updated — press Record refund again."
+        );
+        return;
+      }
+      // Otherwise the server's own message is the useful one: it names the
+      // line that exceeded what is returnable, or the permission missing.
       setSaveError(
         error instanceof Error && error.message
           ? error.message
@@ -161,14 +256,9 @@ export default function NewReturnPage() {
   };
 
   return (
+    // The page's own title and strapline are gone: the app header above already
+    // carries both, so this printed the page's name twice down the screen.
     <div className="flex w-full flex-col gap-[20px] pb-[48px]">
-      <div>
-        <h2 className="text-[20px] leading-[28px] font-semibold text-[#1e1e1e]">New Return</h2>
-        <p className="mt-[2px] text-[13px] text-[#8f8d87]">
-          Find the sale, choose what came back, and refund it.
-        </p>
-      </div>
-
       <div className="mx-auto flex w-full max-w-[720px] flex-col gap-[16px]">
         {/* 1 — the sale */}
         <div className="relative flex flex-col gap-[10px] rounded-[12px] bg-white p-[16px] shadow-[inset_0_0_0_1px_#eaeaea]">
@@ -411,5 +501,19 @@ export default function NewReturnPage() {
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * `useSearchParams` opts a route into client-side rendering and the App Router
+ * requires a Suspense boundary around it, or the whole page is deopted and the
+ * build warns. The fallback is the page's own skeleton so the wrapper is
+ * invisible.
+ */
+export default function NewReturnPage() {
+  return (
+    <Suspense fallback={<DetailSkeleton />}>
+      <NewReturnForm />
+    </Suspense>
   );
 }

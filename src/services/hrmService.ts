@@ -1,5 +1,5 @@
 import { EmployeeProfile, EmployeeRecord, HrmQueryFilter } from "@/types/hrm";
-import { apiFetch, apiList, ApiError, PagedResult, tokenStore } from "./apiClient";
+import { apiFetch, apiList, ApiError, PagedResult, toAmount, tokenStore } from "./apiClient";
 import { AttendanceToday, toEmployeeRecord } from "./mappers/employee";
 import { BranchService } from "./branchService";
 
@@ -101,6 +101,11 @@ export class HrmService {
    * without a date — which is exactly what made "show me the staff list" need
    * a date picker.
    */
+  /** A gated money field: a number when present, `undefined` when withheld. */
+  private static toMoney(raw: unknown): number | undefined {
+    return raw === undefined || raw === null ? undefined : toAmount(raw);
+  }
+
   static async getRoster(params?: {
     search?: string;
     department?: string;
@@ -144,6 +149,19 @@ export class HrmService {
           // person who was simply off sick into the same column as somebody
           // who had left the company.
           isActive: (row?.isActive ?? row?.is_active ?? true) !== false,
+          // Absent when the caller lacks `hrm.view_salary` — the serializer
+          // DROPS them rather than nulling them, and `undefined` has to carry
+          // that through instead of becoming a zero: a withheld wage and a
+          // wage of nothing are different facts.
+          //
+          // `toAmount` on the ones that are present, because money arrives as
+          // a string ("50000.0000") and the payroll preview ADDS these. Left
+          // raw, `basic + allowances - deductions` concatenated two strings
+          // and subtracted a third, and every figure on an unrun month
+          // rendered as ৳0.
+          basicSalary: HrmService.toMoney(row?.basicSalary ?? row?.basic_salary),
+          allowances: HrmService.toMoney(row?.allowances),
+          deductions: HrmService.toMoney(row?.deductions),
         };
       }),
       total: rows.total,

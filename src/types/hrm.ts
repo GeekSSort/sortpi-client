@@ -47,4 +47,14 @@ export interface EmployeeProfile {
   /** ISO date, formatted at the point of use. */
   joinedOn: string;
   isActive: boolean;
+  /**
+   * Pay, when the caller may see it.
+   *
+   * The API drops these fields entirely without `hrm.view_salary` — dropped,
+   * not nulled, so a reader cannot tell a withheld figure from a zero one.
+   * `undefined` here means exactly that: not shown to you.
+   */
+  basicSalary?: number;
+  allowances?: number;
+  deductions?: number;
 }
