@@ -489,7 +489,7 @@ export default function SignupPage() {
               setError(null);
               setStep(1);
             }}
-            className="flex h-[56px] shrink-0 cursor-pointer items-center justify-center rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[24px] text-[16px] font-medium text-[#525252] transition-colors hover:bg-[#fafafa]"
+            className="flex h-[52px] shrink-0 cursor-pointer items-center justify-center rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[20px] text-[16px] font-medium text-[#525252] transition-colors hover:bg-[#fafafa] sm:h-[56px] sm:px-[24px]"
           >
             Back
           </button>

@@ -37,7 +37,7 @@ export default function AuthShell({
   const Inner = onSubmit ? "form" : "div";
 
   return (
-    <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-[#FDFDFD] p-4">
+    <div className="relative flex min-h-screen min-h-dvh w-full items-center justify-center overflow-x-hidden bg-[#FDFDFD] px-[16px] py-[24px] sm:p-[24px]">
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0"
@@ -56,7 +56,7 @@ export default function AuthShell({
       <Inner
         {...(onSubmit ? { onSubmit } : {})}
         style={{ maxWidth: width }}
-        className="relative flex w-full flex-col items-center gap-[24px] rounded-[10px] bg-white p-[24px] shadow-[0_1px_2px_0_rgba(16,24,40,0.04),0_8px_20px_-6px_rgba(16,24,40,0.08),0_28px_56px_-16px_rgba(16,24,40,0.12),inset_0_0_0_1px_rgba(16,24,40,0.05)]"
+        className="relative flex w-full flex-col items-center gap-[16px] rounded-[10px] bg-white p-[20px] sm:gap-[24px] sm:p-[24px] shadow-[0_1px_2px_0_rgba(16,24,40,0.04),0_8px_20px_-6px_rgba(16,24,40,0.08),0_28px_56px_-16px_rgba(16,24,40,0.12),inset_0_0_0_1px_rgba(16,24,40,0.05)]"
       >
         <Image
           src="/auth/logo.png"
@@ -64,11 +64,11 @@ export default function AuthShell({
           width={106}
           height={100}
           priority
-          className="h-[100px] w-[106px] shrink-0 rounded-[24px] object-cover"
+          className="h-[72px] w-[76px] shrink-0 rounded-[18px] object-cover sm:h-[100px] sm:w-[106px] sm:rounded-[24px]"
         />
 
         <div className="flex w-full flex-col items-center gap-[8px] text-center">
-          <h1 className="text-[24px] leading-[1.2] font-semibold tracking-[-0.72px] text-[#1e1e1e]">
+          <h1 className="text-[20px] leading-[1.2] font-semibold tracking-[-0.72px] text-[#1e1e1e] sm:text-[24px]">
             {title}
           </h1>
           <p className="text-[14px] leading-[1.5] font-normal tracking-[-0.28px] text-[#525252]">
@@ -144,8 +144,10 @@ export function AuthField({
 
   return (
     <label className="flex w-full flex-col items-start gap-[8px]">
-      <span className="w-full text-[18px] leading-[24px] font-medium text-[#525252]">{label}</span>
-      <div className="flex h-[56px] w-full items-center gap-[12px] rounded-[12px] border border-solid border-[#f5b800] bg-white px-[16px] py-[8px]">
+      <span className="w-full text-[16px] leading-[24px] font-medium text-[#525252] sm:text-[18px]">
+        {label}
+      </span>
+      <div className="flex h-[52px] w-full items-center gap-[12px] rounded-[12px] border border-solid border-[#f5b800] bg-white px-[16px] py-[8px] sm:h-[56px]">
         <input
           {...rest}
           type={isPassword && revealed ? "text" : type}
@@ -260,11 +262,13 @@ export function PhoneField({
 
   return (
     <div className="flex w-full flex-col items-start gap-[8px]">
-      <span className="w-full text-[18px] leading-[24px] font-medium text-[#525252]">{label}</span>
+      <span className="w-full text-[16px] leading-[24px] font-medium text-[#525252] sm:text-[18px]">
+        {label}
+      </span>
 
       <div ref={boxRef} className="relative w-full">
         <div
-          className={`flex h-[56px] w-full items-center gap-[10px] rounded-[12px] border border-solid bg-white pr-[16px] pl-[12px] ${
+          className={`flex h-[52px] w-full items-center gap-[10px] rounded-[12px] border border-solid bg-white pr-[16px] pl-[12px] sm:h-[56px] ${
             problem ? "border-[#c0392b]" : "border-[#f5b800]"
           }`}
         >
@@ -299,7 +303,7 @@ export function PhoneField({
         {open && (
           <div
             role="listbox"
-            className="absolute top-[60px] left-0 z-20 flex max-h-[280px] w-full flex-col overflow-hidden rounded-[12px] border border-solid border-[#eaeaea] bg-white shadow-[0_12px_28px_rgba(0,0,0,0.12)]"
+            className="absolute top-[58px] left-0 z-20 flex max-h-[min(280px,50dvh)] w-full flex-col overflow-hidden rounded-[12px] border border-solid border-[#eaeaea] bg-white shadow-[0_12px_28px_rgba(0,0,0,0.12)]"
           >
             <div className="shrink-0 border-b border-solid border-[#f0f0f0] p-[8px]">
               <input
@@ -354,7 +358,7 @@ export function AuthButton({
   return (
     <button
       {...rest}
-      className="flex h-[56px] w-full cursor-pointer items-center justify-center rounded-[12px] bg-[#f5b800] text-[18px] leading-[24px] font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+      className="flex h-[52px] w-full cursor-pointer items-center justify-center rounded-[12px] bg-[#f5b800] text-[16px] leading-[24px] font-semibold text-white sm:h-[56px] sm:text-[18px] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
     >
       {children}
     </button>
