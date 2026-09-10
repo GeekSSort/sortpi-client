@@ -332,6 +332,16 @@ jobs:
             #
             # Taking the service down through compose releases the port through
             # the same machinery that took it.
+            # BUILD FIRST, then swap.
+            #
+            # Removing the old container before building took the site down
+            # for the WHOLE image build — over a minute of 502 on every
+            # deploy, because nothing held the port Traefik routes to while
+            # npm was still installing. Building while the old container is
+            # still serving cuts the window where nothing answers down to the
+            # few seconds between removing one container and starting another.
+            docker compose -p "$PROJECT" $FLAGS build "$SERVICE"
+
             docker compose -p "$PROJECT" $FLAGS rm -sf "$SERVICE" || true
 
             # Whatever still holds 3500 now is not ours to recreate.
@@ -375,7 +385,10 @@ jobs:
 
             # --force-recreate because `up -d` leaves a running container alone
             # when it decides the image is unchanged.
-            docker compose -p "$PROJECT" $FLAGS up -d --build --force-recreate "$SERVICE"
+            # --no-build because the image was built above, while the old
+            # container was still up. Building here would reopen the downtime
+            # window that ordering exists to close.
+            docker compose -p "$PROJECT" $FLAGS up -d --no-build --force-recreate "$SERVICE"
             docker compose -p "$PROJECT" $FLAGS ps
 
             echo "===== host port 3500 after ====="
