@@ -75,6 +75,16 @@ export interface ImportReport {
   rows: ImportRow[];
 }
 
+/**
+ * How much of each product an export writes.
+ *
+ * `full` is every column — a backup, and the template for a bulk add.
+ * `simple` is name, category, unit, sku and price: a short list for reading,
+ * and still an importable one. The server owns the column sets; this is only
+ * the name of the choice.
+ */
+export type ExportScope = "full" | "simple";
+
 export class InventoryService {
   /**
    * Fetch inventory products catalog with search & filters
@@ -339,15 +349,28 @@ export class InventoryService {
    * The same query the list is showing, so "Export" means "export this" rather
    * than "export something else" — a button that quietly exports the whole
    * catalogue while the screen shows a search is a button that lies.
+   *
+   * `scope` picks how much of each product is written. BOTH are valid import
+   * files: the short one still carries name, category and unit, because the
+   * importer requires those three and an export that cannot be fed back in
+   * would be a trap rather than a smaller file.
    */
-  static async exportCsv(params?: InventoryQueryFilter & { search?: string }): Promise<void> {
+  static async exportCsv(
+    params?: InventoryQueryFilter & { search?: string },
+    { scope = "full" }: { scope?: ExportScope } = {}
+  ): Promise<void> {
     const query = new URLSearchParams();
     if (params?.search) query.set("search", params.search);
     if (params?.category) query.set("category", params.category);
     if (params?.status) query.set("status", params.status);
+    query.set("scope", scope);
     const qs = query.toString() ? `?${query.toString()}` : "";
 
-    const { blob, filename } = await apiDownload(`/products/export/${qs}`, "products.csv");
+    // Named for what is in it. Two files in a downloads folder both called
+    // products.csv are indistinguishable, and the short one is the one
+    // somebody re-imports by mistake.
+    const fallback = scope === "simple" ? "products-simple.csv" : "products.csv";
+    const { blob, filename } = await apiDownload(`/products/export/${qs}`, fallback);
     saveBlob(blob, filename);
   }
 

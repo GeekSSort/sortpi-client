@@ -11,8 +11,9 @@ import { printBarcodeLabels } from "@/lib/printLabels";
 import TablePagination from "@/components/shared/TablePagination";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import CatalogManagerModal from "@/components/modules/dashboard/CatalogManagerModal";
-import type { CatalogKind, ImportReport } from "@/services/inventoryService";
+import type { CatalogKind, ExportScope, ImportReport } from "@/services/inventoryService";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
+import ProgressModal from "@/components/shared/ProgressModal";
 import { useQuery, queryKey, setQueryData, invalidate } from "@/lib/query/useQuery";
 import { useSession } from "@/services/useSession";
 import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
@@ -114,6 +115,32 @@ const CELL = "flex min-w-0 items-center p-[12px]";
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e]";
 const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
 
+/**
+ * The two shapes an export can take.
+ *
+ * Module level because it is a fixed table, not state: rebuilding it on every
+ * render of a page this size is work for nothing, and it reads as data here.
+ */
+const EXPORT_OPTIONS: {
+  scope: ExportScope;
+  name: string;
+  what: string;
+  use: string;
+}[] = [
+  {
+    scope: "full",
+    name: "Everything",
+    what: "Name, category, brand, unit, tax, type, SKU, barcode, description, price, cost, reorder level and flags.",
+    use: "A full backup, and the template for a bulk add.",
+  },
+  {
+    scope: "simple",
+    name: "Just the products",
+    what: "Name, category, unit, SKU and price.",
+    use: "A short list to read or share — and it still imports back.",
+  },
+];
+
 export default function InventoryPage() {
   const [query, setQuery] = useState("");
   /** The debounce settles the search term before it reaches the cache key, so
@@ -148,21 +175,49 @@ export default function InventoryPage() {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importReport, setImportReport] = useState<ImportReport | null>(null);
   const [importBusy, setImportBusy] = useState(false);
+  /** True while a file is over the drop zone, so it can say it will take it. */
+  const [dragging, setDragging] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  /**
+   * The export dialog, and what it is set to.
+   *
+   * Export used to be a button that downloaded one fixed file. A shop that
+   * wanted a plain list of what it sells got fourteen columns of bookkeeping,
+   * and a shop that wanted a backup had no way to know that was what it had.
+   * Asking is one click and removes the guess.
+   */
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportScope, setExportScope] = useState<ExportScope>("full");
+  /** Somewhere between 0 and 1 while a long job runs, `null` when none is. */
+  const [progress, setProgress] = useState<{ label: string; value: number } | null>(null);
 
   /** What the list is currently showing, so the export matches the screen. */
   const exportFilters = { search: term || undefined };
 
-  const runExport = async () => {
+  const runExport = async (scope: ExportScope) => {
     setExporting(true);
+    setProgress({ label: "Preparing the file…", value: 0.15 });
     try {
-      await InventoryService.exportCsv(exportFilters);
+      // The server streams the whole CSV in one response, so there is no real
+      // percentage to report. The bar is honest about that: it moves to show
+      // the request is alive and completes when the file arrives, rather than
+      // inventing a row count nobody is counting.
+      setProgress({ label: "Collecting products…", value: 0.55 });
+      await InventoryService.exportCsv(exportFilters, { scope });
+      setProgress({ label: "Saving…", value: 1 });
+      setExportOpen(false);
+      setNote(
+        scope === "simple"
+          ? "Exported the short product list."
+          : "Exported the full catalogue."
+      );
     } catch (e) {
       setNote(InventoryService.describeFileError(e));
     } finally {
       setExporting(false);
+      setProgress(null);
     }
   };
 
@@ -171,7 +226,35 @@ export default function InventoryPage() {
     setImportFile(null);
     setImportReport(null);
     setImportError(null);
+    setDragging(false);
     if (fileRef.current) fileRef.current.value = "";
+  };
+
+  /**
+   * Take a file from the picker or from a drop, and refuse anything that is
+   * not a CSV before it costs a round trip.
+   *
+   * A new file invalidates the previous report; leaving it up would let
+   * somebody commit a run they checked against a DIFFERENT file, which is the
+   * one mistake the two-step dialog exists to prevent.
+   */
+  const chooseFile = (file: File | null | undefined) => {
+    setImportReport(null);
+    setImportError(null);
+    if (!file) {
+      setImportFile(null);
+      return;
+    }
+    const looksCsv =
+      file.type === "text/csv" ||
+      file.type === "application/vnd.ms-excel" ||
+      file.name.toLowerCase().endsWith(".csv");
+    if (!looksCsv) {
+      setImportFile(null);
+      setImportError("That is not a CSV. Export one from this screen to get the right columns.");
+      return;
+    }
+    setImportFile(file);
   };
 
   /**
@@ -187,8 +270,18 @@ export default function InventoryPage() {
     if (!importFile) return;
     setImportBusy(true);
     setImportError(null);
+    // The upload is one request and the server answers when the whole run is
+    // done, so there is no row count coming back to count against. The bar
+    // reports the STAGES it genuinely knows — reading, then writing — and the
+    // report that lands names the rows. Inventing "412 of 604" from a timer
+    // would be the kind of progress bar that sits at 90% forever.
+    setProgress({
+      label: dryRun ? "Reading the file…" : "Writing products…",
+      value: dryRun ? 0.3 : 0.45,
+    });
     try {
       const report = await InventoryService.importCsv(importFile, { dryRun });
+      setProgress({ label: dryRun ? "Checked." : "Imported.", value: 1 });
       setImportReport(report);
       if (!dryRun) {
         // A real import changes the catalogue the till prices from and the
@@ -200,6 +293,7 @@ export default function InventoryPage() {
       setImportError(InventoryService.describeFileError(e));
     } finally {
       setImportBusy(false);
+      setProgress(null);
     }
   };
   const [detailOf, setDetailOf] = useState<InventoryProduct | null>(null);
@@ -353,8 +447,7 @@ export default function InventoryPage() {
           )}
           <button
             type="button"
-            onClick={runExport}
-            disabled={exporting}
+            onClick={() => setExportOpen(true)}
             title="Download what is on screen as CSV"
             className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[12px] bg-white px-[16px] py-[8px] text-[15px] leading-[24px] font-medium whitespace-nowrap text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e] disabled:cursor-not-allowed disabled:opacity-60"
           >
@@ -860,6 +953,91 @@ export default function InventoryPage() {
         />
       )}
 
+      {/* Export — ask what to write, rather than guessing.
+          One fixed file served both "back this up" and "give me a list of
+          what we sell", and it was wrong for one of them every time. Both
+          choices are importable: the short one still carries the three
+          columns the importer requires, so a smaller file is never a file
+          that cannot come back. */}
+      <Modal
+        open={exportOpen}
+        onClose={() => !exporting && setExportOpen(false)}
+        title="Export products"
+        width={520}
+        footer={
+          <>
+            <button
+              type="button"
+              className={MODAL_GHOST}
+              disabled={exporting}
+              onClick={() => setExportOpen(false)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={exporting}
+              style={{ backgroundImage: GOLD_GRADIENT }}
+              className={MODAL_PRIMARY}
+              onClick={() => runExport(exportScope)}
+            >
+              {exporting ? "Exporting…" : "Export CSV"}
+            </button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-[10px]">
+          {EXPORT_OPTIONS.map((option) => {
+            const chosen = exportScope === option.scope;
+            return (
+              <button
+                key={option.scope}
+                type="button"
+                onClick={() => setExportScope(option.scope)}
+                className={`flex cursor-pointer items-start gap-[12px] rounded-[12px] border border-solid p-[14px] text-left transition-colors ${
+                  chosen
+                    ? "border-[#f5b800] bg-[#fffdf5]"
+                    : "border-[#eaeaea] bg-white hover:bg-[#fafafa]"
+                }`}
+              >
+                <span
+                  className={`mt-[2px] flex size-[16px] shrink-0 items-center justify-center rounded-full border ${
+                    chosen ? "border-[#f5b800]" : "border-[#a3a3a3]"
+                  }`}
+                >
+                  {chosen && <span className="size-[8px] rounded-full bg-[#f5b800]" />}
+                </span>
+                <span className="flex min-w-0 flex-col gap-[3px]">
+                  <span className="text-[15px] font-semibold text-[#1e1e1e]">{option.name}</span>
+                  <span className="text-[12px] leading-[1.55] text-[#525252]">{option.what}</span>
+                  <span className="text-[12px] leading-[1.55] text-[#8f8d87]">{option.use}</span>
+                </span>
+              </button>
+            );
+          })}
+
+          {term && (
+            // Export has always followed the screen's filters. Saying so is
+            // the difference between a short file and a file somebody thinks
+            // is short because the catalogue shrank.
+            <p className="rounded-[10px] bg-[#f6f6f4] px-[12px] py-[10px] text-[12px] leading-[1.55] text-[#525252]">
+              Only products matching{" "}
+              <span className="font-medium text-[#1e1e1e]">{term}</span> will be written — that is
+              what is on screen. Clear the search to export everything.
+            </p>
+          )}
+        </div>
+      </Modal>
+
+      {/* The bar for the two jobs slow enough to look broken without one. */}
+      <ProgressModal
+        open={progress !== null}
+        title={exporting ? "Exporting products" : "Importing products"}
+        label={progress?.label ?? ""}
+        value={progress?.value ?? null}
+        detail={!exporting && importFile ? importFile.name : undefined}
+      />
+
       {/* Import — check first, then write.
           The dialog stays open on the report because the report IS the point:
           a run that quietly imported and told you afterwards would make the
@@ -906,7 +1084,7 @@ export default function InventoryPage() {
             A UTF-8 CSV with a header row. The columns are the ones{" "}
             <button
               type="button"
-              onClick={runExport}
+              onClick={() => runExport("full")}
               className="cursor-pointer font-medium text-[#f5b800] underline underline-offset-2"
             >
               Export
@@ -916,20 +1094,121 @@ export default function InventoryPage() {
             must already exist.
           </p>
 
+          {/* The file, taken by drop or by click.
+              The browser's own file input was what sat here: a grey "Choose
+              File" chip and the words "No file chosen", sized and coloured by
+              the operating system and by nothing in this app. It also could
+              not be dropped on, which is what somebody with a spreadsheet
+              already open in another window will try first. */}
           <input
             ref={fileRef}
             type="file"
             accept=".csv,text/csv"
             aria-label="CSV file"
-            onChange={(e) => {
-              setImportFile(e.target.files?.[0] ?? null);
-              // A new file invalidates the previous report; leaving it up would
-              // let somebody commit a run they checked against another file.
-              setImportReport(null);
-              setImportError(null);
-            }}
-            className="w-full cursor-pointer rounded-[10px] border border-dashed border-[#eaeaea] bg-[#fafafa] p-[14px] text-[13px] text-[#525252] file:mr-[12px] file:cursor-pointer file:rounded-[8px] file:border-0 file:bg-white file:px-[12px] file:py-[6px] file:text-[13px] file:font-medium file:text-[#525252] file:shadow-[inset_0_0_0_1px_#eaeaea]"
+            onChange={(e) => chooseFile(e.target.files?.[0])}
+            className="sr-only"
           />
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              if (!importBusy) setDragging(true);
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragging(false);
+              if (importBusy) return;
+              chooseFile(e.dataTransfer.files?.[0]);
+            }}
+            className={`flex flex-col items-center gap-[10px] rounded-[12px] border border-dashed p-[22px] text-center transition-colors ${
+              dragging
+                ? "border-[#f5b800] bg-[#fffaeb]"
+                : importFile
+                  ? "border-[#eaeaea] bg-white"
+                  : "border-[#e0dfdb] bg-[#fafafa]"
+            }`}
+          >
+            {importFile ? (
+              <>
+                <span className="flex size-[38px] items-center justify-center rounded-[10px] bg-[#fffaeb]">
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
+                    <path
+                      d="M11.5 2.5H6a1.5 1.5 0 0 0-1.5 1.5v12A1.5 1.5 0 0 0 6 17.5h8a1.5 1.5 0 0 0 1.5-1.5V6.5l-4-4Z"
+                      stroke="#b58600"
+                      strokeWidth="1.4"
+                      strokeLinejoin="round"
+                    />
+                    <path d="M11.5 2.5v4h4" stroke="#b58600" strokeWidth="1.4" strokeLinejoin="round" />
+                  </svg>
+                </span>
+                <span className="flex flex-col gap-[2px]">
+                  <span className="max-w-[380px] truncate text-[14px] font-semibold text-[#1e1e1e]">
+                    {importFile.name}
+                  </span>
+                  <span className="text-[12px] text-[#8f8d87]">
+                    {importFile.size < 1024
+                      ? `${importFile.size} bytes`
+                      : `${(importFile.size / 1024).toFixed(1)} KB`}
+                  </span>
+                </span>
+                <div className="flex items-center gap-[8px]">
+                  <button
+                    type="button"
+                    disabled={importBusy}
+                    onClick={() => fileRef.current?.click()}
+                    className="cursor-pointer rounded-[8px] bg-white px-[12px] py-[6px] text-[13px] font-medium text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Choose another
+                  </button>
+                  <button
+                    type="button"
+                    disabled={importBusy}
+                    onClick={() => {
+                      chooseFile(null);
+                      if (fileRef.current) fileRef.current.value = "";
+                    }}
+                    className="cursor-pointer rounded-[8px] px-[12px] py-[6px] text-[13px] font-medium text-[#a02620] transition-colors hover:bg-[#fdeceb] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <span className="flex size-[42px] items-center justify-center rounded-full bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+                  <svg width="22" height="22" viewBox="0 0 20 20" fill="none" aria-hidden>
+                    <path
+                      d="M10 13.5V4m0 0L6.5 7.5M10 4l3.5 3.5"
+                      stroke="#8f8d87"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M3.5 13v1.5A1.5 1.5 0 0 0 5 16h10a1.5 1.5 0 0 0 1.5-1.5V13"
+                      stroke="#8f8d87"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </span>
+                <span className="flex flex-col gap-[2px]">
+                  <span className="text-[14px] font-semibold text-[#1e1e1e]">
+                    {dragging ? "Drop it here" : "Drag a CSV here"}
+                  </span>
+                  <span className="text-[12px] text-[#8f8d87]">or pick one from your computer</span>
+                </span>
+                <button
+                  type="button"
+                  disabled={importBusy}
+                  onClick={() => fileRef.current?.click()}
+                  className="cursor-pointer rounded-[9px] bg-white px-[14px] py-[7px] text-[13px] font-semibold text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Choose a file
+                </button>
+              </>
+            )}
+          </div>
 
           {importReport && (
             <div className="flex flex-col gap-[10px]">

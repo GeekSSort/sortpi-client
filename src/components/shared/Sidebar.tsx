@@ -87,11 +87,11 @@ const NAV: NavItem[] = [
     match: (p) => p.startsWith("/inventory"),
     children: [
       {
-        name: "Product",
+        name: "Products",
         href: "/inventory",
         match: (p) => p === "/inventory" || p.startsWith("/inventory/add") || p.startsWith("/inventory/products"),
       },
-      { name: "Stock", href: "/inventory/stock", match: (p) => p.startsWith("/inventory/stock") },
+      { name: "Stocks", href: "/inventory/stock", match: (p) => p.startsWith("/inventory/stock") },
       {
         name: "Transfers",
         href: "/inventory/transfers",

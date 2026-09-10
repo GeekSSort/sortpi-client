@@ -6,6 +6,7 @@ import { InventoryService, SettingsService, StockService, TransferService } from
 import type { CatalogOption, CatalogOptions } from "@/services/inventoryService";
 import { GOLD_GRADIENT } from "@/components/shared/Modal";
 import UploadIcon from "@/components/shared/UploadIcon";
+import ProgressModal from "@/components/shared/ProgressModal";
 import { useQuery, queryKey, useMutation, invalidate } from "@/lib/query/useQuery";
 import { FormSkeleton } from "@/components/shared/Skeleton";
 import { QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
@@ -247,6 +248,22 @@ export default function AddProductPage() {
   // a render, so the field flashed empty on the way past.
   const unit = form.unit || (options.units.length === 1 ? options.units[0].id : "");
 
+  /**
+   * Which step of the save is running, and how many there are.
+   *
+   * Saving a product is not one request. It is up to four — resolve the tax,
+   * create the product, count the opening stock, upload the image — and the
+   * image is the slow one. All of that used to happen behind a button that
+   * said "Saving…", so a form that took eight seconds was indistinguishable
+   * from one that had hung, and the honest reaction is to press it again.
+   *
+   * The steps are counted BEFORE the work starts, from what the form actually
+   * contains, so the bar measures this save rather than a generic one.
+   */
+  const [progress, setProgress] = useState<{ label: string; done: number; total: number } | null>(
+    null
+  );
+
   const { mutate: createProduct, pending: saving } = useMutation(
     (payload: Parameters<typeof InventoryService.createProduct>[0]) =>
       InventoryService.createProduct(payload),
@@ -321,6 +338,16 @@ export default function AddProductPage() {
         "There is no warehouse to count this into. Switch to a branch from the header first."
       );
     }
+    // Counted from what this form actually holds, so the bar measures THIS
+    // save. Creating the product is the only step every save has.
+    const taxRateForSteps = Math.max(0, Number(form.tax) || 0);
+    const willResolveTax = rates.tax === "percent" && taxRateForSteps > 0;
+    const willCountStock = opening > 0 && Boolean(openingWarehouse);
+    const totalSteps =
+      1 + (willResolveTax ? 1 : 0) + (willCountStock ? 1 : 0) + (imageFile ? 1 : 0);
+    let step = 0;
+    const advance = (label: string) => setProgress({ label, done: step, total: totalSteps });
+
     try {
       // A typed percentage has to become a Tax row before it can be a foreign
       // key. A flat tax has no column on this API at all — `Tax.rate` is a
@@ -328,6 +355,7 @@ export default function AddProductPage() {
       let taxId: string | undefined;
       const taxRate = Math.max(0, Number(form.tax) || 0);
       if (rates.tax === "percent" && taxRate > 0) {
+        advance("Saving the tax rate…");
         try {
           taxId = await InventoryService.resolveTax(taxRate, options.taxes);
         } catch {
@@ -337,6 +365,8 @@ export default function AddProductPage() {
         }
       }
 
+      if (willResolveTax) step += 1;
+      advance("Creating the product…");
       const created = await createProduct({
         name: form.name.trim(),
         categoryId: form.category,
@@ -357,6 +387,8 @@ export default function AddProductPage() {
        * whole thing, would lose a filled-in form over a permission.
        */
       if (opening > 0 && openingWarehouse && created.variantId) {
+        step += 1;
+        advance("Counting the opening stock…");
         try {
           await StockService.adjustStock({
             warehouseId: openingWarehouse,
@@ -386,6 +418,8 @@ export default function AddProductPage() {
       // after the create rather than in the same request. A failure here is
       // reported without pretending the product was not saved — it was.
       if (imageFile) {
+        step += 1;
+        advance("Uploading the image…");
         setNote(`${created.name} saved — uploading image…`);
         try {
           await InventoryService.uploadProductImage(created.id, imageFile);
@@ -423,6 +457,8 @@ export default function AddProductPage() {
         }
       }
 
+      step = totalSteps;
+      advance("Saved.");
       setNote(`${created.name} saved`);
       window.setTimeout(() => router.push("/inventory"), 700);
     } catch (err) {
@@ -431,11 +467,25 @@ export default function AddProductPage() {
       setError(
         err instanceof Error && err.message ? err.message : "Could not save the product."
       );
+    } finally {
+      // In `finally`, not at the end of the try: every early `return` above is
+      // a partial save that has already reported itself, and leaving the bar
+      // up over the message explaining what went wrong would hide it behind a
+      // dialog that cannot be dismissed.
+      setProgress(null);
     }
   };
 
   return (
     <div className="flex w-full flex-col gap-[14px]">
+      <ProgressModal
+        open={progress !== null}
+        title="Saving product"
+        label={progress?.label ?? ""}
+        value={progress ? progress.done / progress.total : null}
+        detail={progress ? `Step ${Math.min(progress.done + 1, progress.total)} of ${progress.total}` : undefined}
+      />
+
       {/* Centred 565 column — 57:12578 */}
       <form onSubmit={save} className="mx-auto flex w-full max-w-[720px] flex-col gap-[24px]">
         <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
