@@ -146,9 +146,40 @@ jobs:
           # not happen — the same false green as the skipped step above.
           script_stop: true
           script: |
-            echo "Deploying Client on Contabo (13.140.141.131)..."
-            cd /opt/apps/sortpi/client
-            git pull origin main
-            docker compose -f docker-compose.prod.yml up -d --build
+            set -x
+
+            CLIENT_DIR=/opt/apps/sortpi/client
+            SERVER_DIR=/opt/apps/sortpi/server
+
+            # `git pull` merges into whatever the box is on and reports success
+            # when it does nothing — a detached HEAD, a stale remote or a local
+            # edit all leave the tree behind main while the deploy goes green.
+            # Fetch and reset instead: the tree is main, or the step fails.
+            # Nothing on a deploy checkout is worth keeping.
+            cd "$CLIENT_DIR"
+            git remote -v
+            git fetch origin main
+            git reset --hard origin/main
+            git log -1 --oneline
+
+            # --force-recreate because `up -d` leaves a running container alone
+            # when it decides the image did not change, and a deploy that skips
+            # the container is the failure being fixed here.
+            docker compose -f docker-compose.prod.yml up -d --build --force-recreate
+            docker compose -f docker-compose.prod.yml ps
+
+            # What nginx actually serves is the `client` service of the SERVER
+            # stack — `server/nginx/nginx.conf` proxies / to `client:3500` on
+            # that project's network, and `server/docker-compose.prod.yml`
+            # builds it from `../client`, this very directory. Rebuilding only
+            # the client project's own container updates a container nginx
+            # never talks to, which is why a green deploy left the old UI up.
+            # Source is pulled once, above; both stacks build from it.
+            if [ -f "$SERVER_DIR/docker-compose.prod.yml" ]; then
+              cd "$SERVER_DIR"
+              docker compose -f docker-compose.prod.yml up -d --build --force-recreate client
+              docker compose -f docker-compose.prod.yml ps
+            fi
+
             echo "Client Deployment Completed Successfully!"
 
