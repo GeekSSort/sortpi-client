@@ -127,8 +127,6 @@ jobs:
     env:
       DEPLOY_KEY: ${{ secrets.SSH_PRIVATE_KEY || secrets.SERVER_SSH_KEY }}
       DEPLOY_HOST: "13.140.141.131"
-      CLIENT_DIR: /opt/apps/sortpi/client
-      SERVER_DIR: /opt/apps/sortpi/server
 
     steps:
       # Green used to mean "deployed" and "no key configured" alike. If the
@@ -140,96 +138,113 @@ jobs:
           echo "::error::No SSH deploy key. Set SSH_PRIVATE_KEY (or SERVER_SSH_KEY) in repository secrets."
           exit 1
 
-      # Every remote script below opens with `set -euxo pipefail` and ends on
-      # its last real command.
+      # /opt/apps/sortpi/client does not exist on the box: the previous run
+      # died on `test -d /opt/apps/sortpi/client/.git`. That path was never
+      # verified, and the script it was written into ran without `set -e`
+      # behind an input the action does not have (`script_stop`), so the `cd`
+      # failed silently and the closing echo reported success in two seconds.
       #
-      # `script_stop: true` was the intended guard and is NOT an input of
-      # ssh-action v1.2.2 — it was removed, and an unknown input is ignored
-      # rather than rejected. So the remote script has been running without
-      # `set -e` throughout, and every version of it closed with
-      # `echo "...Completed Successfully!"`, whose exit status is the one the
-      # action reports. A failing `cd` on the first line still produced a green
-      # step, in two seconds, having done nothing at all — which is why a
-      # deploy that "succeeded" kept leaving the old UI up.
-
-      - name: Check the deploy checkouts are where the script expects
+      # So stop hard-coding it. Compose stamps every container it starts with
+      # the project directory it was started from, and the running client is
+      # the one the site is actually served by, wherever that happens to be —
+      # ask Docker instead of assuming a layout.
+      - name: Locate the running client on the box
+        id: locate
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ env.DEPLOY_HOST }}
           username: "root"
           key: ${{ env.DEPLOY_KEY }}
           port: 22
+          capture_stdout: true
           script: |
-            set -euxo pipefail
-            test -d "${{ env.CLIENT_DIR }}/.git"
-            test -f "${{ env.CLIENT_DIR }}/docker-compose.prod.yml"
-            docker compose version
-            test -f "${{ env.SERVER_DIR }}/docker-compose.prod.yml"
+            set -uo pipefail
 
-      - name: Update the client source
+            echo "===== running containers ====="
+            docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}' 2>&1 || true
+
+            echo "===== compose project of each container ====="
+            for c in $(docker ps -q 2>/dev/null); do
+              docker inspect "$c" --format '{{.Name}} service={{ index .Config.Labels "com.docker.compose.service" }} project={{ index .Config.Labels "com.docker.compose.project" }} dir={{ index .Config.Labels "com.docker.compose.project.working_dir" }}' 2>&1 || true
+            done
+
+            echo "===== git checkouts on the box ====="
+            find /opt /srv /root /home /var/www /app -maxdepth 5 -type d -name .git \
+              -not -path '*/node_modules/*' 2>/dev/null | head -40 || true
+
+            echo "===== what is listening ====="
+            ss -ltnp 2>/dev/null | head -30 || true
+
+            echo "===== nginx / proxy units ====="
+            systemctl list-units --type=service --state=running 2>/dev/null \
+              | grep -Ei 'nginx|caddy|traefik|docker|pm2|node' || true
+
+      # Everything above is diagnosis; this is the deploy. The directory comes
+      # from the compose label on the running client container, so it follows
+      # the box rather than a path in this file. No match is a real failure —
+      # it means nothing recognisable as the client is running — and it says so
+      # instead of exiting 0 the way the old script did.
+      - name: Rebuild the client from wherever it is deployed
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ env.DEPLOY_HOST }}
           username: "root"
           key: ${{ env.DEPLOY_KEY }}
           port: 22
-          command_timeout: 5m
+          command_timeout: 30m
           script: |
             set -euxo pipefail
-            cd "${{ env.CLIENT_DIR }}"
+
+            # The compose project that owns the running client service.
+            PROJECT_DIR=""
+            for c in $(docker ps -q); do
+              svc=$(docker inspect "$c" --format '{{ index .Config.Labels "com.docker.compose.service" }}')
+              if [ "$svc" = "client" ] || [ "$svc" = "nextjs" ] || [ "$svc" = "frontend" ]; then
+                PROJECT_DIR=$(docker inspect "$c" --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}')
+                break
+              fi
+            done
+
+            if [ -z "$PROJECT_DIR" ] || [ ! -d "$PROJECT_DIR" ]; then
+              echo "::error::No running compose service named client/nextjs/frontend. Read the 'Locate the running client' step above for what is actually on this box."
+              exit 1
+            fi
+
+            # The compose file builds the client image from a source checkout.
+            # It is either this directory or its sibling, per the `build.context`
+            # in the two compose files in these repos.
+            SRC_DIR=""
+            for candidate in "$PROJECT_DIR/../client" "$PROJECT_DIR" "$PROJECT_DIR/client"; do
+              if [ -d "$candidate/.git" ]; then SRC_DIR=$(cd "$candidate" && pwd); break; fi
+            done
+
+            if [ -z "$SRC_DIR" ]; then
+              echo "::error::Found the compose project at $PROJECT_DIR but no client git checkout beside it."
+              exit 1
+            fi
+
             # `git pull` merges into whatever the box is on and exits 0 when it
-            # changes nothing, so a detached HEAD, a remote left on the old
+            # changes nothing, so a detached HEAD, a remote still on the old
             # repository name, or one local edit leaves the tree behind main
-            # with the deploy still green. Fetch and reset: the tree is main,
-            # or this step fails. Nothing on a deploy checkout is worth keeping.
+            # with the deploy green. Fetch and reset: the tree is main or this
+            # fails. Nothing on a deploy checkout is worth keeping.
+            cd "$SRC_DIR"
             git remote -v
             git fetch origin main
             git reset --hard origin/main
             git log -1 --oneline
 
-      # What nginx serves is the `client` service of the SERVER stack:
-      # `server/nginx/nginx.conf` proxies / to the `client:3500` upstream on
-      # that project's network, and `server/docker-compose.prod.yml` builds it
-      # from `../client` — the checkout updated above. Rebuilding only the
-      # client repo's own compose project updates a container nginx never talks
-      # to. Both are built from the one checkout, so whichever this box serves
-      # is current.
-      #
-      # --force-recreate because `up -d` leaves a running container alone when
-      # it decides the image is unchanged.
-      - name: Rebuild the served client service
-        uses: appleboy/ssh-action@v1.2.2
-        with:
-          host: ${{ env.DEPLOY_HOST }}
-          username: "root"
-          key: ${{ env.DEPLOY_KEY }}
-          port: 22
-          command_timeout: 30m
-          script: |
-            set -euxo pipefail
-            cd "${{ env.SERVER_DIR }}"
-            docker compose -f docker-compose.prod.yml up -d --build --force-recreate client
-            docker compose -f docker-compose.prod.yml ps client
-
-      - name: Rebuild the client repo's own stack
-        uses: appleboy/ssh-action@v1.2.2
-        with:
-          host: ${{ env.DEPLOY_HOST }}
-          username: "root"
-          key: ${{ env.DEPLOY_KEY }}
-          port: 22
-          command_timeout: 30m
-          script: |
-            set -euxo pipefail
-            cd "${{ env.CLIENT_DIR }}"
-            docker compose -f docker-compose.prod.yml up -d --build --force-recreate
-            docker compose -f docker-compose.prod.yml ps
+            # --force-recreate because `up -d` leaves a running container alone
+            # when it decides the image is unchanged.
+            cd "$PROJECT_DIR"
+            docker compose up -d --build --force-recreate client
+            docker compose ps client
 
       # The deployed commit adds this route; the build that has been live since
-      # before it does not have it. Asking the public address for it is the one
-      # check that covers the whole chain — source, image, container and the
-      # proxy in front of them — so a green deploy means the new build is being
-      # served, not merely that some container restarted.
+      # before it does not have it. Asking the public address for it covers the
+      # whole chain — source, image, container and the proxy in front of them —
+      # so green means the new build is being served, not merely that some
+      # container restarted.
       - name: Verify the new build is what the site serves
         run: |
           set -x
