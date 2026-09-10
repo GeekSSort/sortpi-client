@@ -27,3 +27,24 @@ export interface CreateEmployeePayload {
   status?: "Present" | "On Leave" | "Absent";
 }
 
+/**
+ * Somebody who works here — the roster, with no attendance in it.
+ *
+ * `EmployeeRecord` above is a DAY's attendance wearing an employee's name:
+ * its `status` is Present / On Leave / Absent, which is a fact about one date
+ * rather than about the person. The two were one type behind one screen, so
+ * "who works here" could not be answered without picking a day first.
+ */
+export interface EmployeeProfile {
+  id: string;
+  index: string;
+  name: string;
+  email: string;
+  phone: string;
+  department: string;
+  designation: string;
+  branch: string;
+  /** ISO date, formatted at the point of use. */
+  joinedOn: string;
+  isActive: boolean;
+}

@@ -96,18 +96,23 @@ function subtitleForPath(pathname: string): string | null {
     return "Create a new user account and assign their role, branch, and system access.";
   if (pathname.startsWith("/roles-permissions"))
     return "Manage system users, roles, branch access, and account status.";
+  // Longest path FIRST. These are prefix tests in order, so a bare `/hrm`
+  // above them answers for `/hrm/attendance` too — which is how the roster's
+  // old "attendance, check-in/out" line survived onto a page that no longer
+  // shows either. The `/hrm` and `/hrm/add` arms were also each written twice,
+  // and only the first of each was ever reached.
   if (pathname.startsWith("/hrm/payroll"))
     return "Manage employee salaries, allowances, deductions, attendance, overtime, and payment status from one place.";
+  if (pathname.startsWith("/hrm/attendance"))
+    return "Who turned up, when they checked in and out, for a day you choose.";
   if (pathname.startsWith("/hrm/add"))
     return "Add a new employee with their department, designation, and contact information.";
   if (pathname.startsWith("/hrm"))
-    return "Manage employee records, attendance, check-in/out, and employee status from one place.";
-  if (pathname.startsWith("/hrm/add"))
-    return "Add a new employee with their department, designation, and contact information.";
-  if (pathname.startsWith("/hrm"))
-    return "Manage employee records, attendance, check-in/out, and employee status from one place.";
+    return "Everybody who works here — department, designation, contact and joining date.";
   if (pathname === "/inventory")
     return "Manage, organize, and monitor all products across your inventory.";
+  if (pathname.startsWith("/finance/income-expense"))
+    return "What the shop took and what it spent, month by month.";
   return null;
 }
 
@@ -119,22 +124,24 @@ function titleForPath(pathname: string): string {
 
   if (pathname.startsWith("/customers")) return "Customers";
   if (pathname.startsWith("/inventory/stock/add")) return "Add Stock";
-  if (pathname.startsWith("/inventory/stock")) return "Stock";
+  if (pathname.startsWith("/inventory/stock")) return "Stocks";
   if (pathname.startsWith("/inventory/transfers")) return "Transfers";
   if (pathname.startsWith("/inventory/add")) return "Add New Product";
-  if (pathname.startsWith("/inventory")) return "Product";
+  if (pathname.startsWith("/inventory")) return "Products";
   if (pathname.startsWith("/purchases/suppliers/add")) return "Add Supplier";
   if (pathname.startsWith("/purchases/suppliers")) return "Suppliers";
   if (pathname.startsWith("/purchases")) return "Purchase History";
   if (pathname.startsWith("/hrm/payroll")) return "Payroll";
+  if (pathname.startsWith("/hrm/attendance")) return "Attendance";
   if (pathname.startsWith("/hrm/add")) return "Add Employees";
-  if (pathname.startsWith("/hrm")) return "All Employees";
+  if (pathname.startsWith("/hrm")) return "Employees";
   if (pathname.startsWith("/roles-permissions/add")) return "Add User";
   if (pathname.startsWith("/roles-permissions")) return "User List";
   if (pathname.startsWith("/settings")) return "Settings";
   if (pathname.startsWith("/reports")) return "Reports";
   if (pathname.startsWith("/discount")) return "Discount";
   if (pathname.startsWith("/ceo-overview")) return "CEO Overview";
+  if (pathname.startsWith("/finance/income-expense")) return "Income & Expense";
   return "Dashboard";
 }
 

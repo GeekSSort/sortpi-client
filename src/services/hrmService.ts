@@ -1,4 +1,4 @@
-import { EmployeeRecord, HrmQueryFilter } from "@/types/hrm";
+import { EmployeeProfile, EmployeeRecord, HrmQueryFilter } from "@/types/hrm";
 import { apiFetch, apiList, ApiError, PagedResult, tokenStore } from "./apiClient";
 import { AttendanceToday, toEmployeeRecord } from "./mappers/employee";
 import { BranchService } from "./branchService";
@@ -92,6 +92,67 @@ export class HrmService {
   }
 
   /** Departments and designations, for the Add Employee form. */
+  /**
+   * The roster: who works here, with no day attached.
+   *
+   * A separate call from `getEmployees` rather than a flag on it, because the
+   * two answer different questions and cost different things. `getEmployees`
+   * joins a day of attendance onto every row — two requests, and meaningless
+   * without a date — which is exactly what made "show me the staff list" need
+   * a date picker.
+   */
+  static async getRoster(params?: {
+    search?: string;
+    department?: string;
+    active?: boolean;
+    page?: number;
+    limit?: number;
+  }): Promise<PagedResult<EmployeeProfile>> {
+    const page = params?.page ?? 1;
+    const limit = params?.limit ?? 8;
+
+    const query = new URLSearchParams();
+    if (params?.search) query.set("search", params.search);
+    if (params?.department) query.set("department", params.department);
+    if (params?.active !== undefined) query.set("is_active", String(params.active));
+    query.set("page", String(page));
+    query.set("limit", String(limit));
+
+    const rows = await apiList<any>(
+      `/hrm/employees/?${query.toString()}`,
+      { method: "GET" },
+      (r) => r
+    );
+    const offset = (page - 1) * limit;
+
+    return {
+      data: (rows.data || []).map((row: any, i: number): EmployeeProfile => {
+        const first = String(row?.firstName ?? row?.first_name ?? "");
+        const last = String(row?.lastName ?? row?.last_name ?? "");
+        return {
+          id: String(row?.id ?? ""),
+          index: String(offset + i + 1).padStart(2, "0"),
+          name: `${first} ${last}`.trim() || "—",
+          email: String(row?.email ?? ""),
+          phone: String(row?.phone ?? ""),
+          department: String(row?.departmentName ?? row?.department_name ?? ""),
+          designation: String(row?.designationName ?? row?.designation_name ?? ""),
+          branch: String(row?.branchName ?? row?.branch_name ?? ""),
+          joinedOn: String(row?.dateOfJoining ?? row?.date_of_joining ?? ""),
+          // `is_active` is the employment flag — NOT the Present/Absent status
+          // the attendance screen shows. Conflating the two is what put a
+          // person who was simply off sick into the same column as somebody
+          // who had left the company.
+          isActive: (row?.isActive ?? row?.is_active ?? true) !== false,
+        };
+      }),
+      total: rows.total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(rows.total / limit)),
+    };
+  }
+
   static async getLookups(): Promise<{ departments: Lookup[]; designations: Lookup[] }> {
     const [departments, designations] = await Promise.all([
       apiList<Lookup>("/hrm/departments/?limit=100", { method: "GET" }, (r: any) => ({
@@ -187,6 +248,51 @@ export class HrmService {
         ...(time ? { [field]: `${time}:00` } : {}),
       }),
     });
+  }
+
+  /**
+   * Correct a staff record.
+   *
+   * A PATCH, so it changes what it names and nothing else — sending the whole
+   * record back would blank every field the form did not carry.
+   */
+  static async updateEmployee(
+    id: string,
+    patch: {
+      firstName?: string;
+      lastName?: string;
+      email?: string;
+      phone?: string;
+      departmentId?: string;
+      designationId?: string;
+      dateOfJoining?: string;
+    }
+  ): Promise<void> {
+    const body: Record<string, unknown> = {};
+    if (patch.firstName !== undefined) body.first_name = patch.firstName;
+    if (patch.lastName !== undefined) body.last_name = patch.lastName;
+    if (patch.email !== undefined) body.email = patch.email;
+    if (patch.phone !== undefined) body.phone = patch.phone;
+    if (patch.departmentId) body.department_id = patch.departmentId;
+    if (patch.designationId) body.designation_id = patch.designationId;
+    if (patch.dateOfJoining) body.date_of_joining = patch.dateOfJoining;
+
+    await apiFetch(`/hrm/employees/${id}/`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  }
+
+  /**
+   * Remove a staff record.
+   *
+   * The API refuses this for anybody who has ever been paid — a payslip is a
+   * financial document and has to keep naming somebody — and answers
+   * `EMPLOYEE_HAS_PAYROLL` saying to mark them as left instead. The screen
+   * shows that message rather than a generic failure.
+   */
+  static async deleteEmployee(id: string): Promise<void> {
+    await apiFetch(`/hrm/employees/${id}/`, { method: "DELETE" });
   }
 
   static async deactivate(employeeId: string): Promise<void> {

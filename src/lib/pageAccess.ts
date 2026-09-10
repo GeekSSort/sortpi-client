@@ -35,8 +35,21 @@
 
 export interface PageAccess {
   href: string;
-  /** Any one of these is enough. Empty means everybody. */
+  /** Any one of these is enough, unless `requireAll`. Empty means everybody. */
   codes: string[];
+  /**
+   * Every code, not any one of them.
+   *
+   * "Any" is right for a screen that is several reports behind one address —
+   * a role holding one of `/reports`' seven codes has a reason to be there.
+   * It is wrong for a screen that COMBINES two things and shows the
+   * difference: Income & Expense computes a net balance, so an account that
+   * may see takings but not spending would be shown a total made of half the
+   * books with nothing on the page to say so. The API refuses that pair
+   * together, and a menu that offers what the API refuses is the exact defect
+   * this map exists to fix.
+   */
+  requireAll?: boolean;
 }
 
 /**
@@ -70,6 +83,11 @@ export const BACK_OFFICE_PAGES: PageAccess[] = [
   },
   { href: "/inventory/transfers", codes: ["inventory.transfer", "inventory.receive_transfer"] },
   { href: "/purchases", codes: ["purchase.view"] },
+  // Both halves, because the screen shows both and its "net balance" is the
+  // difference. Somebody holding only one of these would read a total made of
+  // half the books with nothing on the page to say so — which is why the API
+  // requires the pair too.
+  { href: "/finance/income-expense", codes: ["income.view", "expense.view"], requireAll: true },
   { href: "/purchases/suppliers", codes: ["supplier.view"] },
   { href: "/customers", codes: ["customer.view"] },
   {
@@ -85,6 +103,11 @@ export const BACK_OFFICE_PAGES: PageAccess[] = [
   },
   { href: "/discount", codes: ["product.update", "product.update_price"] },
   { href: "/hrm", codes: ["hrm.view"] },
+  { href: "/hrm/attendance", codes: ["hrm.view", "hrm.attendance"] },
+  // `hrm.payroll` — NOT `payroll.view`/`payroll.run`, which are not codes this
+  // system has. Naming one that does not exist hides the row from everybody,
+  // including Admin, because no permission list can ever contain it.
+  { href: "/hrm/payroll", codes: ["hrm.payroll", "hrm.view_salary"] },
   { href: "/roles-permissions", codes: ["role.view", "user.view"] },
   { href: "/settings", codes: ["settings.view"] },
 ];
@@ -92,10 +115,16 @@ export const BACK_OFFICE_PAGES: PageAccess[] = [
 /** The one page that is not back office: the till itself. */
 export const POS_HOME = "/pos";
 
-function holds(permissions: string[] | undefined, codes: string[]): boolean {
+function holds(
+  permissions: string[] | undefined,
+  codes: string[],
+  requireAll = false
+): boolean {
   if (codes.length === 0) return true;
   if (!permissions || permissions.length === 0) return false;
-  return codes.some((code) => permissions.includes(code));
+  return requireAll
+    ? codes.every((code) => permissions.includes(code))
+    : codes.some((code) => permissions.includes(code));
 }
 
 /**
@@ -111,7 +140,7 @@ export function canOpenPage(pathname: string, permissions: string[] | undefined)
   const entry = BACK_OFFICE_PAGES.filter(
     (page) => pathname === page.href || pathname.startsWith(`${page.href}/`)
   ).sort((a, b) => b.href.length - a.href.length)[0];
-  return entry ? holds(permissions, entry.codes) : true;
+  return entry ? holds(permissions, entry.codes, entry.requireAll) : true;
 }
 
 /**
@@ -121,7 +150,9 @@ export function canOpenPage(pathname: string, permissions: string[] | undefined)
  * somebody's home.
  */
 export function firstBackOfficePage(permissions: string[] | undefined): string | null {
-  const found = BACK_OFFICE_PAGES.find((page) => holds(permissions, page.codes));
+  const found = BACK_OFFICE_PAGES.find((page) =>
+    holds(permissions, page.codes, page.requireAll)
+  );
   return found ? found.href : null;
 }
 

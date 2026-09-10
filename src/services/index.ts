@@ -18,3 +18,4 @@ export * from "./settingsService";
 export * from "./notificationService";
 export * from "./reportService";
 export * from "./discountService";
+export * from "./financeService";

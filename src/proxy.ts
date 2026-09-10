@@ -34,6 +34,7 @@ const BACK_OFFICE = [
   "/customers",
   "/inventory",
   "/purchases",
+  "/finance",
   "/hrm",
   "/roles-permissions",
   "/settings",

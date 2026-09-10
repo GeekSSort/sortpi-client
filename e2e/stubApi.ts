@@ -44,7 +44,7 @@ const ALL_PERMISSIONS = [
   "purchase.confirm",
   "supplier.view",
   "supplier.create",
-  "supplier.pay",
+  "supplier.payment",
   "report.sales",
   "report.inventory",
   "report.purchase",
@@ -52,18 +52,32 @@ const ALL_PERMISSIONS = [
   "report.customer",
   "report.supplier",
   "report.export",
-  "discount.view",
-  "discount.create",
   "hrm.view",
   "hrm.create",
-  "payroll.view",
-  "payroll.run",
+  // The real codes. This list used to carry `payroll.view` and `payroll.run`,
+  // which this system does not define — so every stubbed test signed in with
+  // permissions no real account can hold, and a screen gated on a MISSPELLED
+  // code passed here and was invisible in production.
+  "hrm.payroll",
+  "hrm.view_salary",
+  "hrm.attendance",
   "user.view",
   "user.create",
   "role.view",
   "role.update",
   "settings.view",
   "settings.update",
+  // Both halves of the books. The Income & Expense screen needs the pair —
+  // its net balance is the difference — and `pageAccess` marks that entry
+  // `requireAll`, so granting one would hide the page rather than gate it.
+  "income.view",
+  "income.create",
+  "income.update",
+  "income.delete",
+  "expense.view",
+  "expense.create",
+  "expense.update",
+  "expense.delete",
   "branch.view",
   "branch.create",
   "billing.view",
@@ -287,6 +301,39 @@ export async function stubApi(
           { total: 1, page: 1, limit: 20 }
         );
       if (path.startsWith("/billing/plans") || path.startsWith("/plans")) return ok([], { total: 0 });
+      // The Income & Expense screen. Empty totals and a flat year, so the page
+      // paints its real shape — twelve chart columns, the matrix headers, the
+      // empty states — without any test having to seed a shop's books.
+      if (path.startsWith("/income-expense/summary"))
+        return ok({
+          year: 2026,
+          month: null,
+          totals: {
+            income: "0.0000",
+            expense: "0.0000",
+            net: "0.0000",
+            transactions: 0,
+            margin_percent: "0.0000",
+          },
+          trend: [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+          ].map((label, i) => ({
+            month: i + 1,
+            label,
+            income: "0.0000",
+            expense: "0.0000",
+          })),
+          matrix: {
+            income: [],
+            expense: [],
+            net: { months: Array.from({ length: 12 }, () => "0.0000"), total: "0.0000" },
+          },
+        });
+      if (path.startsWith("/income-expense/transactions"))
+        return ok([], { total: 0, page: 1, limit: 8 });
+      if (path.startsWith("/income-categories") || path.startsWith("/expense-categories"))
+        return ok([], { total: 0 });
       // Anything else: an empty page of results. `total`, `page` and `limit`
       // are read by the pagination bar, so they have to be present and honest.
       return ok([], { total: 0, page: 1, limit: 20 });

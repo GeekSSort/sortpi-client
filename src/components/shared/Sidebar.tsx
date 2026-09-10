@@ -16,6 +16,7 @@ import {
   CustomersIcon,
   DashboardIcon,
   DiscountIcon,
+  FinanceIcon,
   HrmIcon,
   InventoryIcon,
   LogOutIcon,
@@ -117,9 +118,56 @@ const NAV: NavItem[] = [
       },
     ],
   },
+  {
+    // Figma 369:5812 — Finance sits directly after Purchases, and its two
+    // children are the shop's own books: what came in and what went out, and
+    // the vouchers behind them.
+    name: "Finance",
+    href: "/finance/income-expense",
+    icon: FinanceIcon,
+    match: (p) => p.startsWith("/finance"),
+    // Voucher is in the Figma group (369:5812) and is NOT listed here: it has
+    // no design and no implementation, and a menu row that leads to a
+    // placeholder is how somebody concludes the product is half-built. Add it
+    // back beside this one when the Voucher frames arrive.
+    children: [
+      {
+        name: "Income & Expense",
+        href: "/finance/income-expense",
+        match: (p) => p.startsWith("/finance/income-expense"),
+      },
+    ],
+  },
   { name: "Reports", href: "/reports", icon: ReportsIcon, match: (p) => p.startsWith("/reports") },
   { name: "Discount", href: "/discount", icon: DiscountIcon, match: (p) => p.startsWith("/discount") },
-  { name: "HRM", href: "/hrm", icon: HrmIcon, match: (p) => p.startsWith("/hrm") },
+  {
+    // Three separate jobs that were sharing one screen: who works here, who
+    // turned up today, and what they were paid. The roster and the attendance
+    // sheet in particular were one table — an employee list with Check In and
+    // Present/Absent columns — so neither question could be answered without
+    // reading around the other.
+    name: "HRM",
+    href: "/hrm",
+    icon: HrmIcon,
+    match: (p) => p.startsWith("/hrm"),
+    children: [
+      {
+        name: "Employees",
+        href: "/hrm",
+        match: (p) => p === "/hrm" || p.startsWith("/hrm/add"),
+      },
+      {
+        name: "Attendance",
+        href: "/hrm/attendance",
+        match: (p) => p.startsWith("/hrm/attendance"),
+      },
+      {
+        name: "Payroll",
+        href: "/hrm/payroll",
+        match: (p) => p.startsWith("/hrm/payroll"),
+      },
+    ],
+  },
   {
     name: "Roles & Permissions",
     href: "/roles-permissions",

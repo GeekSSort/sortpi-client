@@ -75,6 +75,11 @@ const ACCOUNTANT = [
   "finance.view",
   "finance.view_pl",
   "expense.view",
+  // Both halves of the books. `/finance/income-expense` is marked
+  // `requireAll`, because its net balance is the difference between the two —
+  // an account holding one of them would be shown a total made of half the
+  // books with nothing on the page to say so.
+  "income.view",
   "customer.view",
   "supplier.view",
   "report.sales",
@@ -93,6 +98,9 @@ const ADMIN = [
   "role.view",
   "settings.view",
   "hrm.view",
+  // `hrm.payroll`, NOT `payroll.view` — the latter is not a code this system
+  // defines, and gating on it hid the Payroll row from everybody.
+  "hrm.payroll",
   "branch.view",
 ];
 
