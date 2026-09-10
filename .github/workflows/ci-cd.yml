@@ -242,20 +242,26 @@ jobs:
             # this box the compose project lives in the SERVER checkout — so
             # the client deploy fetched the server repository, over a remote it
             # has no credential for, and died on "could not read Username".
-            # Existence is not identity: compare the remote against the repo
-            # the workflow is running for.
-            WANT=$(basename "$GH_REPO")
+            #
+            # Matching on the exact name then failed too, because the repos
+            # were renamed: GitHub says `sortpi-client` and the remote on the
+            # box still says `sortpoint-client`. A name is not stable enough to
+            # identify a checkout by. The ROLE is — one repository here ends in
+            # "client" and the other in "server", through every rename so far —
+            # so that is what is compared.
+            ROLE="client"
             SRC_DIR=""
             for candidate in "$PROJECT_DIR/../client" "$PROJECT_DIR/client" "$PROJECT_DIR"; do
               [ -d "$candidate/.git" ] || continue
               url=$(git -C "$candidate" remote get-url origin 2>/dev/null || echo "")
-              case "$(basename "$url" .git)" in
-                "$WANT") SRC_DIR=$(cd "$candidate" && pwd); break ;;
+              name=$(basename "$url" .git | tr '[:upper:]' '[:lower:]')
+              case "$name" in
+                *"$ROLE") SRC_DIR=$(cd "$candidate" && pwd); break ;;
               esac
             done
 
             if [ -z "$SRC_DIR" ]; then
-              echo "::error::No checkout of $GH_REPO beside the compose project at $PROJECT_DIR."
+              echo "::error::No $ROLE checkout at or beside the compose project at $PROJECT_DIR."
               exit 1
             fi
 
@@ -266,6 +272,12 @@ jobs:
             # fails. Nothing on a deploy checkout is worth keeping.
             cd "$SRC_DIR"
             git remote -v
+
+            # Point the remote at the name GitHub uses now. The old one still
+            # redirects, so nothing was broken by it, but every fetch printed a
+            # "this repository moved" notice and the next rename might not
+            # redirect at all.
+            git remote set-url origin "https://github.com/${GH_REPO}.git"
 
             # Fetch through a URL carrying the job's token rather than the
             # remote on disk. The checkouts here are on HTTPS with no
