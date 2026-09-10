@@ -8,6 +8,7 @@ import {
 } from "@/types/pos";
 import { apiFetch, apiList, apiListAll, ApiError, toAmount, tokenStore } from "./apiClient";
 import { toProductItem } from "./mappers/product";
+import { tenderFor } from "@/lib/paymentMethods";
 
 export class PosService {
   /**
@@ -336,17 +337,13 @@ export class PosService {
         ...(payload.taxRate != null ? { tax_rate: payload.taxRate.toFixed(4) } : {}),
         payments: [
           {
-            payment_method: (() => {
-              const m = String(payload.paymentMethod || "Cash").toLowerCase();
-              if (m === "cash") return "CASH";
-              if (m.includes("bkash") || m.includes("nagad") || m.includes("rocket") || m.includes("mobile") || m.includes("upay")) {
-                return "MOBILE";
-              }
-              if (m.includes("bank") || m.includes("transfer") || m.includes("wire")) {
-                return "BANK";
-              }
-              return "CARD";
-            })(),
+            // Which ledger the money lands in. The brand the cashier picked
+            // rides along in `payment_provider`; this is the server's coarse
+            // `PaymentMethod`, and the mapping is the catalogue's — it used to
+            // be a substring ladder here that ended in `return "CARD"`, so a
+            // cheque and every shop-defined tender were booked as card takings
+            // and no reconciliation against the terminal could balance.
+            payment_method: tenderFor(String(payload.paymentMethod || "Cash")),
             payment_provider: String(payload.paymentMethod || "Cash"),
             ...(payload.referenceNo && payload.referenceNo.trim()
               ? { reference_no: payload.referenceNo.trim() }

@@ -11,6 +11,7 @@ import ProductImage from "@/components/shared/ProductImage";
 import { useProductDiscounts } from "@/lib/usePosDiscounts";
 import { amountOff } from "@/services/discountService";
 import { usePosDraft, patchPosDraft } from "@/components/modules/pos/posCart";
+import { parseOnlineMethods } from "@/lib/paymentMethods";
 
 /**
  * Figma: SortPi — POS invoice column 45:2333.
@@ -231,21 +232,20 @@ export default function CartPanel({
     };
   }, [shopValues]);
 
-  const onlineMethods = useMemo(() => {
-    const raw = shopValues?.["pos.online_payment_methods"];
-    if (typeof raw === "string" && raw.trim()) {
-      const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
-      if (list.length > 0) {
-        if (!list.some((x) => x.toLowerCase() === "others" || x.toLowerCase() === "other")) {
-          if (raw.trim() === "Card, bKash, Nagad, Rocket, Bank Transfer") {
-            return [...list, "Others"];
-          }
-        }
-        return list;
-      }
-    }
-    return ["Card", "bKash", "Nagad", "Rocket", "Bank Transfer", "Others"];
-  }, [shopValues]);
+  /**
+   * The non-cash tenders this shop takes, exactly as ticked in Settings and in
+   * the order shown there.
+   *
+   * The parsing lives in `paymentMethods.ts` with the catalogue the settings
+   * boxes are built from. It used to live here, with its own fallback list and
+   * a special case that appended "Others" to one exact spelling of the old
+   * default — so the till and the settings screen could disagree about what a
+   * shop accepted, and did.
+   */
+  const onlineMethods = useMemo(
+    () => parseOnlineMethods(shopValues?.["pos.online_payment_methods"]),
+    [shopValues]
+  );
   // Empty means "the shop's usual rate". A figure here is this sale only.
   /**
    * The VAT override for this sale. `null` means "whatever the shop is set to";

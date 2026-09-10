@@ -130,10 +130,19 @@ export async function stubApi(
    * one, and Playwright runs the LAST registered handler first, so that fights
    * the stub rather than layering on it.
    */
-  options: { without?: string[] } = {}
+  options: { without?: string[]; subscription?: Record<string, unknown> | null } = {}
 ) {
   const permissions = ALL_PERMISSIONS.filter((code) => !(options.without ?? []).includes(code));
-  const me = { ...ME, permissions };
+  // `subscription` for the same reason as `without`: the plan block drives the
+  // Upgrade dialog's whole arithmetic, and the default here carries no limits
+  // at all. Overriding it from a second route handler means re-sending the
+  // permission list too, and forgetting to is indistinguishable from a signed
+  // out session — every gated control simply absent, the page still painting.
+  const me = {
+    ...ME,
+    permissions,
+    ...(options.subscription !== undefined ? { subscription: options.subscription } : {}),
+  };
   /**
    * Discounts that have been PUT during this test.
    *

@@ -1,10 +1,9 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import { ApiError } from "@/services/apiClient";
-import { BillingService } from "@/services/billingService";
-import { useSession, clearSessionCache } from "@/services/useSession";
-import { invalidate, useQuery } from "@/lib/query/useQuery";
+import { BillingService, UpgradePlan } from "@/services/billingService";
+import { useSession } from "@/services/useSession";
+import { useQuery } from "@/lib/query/useQuery";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
 
 /**
@@ -23,6 +22,16 @@ import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/s
  * Shown only to somebody who could actually use it: `billing.manage` is the
  * Admin's, and a cashier seeing "Upgrade" in the bar would be reading an offer
  * the server refuses.
+ *
+ * NOTHING IS CHARGED YET, so nothing is switched yet. There is no gateway and
+ * no card on file, and the subscription is what every ceiling in the app is
+ * checked against — an owner pressing a button and getting a dearer plan for
+ * free is the one outcome worse than not being able to upgrade at all. So the
+ * list still shows what a company could move to and what it would cost, and
+ * confirming records the request and says who to talk to. The
+ * `POST /billing/subscription/upgrade` endpoint is untouched and still works;
+ * it is this dialog that no longer calls it. Restore the call in `request()`
+ * once payment methods are integrated.
  */
 
 const LIMIT_LABEL: Record<string, string> = {
@@ -83,23 +92,29 @@ export function UpgradeDialog({
 }) {
   const { user: session } = useSession();
   const [chosen, setChosen] = useState<string>("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
+  /**
+   * The plan somebody asked for, held here instead of sent.
+   *
+   * Nothing charges for a plan yet: there is no gateway, no invoice and no
+   * card on file, so `POST /billing/subscription/upgrade` would move a company
+   * onto a dearer plan and bill nobody. Until a payment method is wired up the
+   * dialog takes the request and says who to talk to, rather than quietly
+   * handing out plans for free.
+   */
+  const [requested, setRequested] = useState<UpgradePlan | null>(null);
 
   const mayManage = session?.permissions.includes("billing.manage") ?? false;
   const subscription = session?.subscription ?? null;
 
   // Reset when it OPENS, adjusted during render rather than in an effect —
   // setState in an effect body is a cascading render and a lint error here.
-  // Without it, reopening the dialog shows the previous attempt's error or its
-  // "you are now on X" message as though it had just happened.
+  // Without it, reopening the dialog shows the last request's "payment method
+  // required" panel as though it had just been asked for again.
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
     setWasOpen(open);
     if (open) {
-      setError(null);
-      setDone(null);
+      setRequested(null);
       setChosen("");
     }
   }
@@ -167,26 +182,17 @@ export function UpgradeDialog({
   // them makes the limit refusals unexplainable.
   if (!subscription) return null;
 
-  const upgrade = async () => {
-    if (!chosen) return;
-    setSaving(true);
-    setError(null);
-    try {
-      await BillingService.upgrade(chosen);
-      const name = plans.find((p) => p.code === chosen)?.name ?? chosen;
-      setDone(`You are now on ${name}.`);
-      // `/auth/me` carries the limits every screen gates on, so the cached
-      // session is stale the moment the plan moves — a branch switcher still
-      // saying "you are using all 1 branches" would be worse than no message.
-      clearSessionCache();
-      invalidate("billing-plans", "dashboard");
-    } catch (e) {
-      setError(
-        e instanceof ApiError ? e.message : "That plan change could not be made."
-      );
-    } finally {
-      setSaving(false);
-    }
+  /**
+   * Take the request; do not make the change.
+   *
+   * `BillingService.upgrade` is deliberately not called. The subscription is
+   * what every ceiling in the app is checked against, so moving it is the one
+   * thing here that must not happen before there is a way to charge for it.
+   */
+  const request = () => {
+    const plan = plans.find((p) => p.code === chosen);
+    if (!plan) return;
+    setRequested(plan);
   };
 
   return (
@@ -194,20 +200,30 @@ export function UpgradeDialog({
       <Modal
         open={open && mayManage}
         onClose={onClose}
-        title={done ? "Plan changed" : "Move up a plan"}
+        title={requested ? "Payment method required" : "Move up a plan"}
         width={620}
         footer={
-          done ? (
-            <button
-              type="button"
-              style={{ backgroundImage: GOLD_GRADIENT }}
-              className={MODAL_PRIMARY}
-              // A real reload: the limits every screen gates on come from
-              // `/auth/me`, and half the app is holding the old ones.
-              onClick={() => window.location.reload()}
-            >
-              Done
-            </button>
+          requested ? (
+            <>
+              {/* Back, not Cancel: somebody who has just been told their plan
+                  did not change should be able to look at the list again
+                  without reopening the dialog from the bar. */}
+              <button
+                type="button"
+                className={MODAL_GHOST}
+                onClick={() => setRequested(null)}
+              >
+                Back to plans
+              </button>
+              <button
+                type="button"
+                style={{ backgroundImage: GOLD_GRADIENT }}
+                className={MODAL_PRIMARY}
+                onClick={onClose}
+              >
+                Got it
+              </button>
+            </>
           ) : (
             <>
               <button type="button" className={MODAL_GHOST} onClick={onClose}>
@@ -215,19 +231,67 @@ export function UpgradeDialog({
               </button>
               <button
                 type="button"
-                disabled={saving || !chosen}
+                disabled={!chosen}
                 style={{ backgroundImage: GOLD_GRADIENT }}
                 className={MODAL_PRIMARY}
-                onClick={upgrade}
+                onClick={request}
               >
-                {saving ? "Changing..." : "Move to this plan"}
+                Continue
               </button>
             </>
           )
         }
       >
-        {done ? (
-          <p className="text-[14px] leading-[1.6] text-[#525252]">{done}</p>
+        {requested ? (
+          /* Why nothing happened, and what to do instead. A dialog that just
+             closed would read as a plan change that silently failed. */
+          <div className="flex flex-col gap-[14px]">
+            <div className="flex items-start gap-[12px] rounded-[12px] border border-solid border-[#f5b800] bg-[#fffaeb] p-[14px]">
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 20 20"
+                fill="none"
+                aria-hidden
+                className="mt-[1px] shrink-0"
+              >
+                <circle cx="10" cy="10" r="7.5" stroke="#b58600" strokeWidth="1.6" />
+                <path
+                  d="M10 6.4v4.2"
+                  stroke="#b58600"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+                <circle cx="10" cy="13.4" r="1" fill="#b58600" />
+              </svg>
+              <p className="text-[14px] leading-[1.6] text-[#7a5c00]">
+                Your plan has <span className="font-semibold">not</span> been changed. Paying
+                for a plan online is not available yet, so plan changes are still made by
+                hand.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between gap-[12px] rounded-[12px] border border-solid border-[#eaeaea] bg-white p-[12px]">
+              <span className="flex min-w-0 flex-col gap-[2px]">
+                <span className="text-[12px] text-[#8f8d87]">You asked for</span>
+                <span className="text-[15px] font-semibold text-[#1e1e1e]">
+                  {requested.name}
+                </span>
+              </span>
+              <span className="shrink-0 text-[14px] font-semibold whitespace-nowrap text-[#1e1e1e]">
+                ৳{requested.price.toLocaleString("en-IN")}
+                <span className="text-[12px] font-medium text-[#8f8d87]">
+                  /{requested.interval.toLowerCase() === "yearly" ? "yr" : "mo"}
+                </span>
+              </span>
+            </div>
+
+            <p className="text-[13px] leading-[1.7] text-[#525252]">
+              Get in touch with us with your company name and the plan above, and we will
+              move you across. You will keep {subscription.planName || subscription.plan}{" "}
+              and everything on it until then.
+            </p>
+          </div>
         ) : (
           <div className="flex flex-col gap-[12px]">
             {/* Usage against the ceiling, in one line rather than a paragraph.
@@ -292,15 +356,6 @@ export function UpgradeDialog({
                 </button>
               ))}
             </div>
-
-            {error && (
-              <p
-                role="alert"
-                className="rounded-[10px] bg-[#fdeceb] px-[12px] py-[10px] text-[13px] font-medium text-[#a02620]"
-              >
-                {error}
-              </p>
-            )}
           </div>
         )}
       </Modal>

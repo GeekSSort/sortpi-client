@@ -10,6 +10,12 @@ import { CompanyProfile } from "@/types/settings";
 import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
 import { FormSkeleton } from "@/components/shared/Skeleton";
 import { QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
+import {
+  PAYMENT_METHOD_CATALOGUE,
+  findPaymentMethod,
+  parseOnlineMethods,
+  serializeOnlineMethods,
+} from "@/lib/paymentMethods";
 
 /**
  * Every field blank. The form used to open on a made-up company — "ABC Retail
@@ -34,7 +40,8 @@ type TillSettings = {
   vat: string;
   vatIncluded: boolean;
   maxDiscount: string;
-  onlineMethods: string;
+  /** The non-cash tenders the till offers, in the order it shows them. */
+  onlineMethods: string[];
 };
 
 export default function SettingsPage() {
@@ -79,7 +86,7 @@ export default function SettingsPage() {
       vat: pct(v["tax.default_rate"]),
       vatIncluded: String(v["tax.inclusive_by_default"] ?? "true") !== "false",
       maxDiscount: pct(v["pos.max_discount_percent"]),
-      onlineMethods: v["pos.online_payment_methods"] ?? "Card, bKash, Nagad, Rocket, Bank Transfer, Others",
+      onlineMethods: parseOnlineMethods(v["pos.online_payment_methods"]),
     };
   }, [valuesQuery.data]);
 
@@ -90,6 +97,40 @@ export default function SettingsPage() {
     setProfileEdits((prev) => ({ ...prev, [field]: value }));
   };
 
+  /**
+   * The boxes to show: the catalogue, then anything this shop saved that the
+   * catalogue has never heard of.
+   *
+   * The second half is the reason this is not just the catalogue. The setting
+   * was a free-text box before, so a shop may have "Due on delivery" in it,
+   * and a grid of fixed checkboxes would drop that tender the first time
+   * anybody pressed Save without ever showing it to them.
+   */
+  const methodRows = React.useMemo(() => {
+    const known = PAYMENT_METHOD_CATALOGUE.map((option) => option.code);
+    const custom = (savedTill?.onlineMethods ?? []).filter((m) => !findPaymentMethod(m));
+    return [...known, ...custom];
+  }, [savedTill]);
+
+  const toggleMethod = (code: string) => {
+    setTillEdits((prev) => {
+      const current = prev.onlineMethods ?? savedTill?.onlineMethods ?? [];
+      const isOn = current.some((m) => m.toLowerCase() === code.toLowerCase());
+      const next = isOn
+        ? current.filter((m) => m.toLowerCase() !== code.toLowerCase())
+        : [...current, code];
+      // Back into the order of the boxes, so the till lists tenders the way
+      // this screen does rather than in whatever order they were ticked.
+      const rank = new Map(methodRows.map((c, i) => [c.toLowerCase(), i]));
+      next.sort(
+        (a, b) =>
+          (rank.get(a.toLowerCase()) ?? methodRows.length) -
+          (rank.get(b.toLowerCase()) ?? methodRows.length)
+      );
+      return { ...prev, onlineMethods: next };
+    });
+  };
+
   const loading = profileQuery.loading || valuesQuery.loading;
   const error = profileQuery.error ?? valuesQuery.error;
   const ready = profile !== null && till !== null;
@@ -97,6 +138,12 @@ export default function SettingsPage() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!profile || !till) return;
+    // Saving none would leave the till a Pay Online button with an empty
+    // dialog behind it. Cash is always there; this list is everything else.
+    if (till.onlineMethods.length === 0) {
+      setSaveError("Tick at least one payment method \u2014 the till needs something to offer besides cash.");
+      return;
+    }
     setIsSaving(true);
     setSaveError(null);
     try {
@@ -113,7 +160,7 @@ export default function SettingsPage() {
         ),
         SettingsService.setValue(
           "pos.online_payment_methods",
-          till.onlineMethods.trim() || "Card, bKash, Nagad, Rocket, Bank Transfer, Others",
+          serializeOnlineMethods(till.onlineMethods),
           "STRING"
         ),
       ]);
@@ -343,21 +390,51 @@ export default function SettingsPage() {
             />
           </div>
 
+          {/* The tenders this shop takes.
+              Boxes rather than the comma-separated text box that used to be
+              here: "Bkash", "bkash " and "BKASH" were three different methods
+              to that box, and a typo removed a tender from the till without
+              saying so. What is ticked here IS the "Pay Online" dialog. */}
           <div className="sm:col-span-2">
             <label className="text-xs font-bold text-gray-800 block mb-1.5">
-              Online Payment Methods (POS)
+              Payment Methods (POS)
             </label>
-            <input
-              type="text"
-              value={till.onlineMethods}
-              onChange={(e) =>
-                setTillEdits((t) => ({ ...t, onlineMethods: e.target.value }))
-              }
-              placeholder="Card, bKash, Nagad, Rocket, Bank Transfer, Others"
-              className="w-full border border-gray-200 focus:border-amber-400 rounded-xl px-4 py-2.5 text-xs text-gray-800 bg-white focus:outline-none transition-colors"
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              Comma-separated list of payment options displayed in the &quot;Pay Online&quot; modal at the till.
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {methodRows.map((code) => {
+                const option = findPaymentMethod(code);
+                const checked = till.onlineMethods.some(
+                  (m) => m.toLowerCase() === code.toLowerCase()
+                );
+                return (
+                  <label
+                    key={code}
+                    className={`flex items-center gap-2.5 rounded-xl border px-3.5 py-2.5 cursor-pointer transition-colors ${
+                      checked
+                        ? "border-amber-400 bg-amber-50/60"
+                        : "border-gray-200 bg-white hover:bg-gray-50"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleMethod(code)}
+                      className="size-4 accent-[#F4B41A] cursor-pointer shrink-0"
+                    />
+                    <span className="flex min-w-0 flex-col">
+                      <span className="text-xs font-bold text-gray-800 truncate">
+                        {option?.label ?? code}
+                      </span>
+                      <span className="text-[11px] text-gray-500 truncate">
+                        {option?.hint ?? "Set up by this shop"}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            <p className="text-xs text-gray-500 mt-1.5">
+              Ticked methods are what the cashier sees in the &quot;Pay Online&quot; dialog at
+              the till, in this order. Cash is always accepted and has its own button.
             </p>
           </div>
 
