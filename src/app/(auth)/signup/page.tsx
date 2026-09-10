@@ -214,8 +214,8 @@ export default function SignupPage() {
   }, [email, step]);
 
   const phoneCountryInfo = findCountry(phoneCountry);
-  /** Empty is allowed; anything typed has to be a real number for that country. */
-  const phoneOk = !phone.trim() || isValidNational(phone, phoneCountryInfo);
+  /** Required, and it has to be a real number for the country that is chosen. */
+  const phoneOk = isValidNational(phone, phoneCountryInfo);
   const phoneIssue = phoneProblem(phone, phoneCountryInfo);
 
   /** What to show under the email box, derived rather than stored. */
@@ -251,7 +251,7 @@ export default function SignupPage() {
         email: email.trim(),
         // E.164, always: `+` and digits. What the person typed is a local
         // habit; what leaves here is the one shape a gateway can dial.
-        phone: phone.trim() ? toE164(phone, phoneCountryInfo) : undefined,
+        phone: toE164(phone, phoneCountryInfo),
         planCode: planCode || undefined,
       });
       router.push(
@@ -280,11 +280,10 @@ export default function SignupPage() {
 
   // A taken address stops step one rather than step two: continuing would mean
   // choosing a company name and a web address that are about to be thrown away.
-  // A half-typed phone number stops step one. It is optional, so an EMPTY box
-  // is fine — but a number that is present and wrong is a number that will be
-  // wrong in the tenant record forever, and the person is right here able to
-  // fix it. Catching it on the step it was typed on beats a server error two
-  // screens later.
+  // A missing or half-typed phone number stops step one. It is how a shop is
+  // reached when something goes wrong with their account, so a blank or a
+  // wrong one is worth catching on the step it was typed on rather than
+  // discovering it is unusable months later.
   const personalDone = Boolean(
     ownerName.trim() && email.trim() && emailState !== "taken" && phoneOk
   );
@@ -303,11 +302,12 @@ export default function SignupPage() {
       }
       onSubmit={submit}
       /**
-       * Wider than a one-column card, narrower than the 720 the single-page
-       * version needed: two or three fields a step fit above the fold at 560
-       * with the name and email side by side.
+       * The same 480 as every other auth card. Sign-up briefly ran at 560 to
+       * fit two fields to a row; the fields are stacked now — a phone box with
+       * a country picker in it has no business sharing a row — so the wider
+       * card only made this page look unlike the rest of them.
        */
-      width={560}
+      width={480}
       /*
        * No "Already have an account? Sign in".
        *
@@ -318,7 +318,7 @@ export default function SignupPage() {
        */
     >
       {step === 1 ? (
-        <div className="grid w-full grid-cols-1 items-start gap-x-[16px] gap-y-[16px] sm:grid-cols-2">
+        <div className="flex w-full flex-col items-start gap-[16px]">
           <AuthField
             label="Your name"
             value={ownerName}
@@ -329,7 +329,7 @@ export default function SignupPage() {
           />
 
           <PhoneField
-            label="Phone (optional)"
+            label="Phone"
             countries={COUNTRIES}
             countryIso={phoneCountry}
             onCountryChange={setPhoneCountry}
@@ -340,11 +340,12 @@ export default function SignupPage() {
             onChange={(e) => setPhone(e.target.value.replace(/[^\d+\s-]/g, ""))}
             placeholder={phoneCountryInfo.example}
             maxLength={18}
+            required
             hint={`Digits only, without the leading zero. Example: ${phoneCountryInfo.example}`}
             problem={phoneIssue}
           />
 
-          <div className="sm:col-span-2">
+          <div className="w-full">
             <AuthField
               label="Email"
               type="email"

@@ -167,14 +167,26 @@ export function AuthField({
   );
 }
 
+/** 🇧🇩 from "BD". Regional indicator letters, so no image asset and no CDN. */
+function flagOf(iso: string): string {
+  return String.fromCodePoint(
+    ...[...iso.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65)
+  );
+}
+
 /**
- * A phone box whose country is chosen rather than typed.
+ * A phone box whose country is picked from a flag list rather than typed.
  *
- * One control, not two: the select sits INSIDE the same bordered box as the
- * input, so it reads as a single field and the dialling code looks like a
- * prefix on the number instead of a separate question. The select is sized to
- * its content and the input takes the rest, which keeps `+880` and `+1` from
- * shifting the field width as the country changes.
+ * A native `<select>` was the first cut and it is the wrong control here. It
+ * cannot show a flag next to each row on every platform, it cannot be
+ * searched, and thirty-five countries in an OS dropdown is a scroll. This is
+ * a button and a panel: the trigger shows the flag and the dialling code, and
+ * the open list is searchable by name, by ISO code and by dialling code — so
+ * "bang", "BD" and "880" all land on the same row.
+ *
+ * The whole thing sits in ONE bordered box so it reads as a single field, with
+ * the code looking like a prefix on the number rather than a separate
+ * question.
  *
  * `inputMode="numeric"` rather than `type="number"`: a number input gives
  * phones the right keypad but also spinner arrows, silent scroll-wheel edits,
@@ -196,54 +208,142 @@ export function PhoneField({
   countryIso: string;
   onCountryChange: (iso: string) => void;
 } & React.InputHTMLAttributes<HTMLInputElement>) {
-  const dial = countries.find((c) => c.iso === countryIso)?.dial ?? "";
+  const [open, setOpen] = React.useState(false);
+  const [query, setQuery] = React.useState("");
+  const boxRef = React.useRef<HTMLDivElement>(null);
+  const searchRef = React.useRef<HTMLInputElement>(null);
+
+  const chosen = countries.find((c) => c.iso === countryIso) ?? countries[0];
+
+  const matches = React.useMemo(() => {
+    const q = query.trim().toLowerCase().replace(/^\+/, "");
+    if (!q) return countries;
+    return countries.filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        c.iso.toLowerCase().startsWith(q) ||
+        c.dial.startsWith(q)
+    );
+  }, [countries, query]);
+
+  // Every close goes through here so the search never survives into the next
+  // opening — reopening the list to find a country you have already filtered
+  // out is the kind of small wrongness nobody reports and everybody notices.
+  const close = React.useCallback(() => {
+    setOpen(false);
+    setQuery("");
+  }, []);
+
+  // Close on an outside click or Escape. Both, because a dropdown that only
+  // answers one of them is a dropdown that gets stuck open.
+  React.useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!boxRef.current?.contains(e.target as Node)) close();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, close]);
+
+  // Focus the search the moment it appears, so opening the list and typing is
+  // one gesture rather than open-then-aim.
+  React.useEffect(() => {
+    if (open) searchRef.current?.focus();
+  }, [open]);
 
   return (
-    <label className="flex w-full flex-col items-start gap-[8px]">
+    <div className="flex w-full flex-col items-start gap-[8px]">
       <span className="w-full text-[18px] leading-[24px] font-medium text-[#525252]">{label}</span>
-      <div
-        className={`flex h-[56px] w-full items-center gap-[8px] rounded-[12px] border border-solid bg-white px-[16px] py-[8px] ${
-          problem ? "border-[#c0392b]" : "border-[#f5b800]"
-        }`}
-      >
-        <div className="flex shrink-0 items-center gap-[4px]">
-          <select
-            value={countryIso}
-            onChange={(e) => onCountryChange(e.target.value)}
-            aria-label="Country calling code"
-            className="max-w-[92px] cursor-pointer appearance-none bg-transparent text-[16px] leading-[24px] font-medium text-[#525252] outline-none"
+
+      <div ref={boxRef} className="relative w-full">
+        <div
+          className={`flex h-[56px] w-full items-center gap-[10px] rounded-[12px] border border-solid bg-white pr-[16px] pl-[12px] ${
+            problem ? "border-[#c0392b]" : "border-[#f5b800]"
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => (open ? close() : setOpen(true))}
+            aria-haspopup="listbox"
+            aria-expanded={open}
+            aria-label={`Country: ${chosen?.name ?? ""}`}
+            className="flex h-[40px] shrink-0 cursor-pointer items-center gap-[6px] rounded-[8px] px-[8px] transition-colors hover:bg-[#fafafa]"
           >
-            {countries.map((c) => (
-              // The option text carries the country NAME because a bare list
-              // of dialling codes is unreadable when it is open; the closed
-              // control shows only "+880" beside it, which is all that needs
-              // to be visible once chosen.
-              <option key={c.iso} value={c.iso}>
-                {c.iso} +{c.dial}
-              </option>
-            ))}
-          </select>
-          <span aria-hidden className="text-[#a3a3a3]">
-            |
-          </span>
+            <span className="text-[20px] leading-none">{flagOf(chosen?.iso ?? "")}</span>
+            <span className="text-[16px] leading-[24px] font-medium text-[#525252]">
+              +{chosen?.dial}
+            </span>
+            <svg width="10" height="6" viewBox="0 0 10 6" aria-hidden className="text-[#a3a3a3]">
+              <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" />
+            </svg>
+          </button>
+
+          <span aria-hidden className="h-[24px] w-px shrink-0 bg-[#eaeaea]" />
+
+          <input
+            {...rest}
+            type="tel"
+            inputMode="numeric"
+            autoComplete="tel-national"
+            className="min-w-px flex-1 bg-transparent text-[16px] leading-[24px] font-normal text-[#525252] outline-none placeholder:text-[#a3a3a3]"
+          />
         </div>
-        <input
-          {...rest}
-          type="tel"
-          inputMode="numeric"
-          autoComplete="tel-national"
-          className="min-w-px flex-1 bg-transparent text-[16px] leading-[24px] font-normal text-[#525252] outline-none placeholder:text-[#a3a3a3]"
-        />
-        <span aria-hidden className="shrink-0 text-[13px] text-[#a3a3a3]">
-          +{dial}
-        </span>
+
+        {open && (
+          <div
+            role="listbox"
+            className="absolute top-[60px] left-0 z-20 flex max-h-[280px] w-full flex-col overflow-hidden rounded-[12px] border border-solid border-[#eaeaea] bg-white shadow-[0_12px_28px_rgba(0,0,0,0.12)]"
+          >
+            <div className="shrink-0 border-b border-solid border-[#f0f0f0] p-[8px]">
+              <input
+                ref={searchRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search country or code"
+                className="h-[36px] w-full rounded-[8px] bg-[#fafafa] px-[10px] text-[14px] text-[#525252] outline-none placeholder:text-[#a3a3a3]"
+              />
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {matches.length === 0 && (
+                <p className="px-[12px] py-[14px] text-[13px] text-[#8a8a8a]">No country matches.</p>
+              )}
+              {matches.map((c) => (
+                <button
+                  key={c.iso}
+                  type="button"
+                  role="option"
+                  aria-selected={c.iso === countryIso}
+                  onClick={() => {
+                    onCountryChange(c.iso);
+                    close();
+                  }}
+                  className={`flex w-full cursor-pointer items-center gap-[10px] px-[12px] py-[9px] text-left transition-colors hover:bg-[#fafafa] ${
+                    c.iso === countryIso ? "bg-[#fffdf5]" : ""
+                  }`}
+                >
+                  <span className="text-[18px] leading-none">{flagOf(c.iso)}</span>
+                  <span className="flex-1 truncate text-[14px] text-[#1e1e1e]">{c.name}</span>
+                  <span className="shrink-0 text-[13px] text-[#8a8a8a]">+{c.dial}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
+
       {problem ? (
         <span className="text-[13px] leading-[1.4] font-medium text-[#c0392b]">{problem}</span>
       ) : (
         hint && <span className="text-[13px] leading-[1.4] text-[#737373]">{hint}</span>
       )}
-    </label>
+    </div>
   );
 }
 
