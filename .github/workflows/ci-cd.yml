@@ -342,12 +342,22 @@ jobs:
           BUILD_SHA: ${{ github.sha }}
         run: |
           for attempt in $(seq 1 12); do
-            live=$(curl -sSk -m 15 https://sortpi.com/build-id || echo "")
-            if [ "$live" = "$BUILD_SHA" ]; then
+            # No -L, and the status is reported alongside the body. A guard
+            # that redirects /build-id answers 307 with the login path as the
+            # body, which compared against a SHA reads as "the deploy did not
+            # land" — the wrong diagnosis, and it cost a day. The code says
+            # which of the two it actually is.
+            code=$(curl -sSk -m 15 -o /tmp/build-id -w '%{http_code}' https://sortpi.com/build-id || echo "000")
+            live=$(tr -d '\r\n' < /tmp/build-id 2>/dev/null || echo "")
+            if [ "$code" = "200" ] && [ "$live" = "$BUILD_SHA" ]; then
               echo "Serving $live — this is the commit that was just built."
               exit 0
             fi
-            echo "Attempt $attempt: site reports '${live:-no answer}', expected $BUILD_SHA"
+            if [ "$code" != "200" ]; then
+              echo "Attempt $attempt: /build-id answered HTTP $code with '${live:-no body}' — it is not being served directly. Check the route guard in src/proxy.ts."
+            else
+              echo "Attempt $attempt: site reports '${live:-no answer}', expected $BUILD_SHA"
+            fi
             sleep 15
           done
           echo "::error::sortpi.com is not serving $BUILD_SHA. The deploy ran but the site did not change — check which process holds host port 3500 in the step above."

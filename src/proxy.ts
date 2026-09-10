@@ -85,9 +85,19 @@ const PUBLIC_PATHS = [
 
 /**
  * Outside the guard: not a sign-in page, so a signed-in visitor should not be
- * pushed away from it either. It draws components with no data.
+ * pushed away from it either.
+ *
+ * `/ds-preview` draws components with no data.
+ *
+ * `/build-id` is the deploy check, and it has to answer a client that holds no
+ * cookies at all — CI curls it from a runner. The matcher below catches it
+ * (no file extension, not under `_next`), so without this it was answered with
+ * a redirect to `/login?next=%2Fbuild-id`, and the pipeline compared THAT
+ * against the commit it had just deployed. Twelve attempts, twelve
+ * `/login?next=%2Fbuild-id`, and a failed verify on a deploy that had actually
+ * worked. It leaks nothing: the SHA is already on every public bundle URL.
  */
-const UNGUARDED = ["/ds-preview"];
+const UNGUARDED = ["/ds-preview", "/build-id"];
 
 function isPublic(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));

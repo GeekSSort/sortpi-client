@@ -18,6 +18,20 @@ export const dynamic = "force-static";
 
 export function GET() {
   return new Response(process.env.NEXT_PUBLIC_BUILD_SHA || "unknown", {
-    headers: { "content-type": "text/plain; charset=utf-8" },
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      /**
+       * Never cached by anything in front of this.
+       *
+       * A prerendered route is served with `s-maxage=31536000` — a YEAR to any
+       * shared cache — and this is the one endpoint where that is exactly
+       * backwards. Traefik does not cache, but a CDN told to cache everything
+       * would pin the answer to the first build that reached it, and the
+       * verify step would then compare every future deploy against a SHA from
+       * a year ago. The endpoint whose only job is "which build is live" has
+       * to answer for the build that is live NOW.
+       */
+      "cache-control": "no-store, no-cache, must-revalidate, max-age=0",
+    },
   });
 }

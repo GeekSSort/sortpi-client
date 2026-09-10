@@ -237,3 +237,33 @@ function describe_frontDoor() {
 }
 
 describe_frontDoor();
+
+/**
+ * The deploy check, which has to answer a caller holding no cookies.
+ *
+ * `/build-id` returns the commit baked into the bundle, and the pipeline
+ * compares it against the commit it just deployed. The route guard's matcher
+ * catches it — no file extension, not under `_next` — so it was answered with
+ * a redirect to `/login?next=%2Fbuild-id`, and the pipeline compared THAT
+ * against the SHA. Twelve attempts, twelve redirects, and a failed verify on a
+ * deploy that had actually worked.
+ *
+ * Signed OUT on purpose: the shared `storageState` carries a session, and with
+ * one this passes no matter what the guard does.
+ */
+test.describe("the deploy check", () => {
+  test.use({ storageState: { cookies: [], origins: [] } });
+
+  test("/build-id answers with no session and is not a redirect", async ({ request }) => {
+    const response = await request.get("/build-id", { maxRedirects: 0 });
+
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-type"]).toContain("text/plain");
+
+    const body = (await response.text()).trim();
+    // The failure this exists for: the redirect body is the login path.
+    expect(body).not.toContain("/login");
+    // A SHA when CI builds it, "unknown" locally — never empty either way.
+    expect(body).not.toBe("");
+  });
+});
