@@ -111,17 +111,40 @@ jobs:
     needs: [ci-quality-and-build, visual-tests]
     if: github.ref == 'refs/heads/main'
 
+    # Job level, NOT step level. A step's own `env:` block is not in scope for
+    # that same step's `if:` — the condition is evaluated before the step's
+    # environment is built, so `env.DEPLOY_KEY` read as empty, `'' != ''` was
+    # false, and the deploy step was skipped on every run. A job whose only
+    # step is skipped still succeeds, so CI/CD went green while nothing was
+    # ever deployed. Declared here, the guard sees the value it is guarding.
+    #
+    # `secrets` cannot be used in a step `if` at all, which is why this goes
+    # through `env` rather than testing the secret directly.
+    env:
+      DEPLOY_KEY: ${{ secrets.SSH_PRIVATE_KEY || secrets.SERVER_SSH_KEY }}
+
     steps:
+      # Green used to mean "deployed" and "no key configured" alike. If the
+      # key is missing on main that is a broken deployment, not a state to
+      # pass quietly, so say which one is missing and stop.
+      - name: Require a deploy key
+        if: env.DEPLOY_KEY == ''
+        run: |
+          echo "::error::No SSH deploy key. Set SSH_PRIVATE_KEY (or SERVER_SSH_KEY) in repository secrets."
+          exit 1
+
       - name: Deploy via SSH to Contabo
         uses: appleboy/ssh-action@v1.2.2
-        if: env.DEPLOY_KEY != ''
-        env:
-          DEPLOY_KEY: ${{ secrets.SSH_PRIVATE_KEY || secrets.SERVER_SSH_KEY }}
         with:
           host: "13.140.141.131"
           username: "root"
-          key: ${{ secrets.SSH_PRIVATE_KEY || secrets.SERVER_SSH_KEY }}
+          key: ${{ env.DEPLOY_KEY }}
           port: 22
+          # Without this the action runs the script without `set -e`: a failed
+          # `git pull` or a broken build would scroll past, the closing echo
+          # would still exit 0, and the job would report a deployment that did
+          # not happen — the same false green as the skipped step above.
+          script_stop: true
           script: |
             echo "Deploying Client on Contabo (13.140.141.131)..."
             cd /opt/apps/sortpi/client
