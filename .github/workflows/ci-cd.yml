@@ -196,13 +196,29 @@ jobs:
             set -euxo pipefail
 
             # The compose project that owns the running client service.
+            #
+            # `config_files` matters as much as the directory: this project's
+            # compose file is `docker-compose.prod.yml`, and a bare
+            # `docker compose` in that directory finds no `compose.yaml` and
+            # fails with "no configuration file provided". Take the exact files
+            # the running container was started from and reuse them, so the
+            # deploy rebuilds the deployment that exists rather than one this
+            # file assumes.
+            PROJECT=""
             PROJECT_DIR=""
+            CONFIG_FILES=""
+            SERVICE=""
             for c in $(docker ps -q); do
               svc=$(docker inspect "$c" --format '{{ index .Config.Labels "com.docker.compose.service" }}')
-              if [ "$svc" = "client" ] || [ "$svc" = "nextjs" ] || [ "$svc" = "frontend" ]; then
-                PROJECT_DIR=$(docker inspect "$c" --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}')
-                break
-              fi
+              case "$svc" in
+                client|nextjs|frontend)
+                  SERVICE="$svc"
+                  PROJECT=$(docker inspect "$c" --format '{{ index .Config.Labels "com.docker.compose.project" }}')
+                  PROJECT_DIR=$(docker inspect "$c" --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}')
+                  CONFIG_FILES=$(docker inspect "$c" --format '{{ index .Config.Labels "com.docker.compose.project.config_files" }}')
+                  break
+                  ;;
+              esac
             done
 
             if [ -z "$PROJECT_DIR" ] || [ ! -d "$PROJECT_DIR" ]; then
@@ -214,7 +230,7 @@ jobs:
             # It is either this directory or its sibling, per the `build.context`
             # in the two compose files in these repos.
             SRC_DIR=""
-            for candidate in "$PROJECT_DIR/../client" "$PROJECT_DIR" "$PROJECT_DIR/client"; do
+            for candidate in "$PROJECT_DIR" "$PROJECT_DIR/../client" "$PROJECT_DIR/client"; do
               if [ -d "$candidate/.git" ]; then SRC_DIR=$(cd "$candidate" && pwd); break; fi
             done
 
@@ -234,11 +250,26 @@ jobs:
             git reset --hard origin/main
             git log -1 --oneline
 
+            # Rebuild through the project's own compose files. `config_files`
+            # is comma separated when a deployment layers more than one, and
+            # the flags are deliberately unquoted below so each becomes its own
+            # argument. Falling back to the file this repo ships keeps the step
+            # working if the label is ever empty.
+            cd "$PROJECT_DIR"
+            FLAGS=""
+            if [ -n "$CONFIG_FILES" ]; then
+              OLD_IFS="$IFS"
+              IFS=','
+              for f in $CONFIG_FILES; do FLAGS="$FLAGS -f $f"; done
+              IFS="$OLD_IFS"
+            else
+              FLAGS="-f docker-compose.prod.yml"
+            fi
+
             # --force-recreate because `up -d` leaves a running container alone
             # when it decides the image is unchanged.
-            cd "$PROJECT_DIR"
-            docker compose up -d --build --force-recreate client
-            docker compose ps client
+            docker compose -p "$PROJECT" $FLAGS up -d --build --force-recreate "$SERVICE"
+            docker compose -p "$PROJECT" $FLAGS ps
 
       # The deployed commit adds this route; the build that has been live since
       # before it does not have it. Asking the public address for it covers the
