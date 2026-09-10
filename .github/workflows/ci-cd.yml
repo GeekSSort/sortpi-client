@@ -186,12 +186,19 @@ jobs:
       # instead of exiting 0 the way the old script did.
       - name: Rebuild the client from wherever it is deployed
         uses: appleboy/ssh-action@v1.2.2
+        env:
+          # Forwarded to the box so it can fetch THIS repository without a
+          # credential of its own. Scoped to this repo and dead when the job
+          # ends, which is the point: nothing long-lived is left on the server.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         with:
           host: ${{ env.DEPLOY_HOST }}
           username: "root"
           key: ${{ env.DEPLOY_KEY }}
           port: 22
           command_timeout: 30m
+          envs: GH_TOKEN,GH_REPO
           script: |
             set -euxo pipefail
 
@@ -229,13 +236,26 @@ jobs:
             # The compose file builds the client image from a source checkout.
             # It is either this directory or its sibling, per the `build.context`
             # in the two compose files in these repos.
+            # Which checkout is THIS repository.
+            #
+            # Matching on "has a .git directory" picked $PROJECT_DIR, and on
+            # this box the compose project lives in the SERVER checkout — so
+            # the client deploy fetched the server repository, over a remote it
+            # has no credential for, and died on "could not read Username".
+            # Existence is not identity: compare the remote against the repo
+            # the workflow is running for.
+            WANT=$(basename "$GH_REPO")
             SRC_DIR=""
-            for candidate in "$PROJECT_DIR" "$PROJECT_DIR/../client" "$PROJECT_DIR/client"; do
-              if [ -d "$candidate/.git" ]; then SRC_DIR=$(cd "$candidate" && pwd); break; fi
+            for candidate in "$PROJECT_DIR/../client" "$PROJECT_DIR/client" "$PROJECT_DIR"; do
+              [ -d "$candidate/.git" ] || continue
+              url=$(git -C "$candidate" remote get-url origin 2>/dev/null || echo "")
+              case "$(basename "$url" .git)" in
+                "$WANT") SRC_DIR=$(cd "$candidate" && pwd); break ;;
+              esac
             done
 
             if [ -z "$SRC_DIR" ]; then
-              echo "::error::Found the compose project at $PROJECT_DIR but no client git checkout beside it."
+              echo "::error::No checkout of $GH_REPO beside the compose project at $PROJECT_DIR."
               exit 1
             fi
 
@@ -246,8 +266,16 @@ jobs:
             # fails. Nothing on a deploy checkout is worth keeping.
             cd "$SRC_DIR"
             git remote -v
-            git fetch origin main
-            git reset --hard origin/main
+
+            # Fetch through a URL carrying the job's token rather than the
+            # remote on disk. The checkouts here are on HTTPS with no
+            # credential, so a private repository — or a public one that goes
+            # private later — fails with "could not read Username" and takes
+            # the deploy with it. Passed inline and never written to
+            # .git/config, so the token does not outlive the job.
+            git -c credential.helper= \
+              fetch "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" main
+            git reset --hard FETCH_HEAD
             git log -1 --oneline
 
             # Rebuild through the project's own compose files. `config_files`
