@@ -13,6 +13,7 @@ import { QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import ProductImage from "@/components/shared/ProductImage";
 import { DiscountService } from "@/services/discountService";
 import { useSession } from "@/services/useSession";
+import { ACTIVE_STOCK_TYPE_KEY } from "@/lib/stockTypes";
 
 /**
  * Figma: SortPi — Add New Product 57:12014.
@@ -39,6 +40,15 @@ function Caret() {
 }
 
 const LABEL = "w-full text-[18px] leading-[24px] font-medium text-[#525252]";
+/**
+ * The label inside a repeated row.
+ *
+ * The form's own LABEL, one step down. Five 18px labels per variant, repeated
+ * down the page, read louder than the section heading they sit under — and the
+ * first version of this section skipped labels entirely and relied on
+ * placeholders, which vanish the moment anything is typed into them.
+ */
+const SUBLABEL = "w-full text-[15px] leading-[20px] font-medium text-[#525252]";
 const FIELD =
   "flex h-[56px] w-full items-center rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] py-[8px]";
 const INPUT =
@@ -58,6 +68,41 @@ const blank = {
   tax: "",
   image: "",
 };
+
+/**
+ * One size, colour or form this product is sold in.
+ *
+ * Empty by default, and an empty list is the ordinary product: one thing sold
+ * one way, saved with exactly the payload this form has always sent. A shop
+ * only meets these by pressing "Sold in several sizes", which is the moment it
+ * actually has a second one.
+ *
+ * Each row carries its own SKU, prices and opening stock because two sizes are
+ * two things on a shelf — counted apart, scanned apart, charged apart. Folding
+ * them into one product with one price is what made stock against a non-default
+ * variant unreachable from every screen in the app.
+ */
+type VariantRow = {
+  /** A key for React, not sent. Rows have no id until the server makes them. */
+  key: string;
+  name: string;
+  sku: string;
+  /** The code on THIS packet. A 250ml and a 1L carry different numbers. */
+  barcode: string;
+  purchasePrice: string;
+  sellingPrice: string;
+  openingStock: string;
+};
+
+const blankVariant = (): VariantRow => ({
+  key: `v-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+  name: "",
+  sku: "",
+  barcode: "",
+  purchasePrice: "",
+  sellingPrice: "",
+  openingStock: "",
+});
 
 /** Off the price, or onto it: a share of it, or a fixed number of taka. */
 type Rate = "percent" | "flat";
@@ -153,7 +198,15 @@ function Select({
       <button
         type="button"
         aria-expanded={open === kind}
-        aria-label={placeholder}
+        /* The purpose AND the choice. The label used to be the placeholder
+           alone, which overrides the button's visible text — so a screen
+           reader announced "Select unit" whether nothing was picked or
+           Kilogram was, and there was no way to hear the current value. */
+        aria-label={
+          options.find((o) => o.id === value)
+            ? `${placeholder} — ${options.find((o) => o.id === value)?.name}`
+            : placeholder
+        }
         onClick={() => setOpen(open === kind ? null : kind)}
         onBlur={() => window.setTimeout(() => setOpen((o) => (o === kind ? null : o)), 130)}
         className={`${FIELD} cursor-pointer justify-between text-left`}
@@ -217,6 +270,17 @@ export default function AddProductPage() {
   const openingWarehouse = openingShelf?.id ?? "";
   const openingWarehouseName = openingShelf?.name ?? "";
   const [rates, setRates] = useState({ ...blankRates });
+  /**
+   * The sizes this product is sold in. Empty means "one thing, one way".
+   *
+   * Held as strings for the same reason every money box on this form is: a
+   * controlled number round-trips through Number() on each keystroke, so "2."
+   * loses its dot as it is typed.
+   */
+  const [variants, setVariants] = useState<VariantRow[]>([]);
+  const hasVariants = variants.length > 0;
+  const patchVariant = (key: string, patch: Partial<VariantRow>) =>
+    setVariants((rows) => rows.map((r) => (r.key === key ? { ...r, ...patch } : r)));
   const [open, setOpen] = useState<SelectKind | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -231,7 +295,10 @@ export default function AddProductPage() {
 
   // How this shop quotes prices, so the preview below says what the till will
   // actually charge rather than a figure no screen agrees with.
-  const { data: shopValues } = useQuery(queryKey("settings", { part: "values" }), () =>
+  // `scope: "values"` — the key the till and every other reader of the
+  // resolved settings already use. This page asked under `part: "values"`,
+  // which is the same request held in a second cache entry.
+  const { data: shopValues } = useQuery(queryKey("settings", { scope: "values" }), () =>
     SettingsService.getValues()
   );
   const vatIncluded =
@@ -243,10 +310,30 @@ export default function AddProductPage() {
     taxes: [],
   };
 
-  // A shop with one unit should not have to pick it every time. Derived rather
-  // than written into the form by an effect: an effect would have to wait for
-  // a render, so the field flashed empty on the way past.
-  const unit = form.unit || (options.units.length === 1 ? options.units[0].id : "");
+  /**
+   * Which stock type this product starts in.
+   *
+   * Three answers in order, and the order is the point:
+   *
+   *   1. what the shopkeeper picked on this form — never overridden;
+   *   2. the shop's ACTIVE stock type, set once in Settings, which is what a
+   *      shop that only weighs things sets so it stops answering this;
+   *   3. the only stock type there is, when there is only one.
+   *
+   * A default and not a restriction: the picker is still there and still
+   * required, because a shop that sells bottles AND cloth has to be able to
+   * say which this one is.
+   *
+   * Derived rather than written into the form by an effect — an effect has to
+   * wait for a render, so the field flashed empty on the way past.
+   */
+  const activeUnitId = String(shopValues?.[ACTIVE_STOCK_TYPE_KEY] ?? "");
+  const unit =
+    form.unit ||
+    // Only if it still exists: a stock type can be deleted after being made
+    // active, and an id matching nothing in the list reads as a broken picker.
+    (options.units.some((u) => u.id === activeUnitId) ? activeUnitId : "") ||
+    (options.units.length === 1 ? options.units[0].id : "");
 
   /**
    * Which step of the save is running, and how many there are.
@@ -325,8 +412,67 @@ export default function AddProductPage() {
     if (!form.category) return setError("Pick a category.");
     // Brand is optional on the API, so it is optional here. Unit is not.
     if (!unit) return setError("Pick a unit.");
-    if (!Number(form.sellingPrice)) return setError("Selling price must be greater than zero.");
-    const opening = Number(form.openingStock) || 0;
+
+    /**
+     * The rows that will actually be saved.
+     *
+     * Blank-named ones are dropped rather than refused: pressing "Add another"
+     * and changing your mind is not an error, and a row with nothing in it is
+     * a row the shopkeeper did not want.
+     */
+    const rows = variants.filter((v) => v.name.trim().length > 0);
+
+    if (hasVariants && rows.length === 0) {
+      return setError(
+        "Give each variant a name — 500ml, 1L — or remove the empty rows. A variant with no name " +
+          "cannot be told apart from the product itself on the till."
+      );
+    }
+    if (rows.length > 0) {
+      // Two variants sharing a name are two tiles a cashier cannot tell apart,
+      // and the server would take both.
+      const names = rows.map((v) => v.name.trim().toLowerCase());
+      const repeated = names.find((n, i) => names.indexOf(n) !== i);
+      if (repeated) {
+        return setError(
+          `Two variants are both called "${repeated}". Each one has to be tellable from the others on the till.`
+        );
+      }
+      const skus = rows.map((v) => v.sku.trim().toLowerCase()).filter(Boolean);
+      const repeatedSku = skus.find((c, i) => skus.indexOf(c) !== i);
+      if (repeatedSku) {
+        return setError(
+          `Two variants share the SKU "${repeatedSku}". A SKU is what tells two things apart on a shelf.`
+        );
+      }
+      const unpriced = rows.find((v) => !(Number(v.sellingPrice) > 0));
+      if (unpriced) {
+        return setError(
+          `${unpriced.name.trim()} has no selling price. An unpriced variant reads as "No price" at the till.`
+        );
+      }
+      const costlessCount = rows.find(
+        (v) => Number(v.openingStock) > 0 && !(Number(v.purchasePrice) > 0)
+      );
+      if (costlessCount) {
+        return setError(
+          `Enter the purchase price for ${costlessCount.name.trim()} before its opening stock. Stock counted ` +
+            "in at nothing makes the first sale of it look like pure profit, and that cost is stamped " +
+            "once and never recomputed."
+        );
+      }
+      if (rows.some((v) => Number(v.openingStock) > 0) && !openingWarehouse) {
+        return setError(
+          "There is no warehouse to count these into. Switch to a branch from the header first."
+        );
+      }
+    } else if (!Number(form.sellingPrice)) {
+      return setError("Selling price must be greater than zero.");
+    }
+
+    // With variants, the single boxes above no longer govern — each row
+    // carries its own. Without them, nothing has changed.
+    const opening = rows.length > 0 ? 0 : Number(form.openingStock) || 0;
     if (opening > 0 && !(Number(form.purchasePrice) > 0)) {
       return setError(
         "Enter the purchase price before the opening stock. Stock counted in at nothing makes the " +
@@ -377,6 +523,22 @@ export default function AddProductPage() {
         purchasePrice: Number(form.purchasePrice) || undefined,
         sku: form.sku.trim() || undefined,
         barcode: form.barcode.trim() || undefined,
+        // Left out entirely for the one-variant case, so the payload is byte
+        // for byte what this form has always sent.
+        ...(rows.length > 0
+          ? {
+              variants: rows.map((v, index) => ({
+                name: v.name.trim(),
+                sku: v.sku.trim() || undefined,
+                barcode: v.barcode.trim() || undefined,
+                sellingPrice: Number(v.sellingPrice) || undefined,
+                purchasePrice: Number(v.purchasePrice) || undefined,
+                // The first row is the default: it is what a barcode-less
+                // lookup resolves to, and the form labels it so.
+                isDefault: index === 0,
+              })),
+            }
+          : {}),
       });
       /**
        * The opening stock, as a counted movement.
@@ -386,32 +548,83 @@ export default function AddProductPage() {
        * was not saved if it fails, because it was. The alternative, refusing the
        * whole thing, would lose a filled-in form over a permission.
        */
-      if (opening > 0 && openingWarehouse && created.variantId) {
+      /**
+       * What to count in, and against which variant.
+       *
+       * Per variant, because stock is: a Coca-Cola created with 250ml, 500ml
+       * and 1L has three shelves, and counting the lot against the default
+       * would put every bottle in the shop under one size — unsellable as the
+       * other two and wrong in the valuation.
+       *
+       * Matched by NAME rather than by position: the server creates them in
+       * the order sent, but relying on that would put one variant's stock on
+       * another's shelf the day it stops being true, silently.
+       */
+      const byName = new Map(
+        created.variants.map((v) => [v.name.trim().toLowerCase(), v])
+      );
+      const counts =
+        rows.length > 0
+          ? rows
+              .map((row) => ({
+                variantId: byName.get(row.name.trim().toLowerCase())?.id ?? "",
+                label: row.name.trim(),
+                quantity: Number(row.openingStock) || 0,
+                unitCost: Number(row.purchasePrice) || 0,
+              }))
+              .filter((c) => c.quantity > 0 && c.variantId)
+          : opening > 0 && created.variantId
+            ? [
+                {
+                  variantId: created.variantId,
+                  label: created.name,
+                  quantity: opening,
+                  unitCost: Number(form.purchasePrice),
+                },
+              ]
+            : [];
+
+      if (counts.length > 0 && openingWarehouse) {
         step += 1;
-        advance("Counting the opening stock…");
-        try {
-          await StockService.adjustStock({
-            warehouseId: openingWarehouse,
-            variantId: created.variantId,
-            newQuantity: opening,
-            unitCost: Number(form.purchasePrice),
-            // A brand new variant holds nothing, so this is what the shelf
-            // must be at for the count to mean what was typed.
-            expectUnchanged: true,
-            expectedQuantity: 0,
-            referenceNo: `OPEN-${Date.now().toString().slice(-8)}`,
-            reason: "CORRECTION",
-            note: `Opening stock for ${created.name}`,
-          });
-          invalidate("stock", "inventory", "dashboard", "pos-products");
-        } catch (stockErr) {
-          setError(
-            stockErr instanceof Error && stockErr.message
-              ? `${created.name} was saved, but the opening stock was not counted in: ${stockErr.message}`
-              : `${created.name} was saved, but the opening stock was not counted in.`
-          );
-          return;
+        advance(
+          counts.length === 1
+            ? "Counting the opening stock…"
+            : `Counting the opening stock (${counts.length} variants)…`
+        );
+        for (const count of counts) {
+          try {
+            await StockService.adjustStock({
+              warehouseId: openingWarehouse,
+              variantId: count.variantId,
+              newQuantity: count.quantity,
+              unitCost: count.unitCost,
+              // A brand new variant holds nothing, so this is what the shelf
+              // must be at for the count to mean what was typed.
+              expectUnchanged: true,
+              expectedQuantity: 0,
+              // Its own reference per variant: one key covering three counts
+              // would make the second and third replays of the first.
+              referenceNo: `OPEN-${Date.now().toString().slice(-8)}-${count.variantId.slice(0, 6)}`,
+              reason: "CORRECTION",
+              note: `Opening stock for ${created.name}${
+                count.label && count.label !== created.name ? ` ${count.label}` : ""
+              }`,
+            });
+          } catch (stockErr) {
+            // Named, because with several variants "the opening stock" does
+            // not say which shelf is still at zero.
+            const which =
+              counts.length === 1 ? created.name : `${created.name} ${count.label}`;
+            setError(
+              stockErr instanceof Error && stockErr.message
+                ? `${created.name} was saved, but the opening stock for ${which} was not counted in: ${stockErr.message}`
+                : `${created.name} was saved, but the opening stock for ${which} was not counted in.`
+            );
+            invalidate("stock", "inventory", "dashboard", "pos-products");
+            return;
+          }
         }
+        invalidate("stock", "inventory", "dashboard", "pos-products");
       }
 
       // The image can only be attached once the product has an id, so it goes
@@ -433,17 +646,33 @@ export default function AddProductPage() {
           return;
         }
       }
-      // A discount typed here is the till's product offer — the same store the
-      // Discounts screen writes and the POS prices its tiles by. Keyed by the
-      // variant, which is what everything at the till is keyed by.
+      /**
+       * A discount typed here is the till's product offer — the same store the
+       * Discounts screen writes and the POS prices its tiles by. Keyed by the
+       * VARIANT, which is what everything at the till is keyed by.
+       *
+       * EVERY variant, not just the default. It used to set the offer on
+       * `created.variantId` alone, so "10% off Coca-Cola" on a product with
+       * three sizes discounted the 250ml and left the 500ml and the 1L at full
+       * price — with nothing on screen saying so. A shopkeeper typing a
+       * percentage against a product means the product.
+       */
       const discountValue = Math.max(0, Number(form.discount) || 0);
       if (discountValue > 0) {
         try {
-          await DiscountService.set(created.id, {
-            mode: rates.discount === "flat" ? "FLAT" : "PERCENT",
-            value: discountValue,
-            variantId: created.variantId || undefined,
-          });
+          const targets =
+            created.variants.length > 0
+              ? created.variants.map((v) => v.id)
+              : created.variantId
+                ? [created.variantId]
+                : [];
+          for (const variantId of targets) {
+            await DiscountService.set(created.id, {
+              mode: rates.discount === "flat" ? "FLAT" : "PERCENT",
+              value: discountValue,
+              variantId,
+            });
+          }
           invalidate("discounts", "pos-products", "inventory");
         } catch (offerErr) {
           // Not fatal: the product exists and sells at its full price until
@@ -537,12 +766,18 @@ export default function AddProductPage() {
                 <span className={LABEL}>Unit</span>
                 <Select kind="unit" value={unit} placeholder="Select unit" options={options.units} onPick={(v) => set("unit", v)} open={open} setOpen={setOpen} />
               </div>
-              <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
-                <label htmlFor="p-sku" className={LABEL}>SKU <span className="text-[#8f8d87]">(optional)</span></label>
-                <div className={FIELD}>
-                  <input id="p-sku" value={form.sku} onChange={(e) => set("sku", e.target.value)} placeholder="Left blank, the API makes one" className={INPUT} />
+              {/* A product-level SKU is the DEFAULT VARIANT's SKU — there is
+                  no other place for it to go. Once the product has variants
+                  they each carry their own, and two boxes for one code is how
+                  the two come to disagree. */}
+              {!hasVariants && (
+                <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
+                  <label htmlFor="p-sku" className={LABEL}>SKU <span className="text-[#8f8d87]">(optional)</span></label>
+                  <div className={FIELD}>
+                    <input id="p-sku" value={form.sku} onChange={(e) => set("sku", e.target.value)} placeholder="Left blank, the API makes one" className={INPUT} />
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
             {/* The packet in your hand: its code, and how many of them arrived.
@@ -560,6 +795,7 @@ export default function AddProductPage() {
                 counted in at nothing makes the first sale of it look like pure
                 profit forever, since COGS is stamped once and never
                 recomputed. */}
+            {!hasVariants && (
             <div className="flex flex-col gap-[30px] sm:flex-row sm:items-start">
               <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
                 <label htmlFor="p-barcode" className={LABEL}>
@@ -597,8 +833,17 @@ export default function AddProductPage() {
                 </p>
               </div>
             </div>
+            )}
 
-            {/* 57:12790 — two columns, 30px apart */}
+            {/* 57:12790 — two columns, 30px apart.
+
+                Hidden once the product has variants, with the barcode, the SKU
+                and the opening stock above: every one of them is a VARIANT's
+                field with nowhere else to live on a single-variant product.
+                Leaving them on screen meant two boxes for one price, and the
+                one nearer the top is the one somebody fills in — while the
+                rows underneath are the ones that are saved. */}
+            {!hasVariants && (
             <div className="flex flex-col gap-[30px] sm:flex-row sm:items-start">
               <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
                 <label htmlFor="p-purchase" className={LABEL}>Purchase Price</label>
@@ -613,6 +858,226 @@ export default function AddProductPage() {
                 </div>
               </div>
             </div>
+            )}
+
+            {/* Variants — the sizes this product is sold in.
+                No Figma frame; built in the form's own language, which is what
+                the first version of this got wrong: it used 44px fields with
+                14px labels next to the form's 56px fields with 18px ones, so
+                the section read as a widget pasted into the page rather than
+                part of it.
+
+                Collapsed to one button until a shop presses it, because most
+                products are one thing sold one way and a table of empty rows
+                above every Add Product is a question nobody needed asked. */}
+            <div className="flex flex-col gap-[16px]">
+              <div className="flex flex-wrap items-center justify-between gap-[12px]">
+                <div className="flex min-w-0 flex-col gap-[4px]">
+                  <span className={LABEL}>
+                    Variants{" "}
+                    <span className="text-[#8f8d87]">
+                      {hasVariants ? `· ${variants.length}` : "(optional)"}
+                    </span>
+                  </span>
+                  <span className="text-[14px] leading-[20px] text-[#8f8d87]">
+                    {hasVariants
+                      ? "Each is counted, scanned and charged on its own. The boxes above now apply to the first."
+                      : "One size, one price? Leave this alone."}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setVariants((rows) =>
+                      rows.length === 0
+                        ? // Seeded from what is already typed above, so pressing
+                          // this does not throw away a filled-in form.
+                          [
+                            {
+                              ...blankVariant(),
+                              sku: form.sku,
+                              barcode: form.barcode,
+                              purchasePrice: form.purchasePrice,
+                              sellingPrice: form.sellingPrice,
+                              openingStock: form.openingStock,
+                            },
+                            blankVariant(),
+                          ]
+                        : [...rows, blankVariant()]
+                    )
+                  }
+                  className="flex h-[48px] shrink-0 cursor-pointer items-center gap-[8px] rounded-[12px] border border-dashed border-[#d4d4d4] px-[18px] text-[16px] leading-[24px] font-medium text-[#525252] transition-colors hover:border-[#f5b800] hover:bg-[#fffdf5] hover:text-[#1e1e1e]"
+                >
+                  <span aria-hidden className="text-[18px] leading-none">+</span>
+                  {hasVariants ? "Add another" : "Sold in several sizes?"}
+                </button>
+              </div>
+
+              {hasVariants && (
+                <div className="flex flex-col gap-[16px]">
+                  {variants.map((row, index) => (
+                    <div
+                      key={row.key}
+                      className="flex flex-col gap-[20px] rounded-[12px] border border-solid border-[#eaeaea] bg-white p-[20px]"
+                    >
+                      {/* Which row this is, and the one way out of it. */}
+                      <div className="flex flex-wrap items-center justify-between gap-[12px] border-b border-solid border-[#f2f2f0] pb-[14px]">
+                        <span className="flex min-w-0 items-center gap-[10px]">
+                          <span className="flex size-[26px] shrink-0 items-center justify-center rounded-full bg-[#fafafa] text-[13px] font-semibold text-[#8f8d87]">
+                            {index + 1}
+                          </span>
+                          <span className="truncate text-[16px] leading-[24px] font-medium text-[#1e1e1e]">
+                            {row.name.trim() || "Untitled variant"}
+                          </span>
+                          {index === 0 && (
+                            // The one a barcode-less lookup resolves to. Said
+                            // here rather than in a tooltip, because "why is
+                            // this one different" is asked at a glance.
+                            <span
+                              title="What the till picks when nothing else is specified"
+                              className="shrink-0 rounded-full bg-[#fff8e1] px-[10px] py-[3px] text-[12px] font-semibold text-[#8a6200] ring-1 ring-[#f2e0a8] ring-inset"
+                            >
+                              Default
+                            </span>
+                          )}
+                        </span>
+                        <button
+                          type="button"
+                          aria-label={`Remove variant ${index + 1}`}
+                          onClick={() =>
+                            setVariants((rows) => rows.filter((r) => r.key !== row.key))
+                          }
+                          className="shrink-0 cursor-pointer rounded-[10px] border border-solid border-[#eaeaea] bg-white px-[14px] py-[7px] text-[14px] font-medium text-[#c62828] transition-colors hover:border-[#f7c6c6] hover:bg-[#fdeaea]"
+                        >
+                          Remove
+                        </button>
+                      </div>
+
+                      {/* What it is called, and what it is scanned by — the
+                          same pairing the form uses for Unit and SKU above. */}
+                      <div className="flex flex-col gap-[20px] sm:flex-row sm:items-start">
+                        <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
+                          <label htmlFor={`${row.key}-name`} className={SUBLABEL}>
+                            Variant name <span className="text-[#c62828]">*</span>
+                          </label>
+                          <div className={FIELD}>
+                            <input
+                              id={`${row.key}-name`}
+                              value={row.name}
+                              onChange={(e) => patchVariant(row.key, { name: e.target.value })}
+                              aria-label={`Variant ${index + 1} name`}
+                              placeholder="500ml"
+                              className={INPUT}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
+                          <label htmlFor={`${row.key}-sku`} className={SUBLABEL}>
+                            SKU <span className="text-[#8f8d87]">(optional)</span>
+                          </label>
+                          <div className={FIELD}>
+                            <input
+                              id={`${row.key}-sku`}
+                              value={row.sku}
+                              onChange={(e) => patchVariant(row.key, { sku: e.target.value })}
+                              aria-label={`Variant ${index + 1} SKU`}
+                              placeholder="Left blank, the API makes one"
+                              className={INPUT}
+                            />
+                          </div>
+                        </div>
+                        {/* Its OWN code. A 250ml bottle and a 1L bottle carry
+                            different numbers, and scanning one rather than the
+                            other is the point. Left empty, the server assigns
+                            an internal code so every size stays scannable. */}
+                        <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
+                          <label htmlFor={`${row.key}-barcode`} className={SUBLABEL}>
+                            Barcode <span className="text-[#8f8d87]">(optional)</span>
+                          </label>
+                          <div className={FIELD}>
+                            <input
+                              id={`${row.key}-barcode`}
+                              value={row.barcode}
+                              onChange={(e) =>
+                                patchVariant(row.key, { barcode: e.target.value.trim() })
+                              }
+                              aria-label={`Variant ${index + 1} barcode`}
+                              placeholder="Scan or type"
+                              className={INPUT}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* The money and the shelf, in the order the form asks
+                          them of the product above: paid, charged, counted. */}
+                      <div className="flex flex-col gap-[20px] sm:flex-row sm:items-start">
+                        <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
+                          <label htmlFor={`${row.key}-cost`} className={SUBLABEL}>
+                            Purchase Price
+                          </label>
+                          <div className={FIELD}>
+                            <input
+                              id={`${row.key}-cost`}
+                              value={row.purchasePrice}
+                              onChange={(e) =>
+                                patchVariant(row.key, {
+                                  purchasePrice: e.target.value.replace(/[^\d.]/g, ""),
+                                })
+                              }
+                              inputMode="decimal"
+                              aria-label={`Variant ${index + 1} purchase price`}
+                              placeholder="৳ 0.00"
+                              className={INPUT}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
+                          <label htmlFor={`${row.key}-price`} className={SUBLABEL}>
+                            Selling Price <span className="text-[#c62828]">*</span>
+                          </label>
+                          <div className={FIELD}>
+                            <input
+                              id={`${row.key}-price`}
+                              value={row.sellingPrice}
+                              onChange={(e) =>
+                                patchVariant(row.key, {
+                                  sellingPrice: e.target.value.replace(/[^\d.]/g, ""),
+                                })
+                              }
+                              inputMode="decimal"
+                              aria-label={`Variant ${index + 1} selling price`}
+                              placeholder="৳ 0.00"
+                              className={INPUT}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex min-w-0 flex-1 flex-col gap-[8px]">
+                          <label htmlFor={`${row.key}-opening`} className={SUBLABEL}>
+                            Opening Stock <span className="text-[#8f8d87]">(optional)</span>
+                          </label>
+                          <div className={FIELD}>
+                            <input
+                              id={`${row.key}-opening`}
+                              value={row.openingStock}
+                              onChange={(e) =>
+                                patchVariant(row.key, {
+                                  openingStock: e.target.value.replace(/[^\d.]/g, ""),
+                                })
+                              }
+                              inputMode="decimal"
+                              aria-label={`Variant ${index + 1} opening stock`}
+                              placeholder="0"
+                              className={INPUT}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
             {/* 57:12800 — a number and its unit, twice. Tax was a dropdown of
                 rows the shop had to create in Settings first, so a rate it had
@@ -625,7 +1090,11 @@ export default function AddProductPage() {
                 mode={rates.discount}
                 onValue={(v) => set("discount", v)}
                 onMode={(m) => setRates((r) => ({ ...r, discount: m }))}
-                hint="The till's offer on this product."
+                hint={
+                  hasVariants
+                    ? `The till's offer, applied to all ${variants.length} variants.`
+                    : "The till's offer on this product."
+                }
               />
               {/* SELLING VAT, said plainly.
                   It was labelled "Tax / VAT" beside a Purchase Price box, so it
@@ -650,15 +1119,23 @@ export default function AddProductPage() {
               />
             </div>
 
-            {/* Derived, so read-only — 57:12823 */}
-            <div className="flex flex-col gap-[8px]">
-              <span className={LABEL}>Final Price</span>
-              <div className={FIELD}>
-                <output aria-label="Final price" className="min-w-px flex-1 text-[16px] leading-[24px] text-[#525252]">
-                  ৳ {finalPrice.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </output>
+            {/* Derived, so read-only — 57:12823.
+
+                Absent once the product has variants: it is computed from the
+                single Selling Price box, and that box is gone. Showing one
+                "Final Price" for a product sold at three prices would be a
+                figure that is wrong for at least two of them. The discount and
+                VAT above still apply to all of them — see the save. */}
+            {!hasVariants && (
+              <div className="flex flex-col gap-[8px]">
+                <span className={LABEL}>Final Price</span>
+                <div className={FIELD}>
+                  <output aria-label="Final price" className="min-w-px flex-1 text-[16px] leading-[24px] text-[#525252]">
+                    ৳ {finalPrice.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </output>
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Upload — 57:13796 */}
             <label className="flex h-[56px] w-full cursor-pointer items-center justify-center gap-[10px] rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] py-[8px] transition-colors hover:bg-[#fafafa]">
