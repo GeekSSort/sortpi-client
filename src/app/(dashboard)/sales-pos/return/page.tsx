@@ -1,18 +1,28 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import Link from "next/link";
 import { ReturnRecord } from "@/types/returns";
 import { ReturnService } from "@/services";
-import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
-import TablePagination from "@/components/shared/TablePagination";
+import ScrollEnd from "@/components/shared/ScrollEnd";
+import FilterDropdown from "@/components/shared/FilterDropdown";
+import DateFilter, { ALL_DATES, DateValue, resolveDates } from "@/components/shared/DateFilter";
 import TableSkeleton from "@/components/shared/TableSkeleton";
-import DateField from "@/components/shared/DateField";
-import { toApiDay } from "@/lib/dateFilter";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
-import { useQuery, queryKey } from "@/lib/query/useQuery";
+import { queryKey } from "@/lib/query/useQuery";
+import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
+import Receipt from "@/components/shared/Receipt";
+import { useShopProfile } from "@/components/shared/useShopProfile";
+import { formatMoney } from "@/lib/format";
+import { REFUND_METHODS } from "@/lib/paymentMethods";
+import {
+  ActionLink,
+  PageToolbar,
+  PlusIcon,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
 
 /**
  * Returns — Figma 45:4116.
@@ -24,41 +34,11 @@ import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/componen
  * sideways. No Figma frame for either; both are our choice.
  */
 
-const STATUS_TONE: Record<ReturnRecord["status"], Tone> = {
-  Paid: "green",
-  Unpaid: "orange",
-  Pending: "amber",
-  Rejected: "red",
-};
+const MONEY = { decimals: 2 } as const;
 
-/** Add, node 48:5997. */
-function AddIcon() {
-  return (
-    <svg className="block size-[20px] shrink-0" viewBox="0 0 20 20" fill="none" aria-hidden>
-      <rect x="0.9" y="0.9" width="18.2" height="18.2" rx="5" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M10 6.4v7.2M6.4 10h7.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
 
-function SearchIcon() {
-  return (
-    <svg className="block size-[24px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="10.5" cy="10.5" r="7.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M16 16L21 21" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function FilterIcon() {
-  return (
-    <svg className="block size-[18px] shrink-0" viewBox="0 0 18 18" fill="none" aria-hidden>
-      <path d="M2.25 4.5h13.5M4.5 9h9M7.5 13.5h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-const GRID = "grid-cols-[145fr_145fr_185fr_130fr_120fr_120fr_100fr_100fr_83fr]";
+/** Eight columns since Status left: it said "Paid" on every row. */
+const GRID = "grid-cols-[145fr_145fr_185fr_130fr_120fr_120fr_100fr_83fr]";
 const CELL = "flex min-w-0 items-center p-[12px]";
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e]";
 const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
@@ -69,13 +49,24 @@ export default function ReturnPage() {
       request per pause, and a slow answer for "RET-1" can no longer land on
       top of the rows for "RET-12". */
   const [term, setTerm] = useState("");
-  const [date, setDate] = useState<Date | null>(null);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
-  const [note, setNote] = useState<string | null>(null);
+  // Rows per request. Not a page size anyone picks — the table scrolls.
+  const pageSize = 25;
+  const { shop } = useShopProfile();
+  /**
+   * How the money went back. The filter that replaced Status.
+   *
+   * Status offered Paid / Pending / Rejected — three values a return has never
+   * had; the model holds CONFIRMED and CANCELLED and nothing else, so picking
+   * any of them asked the API for a state no row is in and emptied the table.
+   * And with withdrawn refunds no longer listed at all, every row on this
+   * screen now has the SAME status, which is not something worth a control.
+   *
+   * Refund method is the question this list actually raises — how much went
+   * back in cash today — and it is a real column on the row.
+   */
+  const [method, setMethod] = useState("");
+  const [dates, setDates] = useState<DateValue>(ALL_DATES);
   const [detailOf, setDetailOf] = useState<ReturnRecord | null>(null);
-  const [withdrawOf, setWithdrawOf] = useState<ReturnRecord | null>(null);
-  const [withdrawing, setWithdrawing] = useState(false);
   const [slipOf, setSlipOf] = useState<ReturnRecord | null>(null);
 
   useEffect(() => {
@@ -87,82 +78,75 @@ export default function ReturnPage() {
   // The day is sent to the API and is part of the key. It used to be applied
   // in the browser over one capped page, so filtering to an older day found
   // nothing that had not already been fetched.
-  const day = date ? toApiDay(date) : undefined;
-  const { data, loading, fetching, error, refetch } = useQuery(
-    queryKey("returns", { page, limit: pageSize, search: term, day }),
-    () =>
+  const span = resolveDates(dates);
+  const {
+    rows,
+    total,
+    loading,
+    loadingMore,
+    fetching,
+    error,
+    hasMore,
+    sentinelRef,
+    refetch,
+  } = useInfiniteRows(
+    queryKey("returns", { search: term, from: span.from, to: span.to, method }),
+    (p, limit) =>
       ReturnService.getReturns({
         search: term,
-        startDate: day,
-        endDate: day,
-        page,
-        limit: pageSize,
-      })
+        startDate: span.from,
+        endDate: span.to,
+        refundMethod: method || undefined,
+        page: p,
+        limit,
+      }),
+    { pageSize }
   );
-
-  const total = data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const current = Math.min(page, totalPages);
-  // The server already filtered and sliced. `rows` is the page.
-  const rows = data?.data ?? [];
 
   return (
     <div className="flex w-full flex-col gap-[14px]">
-      {/* Headline — 45:4118: search left, date + Add New right */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
-          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
-            <SearchIcon />
-            <input
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setPage(1);
-              }}
-              placeholder="Search by return ID, Invoice No. or Customer..."
-              aria-label="Search returns"
-              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
-            />
-          </div>
-          <button
-            type="button"
-            aria-label="Filter"
-            onClick={() => setNote("Filter panel not designed yet")}
-            className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e]"
-          >
-            <FilterIcon />
-          </button>
-        </div>
+      {/* Headline — 45:4118: search left, filters + Add New right */}
+      <PageToolbar
+        search={
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder="Search by return ID, Invoice No. or Customer..."
+            label="Search returns"
+          />
+        }
+      >
+        <FilterDropdown
+          label="Refund method"
+          value={method}
+          onChange={setMethod}
+          options={[
+            { value: "", label: "Any method" },
+            ...REFUND_METHODS.map((m) => ({ value: m.value, label: m.label })),
+          ]}
+        />
+        <DateFilter value={dates} onChange={setDates} />
 
-        <div className="flex shrink-0 items-center gap-[16px]">
-          <DateField value={date} onChange={(d) => {
-              setDate(d);
-              // Page 1 of the new filter, not page 5 of the old one.
-              setPage(1);
-            }} ariaLabel="Filter returns by date" />
-
-          <Link
-            href="/sales-pos/return/new"
-            style={{
-              backgroundImage:
-                "linear-gradient(180deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0) 100%), linear-gradient(90deg, rgb(245,184,0) 0%, rgb(245,184,0) 100%)",
-            }}
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-          >
-            <AddIcon />
-            Add New
-          </Link>
-        </div>
-      </div>
+        <ActionLink href="/sales-pos/return/new" variant="primary">
+          <PlusIcon />
+          Add New
+        </ActionLink>
+      </PageToolbar>
 
       {/* Table card — 48:5494 */}
-      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className={TABLE_CARD}>
         <RefreshBar active={fetching} />
         {/* Table — 48:5511 */}
+        {/* One scroller for the table, the phone cards and the load trigger.
+            The trigger has to sit INSIDE it — below the scroller it never
+            leaves the screen, and every page loads at once the moment the
+            table opens. */}
+        <div className="table-scroll">
+
         <div className="hidden px-[16px] pt-[16px] md:block">
-          <div className="overflow-x-auto">
+          <div>
             <div className="min-w-[1128px]">
-              <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
+              <div className={`table-head grid ${GRID} items-start overflow-clip rounded-[6px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Return No.</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Invoice No.</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Date &amp; Time</span></div>
@@ -170,7 +154,6 @@ export default function ReturnPage() {
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Total Amount</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Refund</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Payment</span></div>
-                <div className={`${CELL} h-[40px] justify-center bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Status</span></div>
                 <div className={`${CELL} h-[40px] justify-center bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Action</span></div>
               </div>
 
@@ -178,17 +161,17 @@ export default function ReturnPage() {
                 <QueryBoundary
                   loading={loading}
                   error={error}
-                  hasData={data !== undefined}
-                  skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
+                  hasData={!loading && !error}
+                  skeleton={<TableSkeleton columns={GRID} rows={8} />}
                   errorMessage="Returns could not be loaded."
                   onRetry={refetch}
                 >
                 {rows.length === 0 && (
                   <EmptyState
                     message={
-                      term || date ? "No returns match that search or date." : "No returns yet."
+                      term || dates.mode !== "all" ? "No returns match that search or date." : "No returns yet."
                     }
-                    hint={term || date ? undefined : "Start one from an invoice."}
+                    hint={term || dates.mode !== "all" ? undefined : "Start one from an invoice."}
                   />
                 )}
                 {rows.map((r, i) => (
@@ -213,33 +196,31 @@ export default function ReturnPage() {
                     <div className={`${CELL}`}><span className={`${TEXT} truncate`}>{r.totalAmountFormatted}</span></div>
                     <div className={`${CELL}`}><span className={`${TEXT} truncate`}>{r.refundAmountFormatted}</span></div>
                     <div className={`${CELL}`}><span className={`${TEXT} truncate`}>{r.paymentMethod}</span></div>
-                    <div className={`${CELL} justify-center`}>
-                      <StatusPill label={r.status} tone={STATUS_TONE[r.status] ?? "slate"} />
-                    </div>
                     <div
                       className={`${CELL} justify-center`}
                       onClick={(e) => e.stopPropagation()}
                     >
                       <RowActionMenu
                         label={`Actions for ${r.returnNo}`}
-                        // Approve / Reject / Withdraw used to sit here. They
-                        // changed a row on screen and nothing else: SaleReturn
-                        // has two states, CONFIRMED and CANCELLED, no approval
-                        // step, and no endpoint to move between them. A return
-                        // is already refunded by the time it is listed.
+                        // Approve / Reject / Withdraw all used to sit here.
+                        //
+                        // The first two changed a row on screen and nothing
+                        // else: SaleReturn has two states, CONFIRMED and
+                        // CANCELLED, no approval step, and no endpoint to move
+                        // between them.
+                        //
+                        // Withdraw was real, and it lives on the SALES screen
+                        // instead — beside the invoice whose stock, ledger and
+                        // status it puts back. Undoing a refund from the list
+                        // OF refunds meant the row you were undoing was the
+                        // only context you had; the sale it reverses is the
+                        // thing a shopkeeper actually needs to look at. Nothing
+                        // was lost: this list now shows confirmed refunds only,
+                        // so a refund withdrawn over there disappears from here
+                        // on the next fetch.
                         actions={[
                           { label: "View return", onSelect: () => setDetailOf(r) },
                           { label: "Print slip", onSelect: () => setSlipOf(r) },
-                          // A refund already withdrawn has nothing left to undo.
-                          ...(r.status === "Rejected"
-                            ? []
-                            : [
-                                {
-                                  label: "Withdraw refund",
-                                  tone: "danger" as const,
-                                  onSelect: () => setWithdrawOf(r),
-                                },
-                              ]),
                         ]}
                       />
                     </div>
@@ -259,10 +240,10 @@ export default function ReturnPage() {
           <CardListState
             loading={loading}
             error={error}
-            hasData={data !== undefined}
+            hasData={!loading && !error}
             isEmpty={rows.length === 0}
             errorMessage="Returns could not be loaded."
-            emptyMessage={term || date ? "No returns match that search or date." : "No returns yet."}
+            emptyMessage={term || dates.mode !== "all" ? "No returns match that search or date." : "No returns yet."}
             onRetry={refetch}
             rows={4}
           />
@@ -275,7 +256,12 @@ export default function ReturnPage() {
                     {r.invoiceNo} · {r.customerName}
                   </p>
                 </div>
-                <StatusPill label={r.status} tone={STATUS_TONE[r.status] ?? "slate"} />
+                {/* The status pill is gone with the column. Every refund on
+                    this screen is a confirmed one, so it read "Paid" on every
+                    card and told a shopkeeper nothing. */}
+                <span className={`${TEXT} shrink-0 !text-[#1e1e1e]`}>
+                  {r.totalAmountFormatted}
+                </span>
               </div>
               <div className="mt-[10px] flex items-center justify-between gap-[10px]">
                 <span className="truncate text-[12px] tracking-[-0.24px] text-[#525252]">{r.dateTime}</span>
@@ -286,20 +272,17 @@ export default function ReturnPage() {
           ))}
         </div>
 
-        {note && <p className="px-[16px] pt-[10px] text-[13px] text-[#525252]">{note}</p>}
-
         {/* Pagination — 48:5835 */}
         <div className="mt-[9px]">
-          <TablePagination
-            page={current}
-            pageSize={pageSize}
+          <ScrollEnd
+            sentinelRef={sentinelRef}
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            shown={rows.length}
             total={total}
-            onPageChange={setPage}
-            onPageSizeChange={(n) => {
-              setPageSize(n);
-              setPage(1);
-            }}
+            noun="returns"
           />
+        </div>
         </div>
       </div>
 
@@ -343,12 +326,9 @@ export default function ReturnPage() {
                 <dd className="text-[14px] font-medium text-[#1e1e1e]">{v}</dd>
               </div>
             ))}
-            <div className="flex items-center justify-between gap-[16px]">
-              <dt className="text-[14px] text-[#525252]">Status</dt>
-              <dd>
-                <StatusPill label={detailOf.status} tone={STATUS_TONE[detailOf.status] ?? "slate"} />
-              </dd>
-            </div>
+            {/* No Status row. This screen lists confirmed refunds only, so the
+                pill read "Paid" on every one of them — a field that cannot
+                vary is a field nobody should have to read. */}
 
             {/* What came back, and therefore what went back into stock. The
                 quantities are the return's own lines, not a guess from the
@@ -384,97 +364,15 @@ export default function ReturnPage() {
         )}
       </Modal>
 
-      {/* Withdraw a refund */}
-      <Modal
-        open={withdrawOf !== null}
-        onClose={() => {
-          if (!withdrawing) setWithdrawOf(null);
-        }}
-        title="Withdraw refund"
-        width={460}
-        footer={
-          <>
-            <button
-              type="button"
-              disabled={withdrawing}
-              className={MODAL_GHOST}
-              onClick={() => setWithdrawOf(null)}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={withdrawing}
-              className={MODAL_PRIMARY}
-              style={{ backgroundImage: GOLD_GRADIENT }}
-              onClick={async () => {
-                if (!withdrawOf) return;
-                setWithdrawing(true);
-                try {
-                  await ReturnService.withdrawReturn(withdrawOf.id);
-                  await refetch();
-                  setNote(`${withdrawOf.returnNo} withdrawn`);
-                  setWithdrawOf(null);
-                } catch (err: any) {
-                  // The server names every SKU that is short; that is the
-                  // whole of what the operator can act on, so show it.
-                  setNote(err?.message || "Could not withdraw this refund.");
-                } finally {
-                  setWithdrawing(false);
-                }
-              }}
-            >
-              {withdrawing ? "Withdrawing…" : "Withdraw refund"}
-            </button>
-          </>
-        }
-      >
-        {withdrawOf && (
-          <div className="flex flex-col gap-[14px]">
-            <p className="text-[14px] leading-[1.6] text-[#525252]">
-              Undo <span className="font-medium text-[#1e1e1e]">{withdrawOf.returnNo}</span> against
-              invoice <span className="font-medium text-[#1e1e1e]">{withdrawOf.invoiceNo}</span>?
-            </p>
-
-            <div className="flex flex-col gap-[8px] rounded-[10px] bg-[#fafafa] p-[12px]">
-              <p className="text-[13px] font-medium text-[#1e1e1e]">Back off the shelf</p>
-              {withdrawOf.items.length === 0 ? (
-                <p className="text-[13px] text-[#9e9e9e]">This return records no lines.</p>
-              ) : (
-                <ul className="flex flex-col gap-[6px]">
-                  {withdrawOf.items.map((line) => (
-                    <li key={line.id} className="flex items-start justify-between gap-[12px]">
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[13px] text-[#1e1e1e]">{line.name}</span>
-                        <span className="block truncate text-[11px] text-[#9e9e9e]">{line.sku}</span>
-                      </span>
-                      <span className="shrink-0 text-[13px] font-medium whitespace-nowrap text-[#e5484d]">
-                        −{line.quantity}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <p className="text-[12px] leading-[1.5] text-[#9e9e9e]">
-                Refused if any of it has since been sold to somebody else.
-              </p>
-            </div>
-
-            <div className="flex items-center justify-between gap-[12px] border-t border-solid border-[#eaeaea] pt-[12px]">
-              <span className="text-[14px] text-[#525252]">Back onto revenue</span>
-              <span className="text-[16px] font-semibold text-[#00b837]">
-                +{withdrawOf.totalAmountFormatted}
-              </span>
-            </div>
-          </div>
-        )}
-      </Modal>
-
-      {/* Print slip — the print stylesheet hides everything but .print-area */}
+      {/* The refund slip — the same document as the invoice, in the same shape.
+          It used to be a hand-drawn list of label/value rows: no shop name, no
+          address, no lines, nothing a customer could match against the receipt
+          they were handed when they bought the thing. The print stylesheet
+          hides everything but .print-area. */}
       <Modal
         open={slipOf !== null}
         onClose={() => setSlipOf(null)}
-        title="Return slip"
+        title="Refund slip"
         width={420}
         footer={
           <>
@@ -493,22 +391,58 @@ export default function ReturnPage() {
         }
       >
         {slipOf && (
-          <div className="print-area flex flex-col gap-[10px] text-[13px] text-[#525252]">
-            <p className="text-center text-[16px] font-semibold text-[#1e1e1e]">SortPi</p>
-            <p className="text-center text-[12px]">Return / Refund slip</p>
-            <div className="my-[6px] h-px w-full bg-[#eaeaea]" />
-            <p className="flex justify-between"><span>Return</span><span className="font-medium text-[#1e1e1e]">{slipOf.returnNo}</span></p>
-            <p className="flex justify-between"><span>Against invoice</span><span>{slipOf.invoiceNo}</span></p>
-            <p className="flex justify-between"><span>Date</span><span>{slipOf.dateTime}</span></p>
-            <p className="flex justify-between"><span>Customer</span><span>{slipOf.customerName}</span></p>
-            <p className="flex justify-between"><span>Payment</span><span>{slipOf.paymentMethod}</span></p>
-            <p className="flex justify-between"><span>Status</span><span>{slipOf.status}</span></p>
-            <div className="my-[6px] h-px w-full bg-[#eaeaea]" />
-            <p className="flex justify-between text-[15px] font-semibold text-[#1e1e1e]">
-              <span>Refund</span>
-              <span>{slipOf.refundAmountFormatted}</span>
-            </p>
-            <p className="mt-[8px] text-center text-[12px]">Customer signature ____________________</p>
+          <div className="print-area">
+            <Receipt
+              business={{
+                name: shop.name,
+                tagline: shop.tagline,
+                address: shop.address,
+                bin: shop.bin,
+              }}
+              title="RETURN / REFUND"
+              customer={{ name: slipOf.customerName, phone: slipOf.customerPhone }}
+              meta={[
+                { label: "Return No", value: slipOf.returnNo },
+                { label: "Against Invoice", value: slipOf.invoiceNo },
+                { label: "Date", value: slipOf.dateTime },
+                { label: "Refund by", value: slipOf.paymentMethod },
+                { label: "Status", value: slipOf.status },
+              ]}
+              itemsHeading="Item Returned"
+              items={slipOf.items.map((line) => ({
+                name: line.name,
+                price: formatMoney(line.unitPrice, MONEY),
+                qty: line.quantity,
+                total: formatMoney(line.lineTotal, MONEY),
+              }))}
+              totals={[
+                { label: "Returned value:", value: formatMoney(slipOf.totalAmount, MONEY) },
+                {
+                  label: "Refunded:",
+                  value: formatMoney(slipOf.refundAmount, MONEY),
+                  strong: true,
+                  ruleAbove: true,
+                },
+                // What is NOT being handed back in cash today. A refund can be
+                // less than the goods are worth — a restocking fee, or credit
+                // taken against the customer's account instead — and a slip
+                // that showed only one of the two figures was the one argued
+                // about at the counter.
+                ...(slipOf.totalAmount - slipOf.refundAmount > 0
+                  ? [
+                      {
+                        label: "To account:",
+                        value: formatMoney(slipOf.totalAmount - slipOf.refundAmount, MONEY),
+                      },
+                    ]
+                  : []),
+              ]}
+              footerNotes={[
+                "Goods returned as listed above.",
+                "Customer signature ____________________",
+              ]}
+              system={{ name: "SortPi", url: "www.sortpi.com" }}
+            />
           </div>
         )}
       </Modal>
