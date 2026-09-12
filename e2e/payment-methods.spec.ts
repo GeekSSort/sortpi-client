@@ -175,6 +175,22 @@ async function withSettings(page: Page, stored: string) {
   return writes;
 }
 
+/**
+ * Open Settings AT the Payments tab.
+ *
+ * The screen used to be one long form and these tests walked straight onto the
+ * tenders. It is five tabs now — Company, Till & tax, Payments, Customer
+ * points, Stock types — so landing on /settings shows the company details and
+ * every locator below finds nothing. The failure looks like the boxes were
+ * removed; they were one click away.
+ */
+async function openPayments(page: Page) {
+  await page.goto("/settings");
+  // `tab`, not `button`: the header sets an explicit role, which replaces the
+  // implicit one.
+  await page.getByRole("tab", { name: "Payments", exact: true }).click();
+}
+
 /** The label on a box, since the code and the label differ for cards. */
 const BOX = {
   bKash: "bKash",
@@ -191,7 +207,7 @@ test.describe("the shop's payment methods are ticked, not typed", () => {
   test("the Bangladeshi methods are all offered as boxes", async ({ page }) => {
     await stubApi(page);
     await withSettings(page, "Card, bKash, Nagad, Rocket, Bank Transfer, Others");
-    await page.goto("/settings");
+    await openPayments(page);
 
     for (const label of Object.values(BOX)) {
       await expect(page.getByText(label, { exact: true })).toBeVisible();
@@ -204,7 +220,7 @@ test.describe("the shop's payment methods are ticked, not typed", () => {
     await stubApi(page);
     // The spellings a text box allowed: casing, spacing, a brand written out.
     await withSettings(page, "  bkash , VISA/MASTERCARD ,bank , Due on delivery ");
-    await page.goto("/settings");
+    await openPayments(page);
 
     const ticked = (label: string) =>
       page.locator("label").filter({ hasText: label }).locator("input[type=checkbox]").first();
@@ -222,7 +238,7 @@ test.describe("the shop's payment methods are ticked, not typed", () => {
   test("ticking and saving writes the catalogue's spelling in box order", async ({ page }) => {
     await stubApi(page);
     const writes = await withSettings(page, "bkash, VISA/MASTERCARD");
-    await page.goto("/settings");
+    await openPayments(page);
 
     const ticked = (label: string) =>
       page.locator("label").filter({ hasText: label }).locator("input[type=checkbox]").first();
@@ -242,7 +258,7 @@ test.describe("the shop's payment methods are ticked, not typed", () => {
   test("saving no methods at all is refused rather than emptying the till", async ({ page }) => {
     await stubApi(page);
     const writes = await withSettings(page, "bKash, Nagad");
-    await page.goto("/settings");
+    await openPayments(page);
 
     const ticked = (label: string) =>
       page.locator("label").filter({ hasText: label }).locator("input[type=checkbox]").first();
@@ -336,14 +352,23 @@ test.describe("the till offers exactly what Settings ticked", () => {
     await withTill(page);
 
     const dialog = await payOnline(page);
-    await expect(dialog.getByText("Select Payment Method")).toBeVisible();
 
-    const options = dialog.locator("div.grid > button");
-    await expect(options).toHaveText(["Nagad", "bKash", "Bank Transfer"]);
+    // A labelled SELECT, not a grid of buttons headed "Select Payment Method".
+    // The dialog was rebuilt around the same four questions the cash one asks,
+    // and a shop that takes eight tenders had eight tiles pushing the amount
+    // box off the screen. What is being checked has not changed: exactly the
+    // configured methods, in the configured order.
+    const picker = dialog.getByLabel(/Payment method/);
+    await expect(picker).toBeVisible();
+    await expect(picker.locator("option")).toHaveText([
+      "Nagad",
+      "bKash",
+      "Bank Transfer",
+    ]);
 
     // The ones this shop turned off are not on the till at all.
-    await expect(dialog.getByRole("button", { name: "Rocket" })).toHaveCount(0);
-    await expect(dialog.getByRole("button", { name: /^Card$/ })).toHaveCount(0);
+    await expect(picker.locator("option", { hasText: "Rocket" })).toHaveCount(0);
+    await expect(picker.locator("option", { hasText: /^Card$/ })).toHaveCount(0);
   });
 
   test("a shop's own tender reaches the till and is booked as OTHER", async ({ page }) => {
@@ -352,13 +377,13 @@ test.describe("the till offers exactly what Settings ticked", () => {
     const checkouts = await withTill(page);
 
     const dialog = await payOnline(page);
-    const options = dialog.locator("div.grid > button");
-    await expect(options).toHaveText(["Cheque", "Due on delivery"]);
+    const picker = dialog.getByLabel(/Payment method/);
+    await expect(picker.locator("option")).toHaveText(["Cheque", "Due on delivery"]);
 
     // A cheque is bank money, not card money. The old substring ladder in
     // `PosService.checkout` ended in `return "CARD"`, so both of these were
     // booked as card takings and no terminal reconciliation could balance.
-    await dialog.getByRole("button", { name: "Cheque" }).click();
+    await picker.selectOption("Cheque");
     await dialog.getByRole("button", { name: /^Confirm/ }).click();
     await expect.poll(() => checkouts.length).toBeGreaterThan(0);
     expect(checkouts[0].payments[0].payment_method).toBe("BANK");
