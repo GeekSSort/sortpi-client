@@ -88,6 +88,18 @@ export const BACK_OFFICE_PAGES: PageAccess[] = [
   // half the books with nothing on the page to say so — which is why the API
   // requires the pair too.
   { href: "/finance/income-expense", codes: ["income.view", "expense.view"], requireAll: true },
+  // Both halves again, and for the same reason: the list interleaves income
+  // and expense vouchers and its Net Balance card is the difference. The API
+  // requires the pair too, so a user holding one would reach the page and get
+  // a 403 from every request on it.
+  { href: "/finance/vouchers", codes: ["income.view", "expense.view"], requireAll: true },
+  // And again for the schedules, which interleave both sides and whose
+  // "monthly commitment" card is read off them.
+  {
+    href: "/finance/regular-payments",
+    codes: ["income.view", "expense.view"],
+    requireAll: true,
+  },
   { href: "/purchases/suppliers", codes: ["supplier.view"] },
   { href: "/customers", codes: ["customer.view"] },
   {
