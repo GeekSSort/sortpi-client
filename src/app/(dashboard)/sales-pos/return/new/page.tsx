@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ReturnService } from "@/services";
 import { ReturnableSale } from "@/types/returns";
 import { formatMoney } from "@/lib/format";
+import { REFUND_METHODS, type RefundMethod } from "@/lib/paymentMethods";
 import { useQuery, queryKey, useMutation } from "@/lib/query/useQuery";
 import { DetailSkeleton } from "@/components/shared/Skeleton";
 import { RefreshBar } from "@/components/shared/QueryBoundary";
@@ -23,15 +24,6 @@ import { RefreshBar } from "@/components/shared/QueryBoundary";
  * stamped on the original line, and `returnable` is its own figure, so a line
  * cannot be refunded twice.
  */
-
-const REFUND_METHODS = [
-  { value: "CASH", label: "Cash" },
-  { value: "CARD", label: "Card" },
-  { value: "MOBILE", label: "bKash" },
-  { value: "BANK", label: "Bank Transfer" },
-] as const;
-
-type RefundMethod = (typeof REFUND_METHODS)[number]["value"];
 
 /** Today as YYYY-MM-DD in the shop's own timezone, not UTC. */
 function today(): string {
@@ -198,11 +190,59 @@ function NewReturnForm() {
   // total below depends on it.
   const lines = useMemo(() => sale?.items ?? [], [sale]);
 
-  const refundTotal = useMemo(
-    () => lines.reduce((sum, line) => sum + (picked[line.id] ?? 0) * line.unitPrice, 0),
+  /**
+   * What the goods being sent back are WORTH.
+   *
+   * From `lineTotal`, not `unitPrice`. `lineTotal` is what the customer was
+   * actually charged for the line — net of its own offer and of its share of
+   * any invoice discount — and it is what the server refunds. Totalling the
+   * shelf price quoted more than the shop hands over: ten at 100 with a 200
+   * discount took 800 and this screen promised 1,000.
+   *
+   * Per unit, so a partial return is a share of what was charged, which is
+   * exactly how `_refund_for` works it out on the server.
+   */
+  const goodsValue = useMemo(
+    () =>
+      lines.reduce((sum, line) => {
+        const qty = picked[line.id] ?? 0;
+        if (qty <= 0 || line.quantity <= 0) return sum;
+        return sum + (line.lineTotal / line.quantity) * qty;
+      }, 0),
     [lines, picked]
   );
+
+  /**
+   * And what the CUSTOMER actually gets back, which is not the same figure.
+   *
+   * A refund returns money that was received. Where a sale still owes
+   * something, the return clears the debt first and only the remainder is
+   * handed over: ৳1,000 of goods against a ৳400 debt is ৳400 off the account
+   * and ৳600 in cash. Quoting the goods value there would have the shop paying
+   * out money it never took.
+   *
+   * The same rule the server applies in `_compute_return_credit`, so the
+   * figure on screen is the figure that gets refunded.
+   */
+  const owed = sale?.outstandingAmount ?? 0;
+  const creditBack = Math.min(goodsValue, Math.max(0, owed));
+  const refundTotal = Math.max(0, goodsValue - creditBack);
   const pickedCount = Object.values(picked).reduce((n, q) => n + q, 0);
+
+  /** Everything still returnable, in one press. */
+  const refundEverything = () => {
+    const all: Record<string, number> = {};
+    for (const line of lines) {
+      // What is LEFT, so a line already half returned takes only the rest —
+      // the server caps at the same figure and would refuse anything more.
+      if (line.returnable > 0) all[line.id] = line.returnable;
+    }
+    setPicked(all);
+  };
+
+  const everythingPicked =
+    lines.length > 0 &&
+    lines.every((line) => line.returnable <= 0 || (picked[line.id] ?? 0) >= line.returnable);
 
   const canSubmit =
     !!sale && pickedCount > 0 && reference.trim() !== "" && returnDate !== "" && !saving;
@@ -313,11 +353,25 @@ function NewReturnForm() {
         {/* 2 — what came back */}
         {sale && lines.length > 0 && (
           <div className="overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
-            <div className="border-b border-solid border-[#eaeaea] px-[16px] py-[12px]">
-              <h3 className="text-[14px] font-semibold text-[#1e1e1e]">What came back</h3>
-              <p className="mt-[2px] text-[12px] text-[#8f8d87]">
-                Up to what is still returnable on each line.
-              </p>
+            <div className="flex flex-wrap items-center justify-between gap-[10px] border-b border-solid border-[#eaeaea] px-[16px] py-[12px]">
+              <div className="min-w-0">
+                <h3 className="text-[14px] font-semibold text-[#1e1e1e]">What came back</h3>
+                <p className="mt-[2px] text-[12px] text-[#8f8d87]">
+                  Up to what is still returnable on each line.
+                </p>
+              </div>
+              {/* The whole invoice, in one press.
+                  The common case at a counter is everything coming back, and
+                  doing it by hand is one press per line plus a count of what
+                  is left on each. It fills the boxes and stops — the cashier
+                  still reads the list and presses Record refund. */}
+              <button
+                type="button"
+                onClick={everythingPicked ? () => setPicked({}) : refundEverything}
+                className="flex h-[36px] shrink-0 cursor-pointer items-center justify-center rounded-[10px] px-[14px] text-[13px] font-semibold whitespace-nowrap transition-colors shadow-[inset_0_0_0_1px_#eaeaea] hover:bg-[#fafafa] text-[#525252] hover:text-[#1e1e1e]"
+              >
+                {everythingPicked ? "Clear selection" : "Refund all items"}
+              </button>
             </div>
 
             <div className="overflow-x-auto">
@@ -460,18 +514,52 @@ function NewReturnForm() {
               <span className="text-[#525252]">
                 {pickedCount} item{pickedCount === 1 ? "" : "s"} returning
               </span>
-              <span className="text-[#8f8d87]">at the price on the original sale</span>
+              <span className="text-[#8f8d87]">at what was charged on the original sale</span>
             </div>
+
+            {/* The goods, and then what of it is actually MONEY.
+                Broken out because the two differ whenever the sale still owes
+                something, and a single "Refund" line would be the wrong figure
+                in the one case a cashier most needs the right one. */}
+            <div className="flex items-center justify-between text-[13px]">
+              <span className="text-[#525252]">Goods returning</span>
+              <span data-testid="goods-value" className="text-[#525252] tabular-nums">
+                {formatMoney(goodsValue)}
+              </span>
+            </div>
+            {creditBack > 0 && (
+              <div className="flex items-center justify-between text-[13px]">
+                <span className="text-[#525252]">
+                  Clears what is still owed
+                  <span className="text-[#8f8d87]"> · {formatMoney(owed)} outstanding</span>
+                </span>
+                <span className="text-[#525252] tabular-nums">− {formatMoney(creditBack)}</span>
+              </div>
+            )}
             <div className="flex items-center justify-between border-t border-solid border-[#eaeaea] pt-[10px]">
-              <span className="text-[15px] font-semibold text-[#1e1e1e]">Refund</span>
-              <span className="text-[18px] font-semibold text-[#1e1e1e] tabular-nums">
+              <span className="text-[15px] font-semibold text-[#1e1e1e]">
+                {creditBack > 0 ? "Cash back to customer" : "Refund"}
+              </span>
+              <span
+                data-testid="refund-total"
+                className="text-[18px] font-semibold text-[#1e1e1e] tabular-nums"
+              >
                 {formatMoney(refundTotal)}
               </span>
             </div>
-            <p className="text-[12px] text-[#8f8d87]">
-              An estimate from the line prices. The server refunds against the original sale, and
-              its figure is the one recorded.
-            </p>
+            {creditBack > 0 ? (
+              // The sentence that stops a cashier handing over the wrong money.
+              <p className="text-[12px] leading-[1.6] text-[#8f8d87]">
+                This customer paid {formatMoney(sale.settledAmount)} of{" "}
+                {formatMoney(sale.grandTotal)}, so {formatMoney(creditBack)} of the return comes
+                off what they still owe and {formatMoney(refundTotal)} is handed back.
+              </p>
+            ) : (
+              <p className="text-[12px] text-[#8f8d87]">
+                Worked out from the original sale. The server refunds against it and its figure is
+                the one recorded.
+              </p>
+            )}
 
             {saveError && (
               <p className="rounded-[8px] bg-[#ffdfe2] px-[10px] py-[8px] text-[13px] text-[#e63946]">
