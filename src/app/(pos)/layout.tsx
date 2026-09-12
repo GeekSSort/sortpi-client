@@ -22,7 +22,15 @@ import DashboardShell from "@/components/shared/DashboardShell";
 export default async function PosLayout({ children }: { children: React.ReactNode }) {
   const posOnly = (await cookies()).get("sp_scope")?.value === "pos";
 
-  if (!posOnly) return <DashboardShell fill>{children}</DashboardShell>;
+  // `maximizable`: a back-office user can put the till full-window and take
+  // the menu and header away. The cashier frame below has no such switch —
+  // it is already the whole window, and PosRail is the only way off it.
+  if (!posOnly)
+    return (
+      <DashboardShell fill maximizable>
+        {children}
+      </DashboardShell>
+    );
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-white">
