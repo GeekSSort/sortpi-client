@@ -28,6 +28,8 @@ export class StockService {
     if (params?.search) searchParams.set("search", params.search);
     if (params?.warehouse) searchParams.set("warehouse", params.warehouse);
     if (params?.status) searchParams.set("status", params.status);
+    // in | low | out — the three states the Stock screen shows.
+    if (params?.stockStatus) searchParams.set("stock_status", params.stockStatus);
     if (params?.page) searchParams.set("page", String(params.page));
     if (params?.includeUnstocked) searchParams.set("include_unstocked", "true");
     // The API caps a page at 200 (StandardPagination.max_page_size); asking
