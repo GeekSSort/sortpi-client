@@ -19,3 +19,6 @@ export * from "./notificationService";
 export * from "./reportService";
 export * from "./discountService";
 export * from "./financeService";
+export * from "./voucherService";
+export * from "./regularPaymentService";
+export * from "./couponService";
