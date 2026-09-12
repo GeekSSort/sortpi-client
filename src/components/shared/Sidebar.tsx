@@ -23,6 +23,7 @@ import {
   PosIcon,
   PurchasesIcon,
   ReportsIcon,
+  ReturnsIcon,
   RolesIcon,
   SalesPosIcon,
   SettingsIcon,
@@ -65,15 +66,21 @@ const NAV: NavItem[] = [
     // its own, and the guard sends this reader to it.
     match: (p) => p === "/pos",
   },
+  // Two menu entries, not one with a drawer. They are read at different times
+  // by different people — a shopkeeper checking today's takings is not the
+  // person processing a refund — and nesting them meant reaching either one
+  // opened a submenu naming the other.
   {
-    name: "Sales & Return",
+    name: "Invoices",
     href: "/sales-pos/sales",
     icon: SalesPosIcon,
-    match: (p) => p.startsWith("/sales-pos"),
-    children: [
-      { name: "Sales", href: "/sales-pos/sales", match: (p) => p.startsWith("/sales-pos/sales") },
-      { name: "Return", href: "/sales-pos/return", match: (p) => p.startsWith("/sales-pos/return") },
-    ],
+    match: (p) => p.startsWith("/sales-pos/sales"),
+  },
+  {
+    name: "Returns and Refunds",
+    href: "/sales-pos/return",
+    icon: ReturnsIcon,
+    match: (p) => p.startsWith("/sales-pos/return"),
   },
   {
     name: "Customers",
@@ -126,15 +133,26 @@ const NAV: NavItem[] = [
     href: "/finance/income-expense",
     icon: FinanceIcon,
     match: (p) => p.startsWith("/finance"),
-    // Voucher is in the Figma group (369:5812) and is NOT listed here: it has
-    // no design and no implementation, and a menu row that leads to a
-    // placeholder is how somebody concludes the product is half-built. Add it
-    // back beside this one when the Voucher frames arrive.
     children: [
       {
         name: "Income & Expense",
         href: "/finance/income-expense",
         match: (p) => p.startsWith("/finance/income-expense"),
+      },
+      {
+        // The Figma group's second child (369:5812), built now. It reads the
+        // same two tables as the row above — a voucher IS an income or an
+        // expense — so the two screens can never disagree about a figure.
+        name: "Vouchers",
+        href: "/finance/vouchers",
+        match: (p) => p.startsWith("/finance/vouchers"),
+      },
+      {
+        // The money that has NOT happened yet — schedules, not documents.
+        // Paying one writes a voucher, so it sits directly under that row.
+        name: "Regular Payments",
+        href: "/finance/regular-payments",
+        match: (p) => p.startsWith("/finance/regular-payments"),
       },
     ],
   },
@@ -304,7 +322,12 @@ export default function Sidebar() {
             <BranchSwitcher onChange={onBranchSwitched} />
           </div>
 
-          <nav className="flex w-[208px] min-h-0 flex-1 flex-col gap-[8px] overflow-x-hidden overflow-y-auto [scrollbar-width:thin]">
+          {/* Still scrolls; the bar itself is hidden.
+              `no-scrollbar` is the utility the POS category row already uses —
+              the menu is a short, familiar list and a permanent grey track
+              down the side of it reads as a seam in the chrome rather than as
+              a control anybody uses. */}
+          <nav className="no-scrollbar flex w-[208px] min-h-0 flex-1 flex-col gap-[8px] overflow-x-hidden overflow-y-auto">
             {nav.map((item) => {
               const Icon = item.icon;
               const active = item.match(pathname);
