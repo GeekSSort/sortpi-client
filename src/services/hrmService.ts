@@ -1,4 +1,4 @@
-import { EmployeeProfile, EmployeeRecord, HrmQueryFilter } from "@/types/hrm";
+import { AttendanceDay, EmployeeProfile, EmployeeRecord, HrmQueryFilter } from "@/types/hrm";
 import { apiFetch, apiList, ApiError, PagedResult, toAmount, tokenStore } from "./apiClient";
 import { AttendanceToday, toEmployeeRecord } from "./mappers/employee";
 import { BranchService } from "./branchService";
@@ -14,6 +14,16 @@ export interface Lookup {
   id: string;
   name: string;
 }
+
+/** The API's enum, in the words the screens use. */
+const STATUS_OF: Record<string, AttendanceDay["status"]> = {
+  PRESENT: "Present",
+  LATE: "Present",
+  ON_LEAVE: "On Leave",
+  LEAVE: "On Leave",
+  ABSENT: "Absent",
+  HOLIDAY: "Holiday",
+};
 
 export class HrmService {
   /**
@@ -104,6 +114,63 @@ export class HrmService {
   /** A gated money field: a number when present, `undefined` when withheld. */
   private static toMoney(raw: unknown): number | undefined {
     return raw === undefined || raw === null ? undefined : toAmount(raw);
+  }
+
+  /**
+   * One person's attendance for one month, plus who they are.
+   *
+   * Two requests because they answer different questions: `/hrm/employees/`
+   * says who somebody is, `/hrm/attendance/` says what they did on each day.
+   * The month is bounded on BOTH ends — asking without `date_to` returns
+   * every record ever written for them, and the page would count a year's
+   * absences into one month's total.
+   */
+  static async getAttendanceMonth(
+    employeeId: string,
+    month: string
+  ): Promise<{ employee: EmployeeProfile | null; days: AttendanceDay[] }> {
+    const [year, m] = month.split("-").map(Number);
+    const from = `${month}-01`;
+    // Day 0 of the next month is the last of this one — no month-length table.
+    const last = new Date(year, m, 0);
+    const to = `${month}-${String(last.getDate()).padStart(2, "0")}`;
+
+    const [people, rows] = await Promise.all([
+      apiList<any>(`/hrm/employees/?limit=200`, { method: "GET" }, (r) => r),
+      apiList<any>(
+        `/hrm/attendance/?employee=${employeeId}&date_from=${from}&date_to=${to}&limit=200`,
+        { method: "GET" },
+        (r) => r
+      ),
+    ]);
+
+    const row = (people.data || []).find((e: any) => String(e?.id) === String(employeeId));
+    const first = String(row?.firstName ?? row?.first_name ?? "");
+    const lastName = String(row?.lastName ?? row?.last_name ?? "");
+    const employee: EmployeeProfile | null = row
+      ? {
+          id: String(row?.id ?? ""),
+          index: "",
+          name: `${first} ${lastName}`.trim() || "—",
+          email: String(row?.email ?? ""),
+          phone: String(row?.phone ?? ""),
+          department: String(row?.departmentName ?? row?.department_name ?? ""),
+          designation: String(row?.designationName ?? row?.designation_name ?? ""),
+          branch: String(row?.branchName ?? row?.branch_name ?? ""),
+          joinedOn: String(row?.dateOfJoining ?? row?.date_of_joining ?? ""),
+          isActive: (row?.isActive ?? row?.is_active ?? true) !== false,
+        }
+      : null;
+
+    const days: AttendanceDay[] = (rows.data || []).map((a: any) => ({
+      id: String(a?.id ?? ""),
+      date: String(a?.date ?? ""),
+      status: STATUS_OF[String(a?.status ?? "").toUpperCase()] ?? "Absent",
+      checkIn: String(a?.checkIn ?? a?.check_in ?? "") || "",
+      checkOut: String(a?.checkOut ?? a?.check_out ?? "") || "",
+    }));
+    days.sort((x, y) => x.date.localeCompare(y.date));
+    return { employee, days };
   }
 
   static async getRoster(params?: {
