@@ -21,13 +21,17 @@ export class ReturnService {
   /**
    * Fetch returns with search and filters.
    *
-   * `search`, `status` and the dates are applied by the API. They used to be
-   * sent and ignored, so the search box changed nothing.
+   * `search`, `refund_method` and the dates are applied by the API. They used
+   * to be sent and ignored, so the search box changed nothing.
+   *
+   * The API lists CONFIRMED refunds only, so a refund withdrawn from the Sales
+   * screen drops out of here on the next fetch — and `withdrawReturn` below
+   * invalidates "returns", so that fetch happens immediately.
    */
   static async getReturns(params?: ReturnQueryFilter): Promise<{ data: ReturnRecord[]; total: number }> {
     const searchParams = new URLSearchParams();
     if (params?.search) searchParams.set("search", params.search);
-    if (params?.status) searchParams.set("status", params.status);
+    if (params?.refundMethod) searchParams.set("refund_method", params.refundMethod);
     if (params?.page) searchParams.set("page", String(params.page));
     if (params?.startDate) searchParams.set("date_from", params.startDate);
     if (params?.endDate) searchParams.set("date_to", params.endDate);
@@ -69,6 +73,12 @@ export class ReturnService {
       customerName: String(row.customerName ?? "Walk-in Customer"),
       saleDate: String(row.saleDate ?? ""),
       grandTotal: toAmount(row.grandTotal),
+      // The LIVE settlement, which is what a refund is measured against — the
+      // tender at the till plus anything collected since, less what a previous
+      // return credited back. `paidAmount` beside it is frozen at the moment
+      // the sale was rung up and never moves again.
+      settledAmount: toAmount(row.settledAmount ?? row.settled_amount ?? row.paidAmount),
+      outstandingAmount: toAmount(row.outstandingAmount ?? row.outstanding_amount ?? row.dueAmount),
       items: (Array.isArray(row.items) ? row.items : []).map((item: any) => ({
         id: String(item?.id ?? ""),
         sku: String(item?.sku ?? ""),
@@ -78,6 +88,14 @@ export class ReturnService {
         // quantity sold is then the only ceiling we know of.
         returnable: item?.returnable == null ? toAmount(item?.quantity) : toAmount(item.returnable),
         unitPrice: toAmount(item?.unitPrice ?? item?.unit_price),
+        // What the line was CHARGED, which is what a refund gives back.
+        // Falls back to the shelf price for a response from before the field
+        // was carried here — right for an undiscounted line, which is most of
+        // them, and no worse than what this screen did before.
+        lineTotal:
+          item?.lineTotal ?? item?.line_total
+            ? toAmount(item?.lineTotal ?? item?.line_total)
+            : toAmount(item?.unitPrice ?? item?.unit_price) * toAmount(item?.quantity),
       })),
     };
   }
