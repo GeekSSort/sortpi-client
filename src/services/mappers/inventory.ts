@@ -3,6 +3,7 @@ import { StockItem } from "@/types/stock";
 import { toAmount } from "../apiClient";
 import { formatMoney } from "@/lib/format";
 import { safeImageUrl } from "./imageUrl";
+import { labelFor, variantLabelOf } from "./product";
 
 /**
  * Catalogue and stock rows -> the inventory tables.
@@ -26,9 +27,45 @@ function statusFor(available: number, reorder: number): StockItem["status"] {
   return available <= Math.max(reorder, LOW_STOCK) ? "Low Stock" : "In Stock";
 }
 
+/**
+ * ONE ROW PER VARIANT, for the screens that pick something to move.
+ *
+ * A purchase line, a transfer line and a stock count each name a VARIANT, so
+ * their pickers have to offer every one. They were built on
+ * `toInventoryProduct`, which returns the default only — so a shop selling
+ * Coca-Cola in three sizes could raise a purchase order for exactly one of
+ * them, and the other two could never be bought, moved or counted through the
+ * app at all.
+ *
+ * The products LIST deliberately does NOT use this: that screen is a catalogue
+ * of products, and one row per size would triple it to say the same names.
+ */
+export function toInventoryVariants(row: any, startIndex: number): InventoryProduct[] {
+  const variants: any[] = Array.isArray(row?.variants) ? row.variants : [];
+  const sellable = variants.filter((v) => v?.isActive !== false);
+  if (sellable.length === 0) return [];
+  const ordered = [...sellable].sort((a, b) => {
+    if (Boolean(a?.isDefault) !== Boolean(b?.isDefault)) return a?.isDefault ? -1 : 1;
+    return String(a?.name ?? "").localeCompare(String(b?.name ?? ""));
+  });
+  return ordered.map((variant, offset) =>
+    fromVariantRow(row, variant, startIndex + offset, sellable.length)
+  );
+}
+
 export function toInventoryProduct(row: any, index: number): InventoryProduct {
   const variants: any[] = Array.isArray(row?.variants) ? row.variants : [];
-  const variant = variants.find((v) => v?.isDefault) || variants[0] || {};
+  const sellable = variants.filter((v) => v?.isActive !== false);
+  const variant = sellable.find((v) => v?.isDefault) || sellable[0] || {};
+  return fromVariantRow(row, variant, index, Math.max(1, sellable.length));
+}
+
+function fromVariantRow(
+  row: any,
+  variant: any,
+  index: number,
+  variantCount: number
+): InventoryProduct {
   const sku = String(variant?.sku ?? "—");
   // The primary one, or the first: a variant may carry several — a case code
   // and a unit code — and the label prints the one the shelf is scanned by.
@@ -48,6 +85,8 @@ export function toInventoryProduct(row: any, index: number): InventoryProduct {
     variantId: String(variant?.id ?? ""),
     index: String(index).padStart(2, "0"),
     name: String(row?.name || "—"),
+    variantLabel: labelFor(variant),
+    variantCount,
     // Some filenames contain spaces; unencoded they break the request.
     image: raw ? safeImageUrl(raw) : "",
     // The UI type names five categories, the catalogue has twenty. The real
@@ -79,6 +118,7 @@ export function toStockItem(row: any): StockItem {
     variantId: String(row?.variant ?? ""),
     warehouseId: String(row?.warehouse ?? ""),
     name: String(row?.productName ?? row?.product_name ?? "—"),
+    variantLabel: variantLabelOf(row),
     image: image ? safeImageUrl(image) : "",
     sku: String(row?.sku || "—"),
     // The warehouse comes back as an id and a code; the code is the readable one.
