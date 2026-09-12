@@ -7,8 +7,25 @@ import {
   HeldCart,
 } from "@/types/pos";
 import { apiFetch, apiList, apiListAll, ApiError, toAmount, tokenStore } from "./apiClient";
-import { toProductItem } from "./mappers/product";
+import { toProductItem, toProductItems } from "./mappers/product";
 import { tenderFor } from "@/lib/paymentMethods";
+
+/**
+ * A way of grouping the wall — one category, or one brand.
+ *
+ * The two are the same shape on purpose: the till renders them with the same
+ * card and the same chooser, and the only difference is which id the products
+ * query is then filtered by.
+ */
+export interface PosGrouping {
+  id: string;
+  name: string;
+  /** How many products sit under it. Annotated server-side. */
+  productCount: number;
+  /** `image_url` for a category, `logo_url` for a brand. Usually unset. */
+  image: string | null;
+  description: string | null;
+}
 
 export class PosService {
   /**
@@ -24,12 +41,14 @@ export class PosService {
    */
   static async getProducts(params?: {
     categoryId?: string;
+    brandId?: string;
     search?: string;
     page?: number;
     limit?: number;
   }): Promise<{ data: ProductItem[]; total: number }> {
     const query = new URLSearchParams();
     if (params?.categoryId) query.set("category", params.categoryId);
+    if (params?.brandId) query.set("brand", params.brandId);
     if (params?.search) query.set("search", params.search);
     if (params?.page) query.set("page", String(params.page));
     query.set("limit", String(params?.limit ?? 60));
@@ -40,8 +59,19 @@ export class PosService {
       PosService.categoryNames(),
     ]);
 
+    /**
+     * One tile per VARIANT, not per product.
+     *
+     * `total` stays the server's PRODUCT count, deliberately: it is what the
+     * pager pages through, and reporting the expanded tile count would make
+     * the last page arrive early and leave rows unreachable. The two figures
+     * differing is the honest description of a page of products that expands
+     * into more tiles than it has rows.
+     */
     return {
-      data: products.data.map((row: any) => toProductItem(row, { stockBySku, categoryNames })),
+      data: products.data.flatMap((row: any) =>
+        toProductItems(row, { stockBySku, categoryNames })
+      ),
       total: products.total,
     };
   }
@@ -98,19 +128,47 @@ export class PosService {
       PosService.stockOnThisTill(),
       PosService.categoryNames(),
     ]);
-    return rows.map((row: any) => toProductItem(row, { stockBySku, categoryNames }));
+    return rows.flatMap((row: any) => toProductItems(row, { stockBySku, categoryNames }));
   }
 
   /**
    * The category chips, from the catalogue rather than from whatever happened
    * to be on the current page.
    */
-  static async getCategories(): Promise<{ id: string; name: string }[]> {
+  static async getCategories(): Promise<PosGrouping[]> {
     const res = await apiList<any>("/categories/?limit=200", { method: "GET" }, (r) => r);
     return (res.data || [])
       .filter((c: any) => c?.id)
-      .map((c: any) => ({ id: String(c.id), name: String(c?.name ?? "") }))
-      .sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
+      .map((c: any) => ({
+        id: String(c.id),
+        name: String(c?.name ?? ""),
+        productCount: Number(c?.productCount ?? 0),
+        image: String(c?.imageUrl ?? "") || null,
+        description: String(c?.description ?? "") || null,
+      }))
+      .sort((a: PosGrouping, b: PosGrouping) => a.name.localeCompare(b.name));
+  }
+
+  /**
+   * The brands, for the Brand list behind the toolbar's button.
+   *
+   * Same shape and same reasoning as `getCategories`: read from the catalogue
+   * rather than from the products on the current page, or a brand whose stock
+   * happens to sit on page four would simply not exist as far as the till is
+   * concerned.
+   */
+  static async getBrands(): Promise<PosGrouping[]> {
+    const res = await apiList<any>("/brands/?limit=200", { method: "GET" }, (r) => r);
+    return (res.data || [])
+      .filter((b: any) => b?.id)
+      .map((b: any) => ({
+        id: String(b.id),
+        name: String(b?.name ?? ""),
+        productCount: Number(b?.productCount ?? 0),
+        image: String(b?.logoUrl ?? "") || null,
+        description: null,
+      }))
+      .sort((a: PosGrouping, b: PosGrouping) => a.name.localeCompare(b.name));
   }
 
   /**
@@ -242,11 +300,17 @@ export class PosService {
         type: (String(row?.customerType || "").toUpperCase() === "VIP"
           ? "VIP"
           : "Regular") as Customer["type"],
+        // The wallet, so the payment dialog can show it without a second
+        // request per customer the cashier scrolls past.
+        loyaltyPoints: Number(row?.loyaltyPoints ?? row?.loyalty_points ?? 0) || 0,
       })
     );
 
     // A till always needs a way to sell to somebody who is not on file.
-    return [{ id: "", name: "Walk-in Customer", type: "Walk-in" }, ...res.data];
+    return [
+      { id: "", name: "Walk-in Customer", type: "Walk-in", loyaltyPoints: 0 },
+      ...res.data,
+    ];
   }
 
   /**
@@ -335,28 +399,82 @@ export class PosService {
         // Only when the cashier has changed it. Sending the shop's usual rate
         // on every sale would need a permission most cashiers do not hold.
         ...(payload.taxRate != null ? { tax_rate: payload.taxRate.toFixed(4) } : {}),
-        payments: [
-          {
-            // Which ledger the money lands in. The brand the cashier picked
-            // rides along in `payment_provider`; this is the server's coarse
-            // `PaymentMethod`, and the mapping is the catalogue's — it used to
-            // be a substring ladder here that ended in `return "CARD"`, so a
-            // cheque and every shop-defined tender were booked as card takings
-            // and no reconciliation against the terminal could balance.
-            payment_method: tenderFor(String(payload.paymentMethod || "Cash")),
-            payment_provider: String(payload.paymentMethod || "Cash"),
-            ...(payload.referenceNo && payload.referenceNo.trim()
-              ? { reference_no: payload.referenceNo.trim() }
-              : {}),
-            // The server has already priced the basket; this is what was
-            // tendered against it.
-            amount,
-          },
-        ],
+        // Points the customer is spending, and any coupon code they handed
+        // over. BOTH are inputs the server prices for itself.
+        //
+        // Neither was forwarded. The till computed a points discount, showed
+        // it, tendered the reduced figure — and sent no `redeem_points`, so
+        // the server priced the sale at full value and refused the tender as
+        // short, or booked the difference as a debt. A field this function
+        // does not name is a field that does not exist, however carefully the
+        // screen above it was built.
+        ...(payload.redeemPoints && payload.redeemPoints > 0
+          ? { redeem_points: Math.floor(payload.redeemPoints) }
+          : {}),
+        ...(payload.couponCode && payload.couponCode.trim()
+          ? { coupon_code: payload.couponCode.trim() }
+          : {}),
+        // A surcharge and its reason. Inputs, not totals: the server works out
+        // what they do to the tax and to the grand total.
+        ...(payload.extraChargeAmount && payload.extraChargeAmount > 0
+          ? {
+              extra_charge_amount: payload.extraChargeAmount.toFixed(2),
+              extra_charge_reason: (payload.extraChargeReason || "").trim(),
+            }
+          : {}),
+        /**
+         * No money, no payment row.
+         *
+         * The server refuses a payment of zero outright —
+         * INVALID_PAYMENT_AMOUNT, "A payment must be positive" — because a
+         * zero tender is not a payment, it is the absence of one. A sale with
+         * NO payments is the supported way to say that: the whole grand total
+         * becomes `due_amount`, the customer's credit limit is checked, and
+         * the sale lands as Unpaid.
+         *
+         * So an empty array here is not an edge case to guard against, it is
+         * the body for a sale taken entirely on account.
+         */
+        payments:
+          Number(amount) > 0
+            ? [
+                {
+                  // Which ledger the money lands in. The brand the cashier
+                  // picked rides along in `payment_provider`; this is the
+                  // server's coarse `PaymentMethod`, and the mapping is the
+                  // catalogue's — it used to be a substring ladder here that
+                  // ended in `return "CARD"`, so a cheque and every
+                  // shop-defined tender were booked as card takings and no
+                  // reconciliation against the terminal could balance.
+                  payment_method: tenderFor(String(payload.paymentMethod || "Cash")),
+                  payment_provider: String(payload.paymentMethod || "Cash"),
+                  ...(payload.referenceNo && payload.referenceNo.trim()
+                    ? { reference_no: payload.referenceNo.trim() }
+                    : {}),
+                  // The server has already priced the basket; this is what was
+                  // tendered against it.
+                  amount,
+                },
+              ]
+            : [],
         ...(payload.referenceNo && payload.referenceNo.trim()
           ? { note: `Txn: ${payload.referenceNo.trim()}` }
           : {}),
       });
+
+    /**
+     * Was this tender short ON PURPOSE?
+     *
+     * The recovery below re-posts at the server's own grand total whenever a
+     * tender is refused for exceeding it. That is right for a rounding
+     * disagreement and WRONG for a part payment: it would quietly charge the
+     * customer the whole bill after the cashier had taken a deposit. A tender
+     * below what the till believes is payable is deliberate, and is left
+     * alone.
+     */
+    const partial =
+      payload.payableAmount != null &&
+      Number(payload.totalAmount) < Number(payload.payableAmount) - 0.005;
 
     let sale: any;
     try {
@@ -395,7 +513,15 @@ export class PosService {
           ? (error.errors as { grand_total?: string; grandTotal?: string })
           : null;
       const serverTotal = detail?.grand_total ?? detail?.grandTotal;
-      if (error instanceof ApiError && error.code === "PAYMENT_EXCEEDS_TOTAL" && serverTotal) {
+      // `!partial`: a tender the cashier deliberately made short must never be
+      // topped up to the server's total by a recovery meant for rounding. That
+      // would charge the whole bill after a deposit was taken.
+      if (
+        !partial &&
+        error instanceof ApiError &&
+        error.code === "PAYMENT_EXCEEDS_TOTAL" &&
+        serverTotal
+      ) {
         /**
          * A different body under the same key is a 409 by design, so the
          * re-priced attempt gets its own key. Safe: the first attempt was
