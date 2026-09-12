@@ -189,9 +189,10 @@ test.describe("the Finance group in the sidebar", () => {
 
     await finance.click();
     await expect(nav.getByRole("link", { name: "Income & Expense" })).toBeVisible();
-    // Voucher is deliberately absent until it is built — a menu row leading to
-    // a placeholder reads as a half-finished product.
-    await expect(nav.getByRole("link", { name: "Voucher" })).toHaveCount(0);
+    // The group's second child, built now. It reads the same two tables as the
+    // first — a voucher IS an income or an expense — so the two screens cannot
+    // disagree about a figure.
+    await expect(nav.getByRole("link", { name: "Vouchers" })).toBeVisible();
   });
 
   test("the one child opens a real page", async ({ page }) => {
