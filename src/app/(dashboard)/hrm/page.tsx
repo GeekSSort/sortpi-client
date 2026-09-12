@@ -6,11 +6,13 @@ import { useRouter } from "next/navigation";
 import { EmployeeProfile } from "@/types/hrm";
 import { HrmService } from "@/services/hrmService";
 import RowActionMenu from "@/components/shared/RowActionMenu";
-import TablePagination from "@/components/shared/TablePagination";
+import ScrollEnd from "@/components/shared/ScrollEnd";
+import FilterDropdown from "@/components/shared/FilterDropdown";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Avatar from "@/components/shared/Avatar";
 import Modal, { MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
-import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { queryKey, invalidate } from "@/lib/query/useQuery";
+import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardListState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import EmployeeEditDialog from "@/components/modules/dashboard/EmployeeEditDialog";
 
@@ -69,21 +71,30 @@ function SearchIcon() {
 export default function EmployeesPage() {
   const router = useRouter();
   const [term, setTerm] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
+  // Rows per request. Not a page size anyone picks — the table scrolls.
+  const pageSize = 25;
   const [note, setNote] = useState<string | null>(null);
   const [leaving, setLeaving] = useState<EmployeeProfile | null>(null);
   const [editing, setEditing] = useState<EmployeeProfile | null>(null);
   const [removing, setRemoving] = useState<EmployeeProfile | null>(null);
   const [busy, setBusy] = useState(false);
+  /** "" is everyone; the roster has always had no way to ask for one or the
+      other, so somebody marked as left stayed in the list. */
+  const [active, setActive] = useState("");
 
-  const query = useQuery(
-    queryKey("hrm-roster", { term, page, pageSize }),
-    () => HrmService.getRoster({ search: term, page, limit: pageSize })
+  const query = useInfiniteRows(
+    queryKey("hrm-roster", { term, active }),
+    (p, limit) =>
+      HrmService.getRoster({
+        search: term,
+        active: active === "" ? undefined : active === "active",
+        page: p,
+        limit,
+      }),
+    { pageSize }
   );
 
-  const rows = query.data?.data ?? [];
-  const total = query.data?.total ?? 0;
+  const { rows, total, loadingMore, hasMore, sentinelRef } = query;
 
   const confirmLeave = async () => {
     if (!leaving) return;
@@ -140,11 +151,24 @@ export default function EmployeesPage() {
             value={term}
             onChange={(e) => {
               setTerm(e.target.value);
-              setPage(1);
             }}
             placeholder="Search by name, ID, email, phone..."
             aria-label="Search employees"
             className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
+          />        </div>
+
+        {/* The filters, beside the search box: a narrowed list has to
+            say on screen that it is narrowed. */}
+        <div className="flex shrink-0 flex-wrap items-center gap-[12px]">
+          <FilterDropdown
+            label="Status"
+            value={active}
+            onChange={setActive}
+            options={[
+              { value: "", label: "Everyone" },
+              { value: "active", label: "Active" },
+              { value: "inactive", label: "Left" },
+            ]}
           />
         </div>
 
@@ -176,9 +200,15 @@ export default function EmployeesPage() {
 
         {/* Table from md up. Eight columns need room, so it scrolls sideways
             inside the card rather than squeezing the email to nothing. */}
-        <div className="hidden overflow-x-auto px-[16px] md:block">
+        {/* One scroller for the table, the phone cards and the load trigger.
+            The trigger has to sit INSIDE it — below the scroller it never
+            leaves the screen, and every page loads at once the moment the
+            table opens. */}
+        <div className="table-scroll">
+
+        <div className="hidden px-[16px] md:block">
           <div className="min-w-[1000px]">
-            <div className={`grid ${GRID} border-b border-solid border-[#eaeaea]`}>
+            <div className={`table-head grid ${GRID} border-b border-solid border-[#eaeaea] bg-white`}>
               {COLUMNS.map((label) => (
                 <div key={label} className={`${CELL} h-[40px]`}>
                   <span className={`${HEAD} whitespace-nowrap`}>{label}</span>
@@ -192,10 +222,10 @@ export default function EmployeesPage() {
             <QueryBoundary
               loading={query.loading}
               error={query.error}
-              hasData={query.data !== undefined}
+              hasData={!query.loading && !query.error}
               errorMessage="The employee list could not be loaded."
               onRetry={query.refetch}
-              skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
+              skeleton={<TableSkeleton columns={GRID} rows={8} />}
             >
               {rows.length === 0 && (
                 <p className="px-[12px] py-[24px] text-[14px] text-[#8f8d87]">
@@ -252,7 +282,7 @@ export default function EmployeesPage() {
           <CardListState
             loading={query.loading}
             error={query.error}
-            hasData={query.data !== undefined}
+            hasData={!query.loading && !query.error}
             isEmpty={rows.length === 0}
             errorMessage="The employee list could not be loaded."
             emptyMessage={term ? "No employees match that search." : "Nobody on the roster yet."}
@@ -293,16 +323,15 @@ export default function EmployeesPage() {
         {note && <p className="px-[16px] pt-[10px] text-[13px] text-[#525252]">{note}</p>}
 
         <div className="mt-[9px]">
-          <TablePagination
-            page={page}
-            pageSize={pageSize}
+          <ScrollEnd
+            sentinelRef={sentinelRef}
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            shown={rows.length}
             total={total}
-            onPageChange={setPage}
-            onPageSizeChange={(n) => {
-              setPageSize(n);
-              setPage(1);
-            }}
+            noun="employees"
           />
+        </div>
         </div>
       </div>
 
