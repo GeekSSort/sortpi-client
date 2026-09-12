@@ -1,19 +1,22 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { EmployeeRecord } from "@/types/hrm";
 import { HrmService } from "@/services/hrmService";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
+import FilterDropdown from "@/components/shared/FilterDropdown";
 import RowActionMenu from "@/components/shared/RowActionMenu";
-import TablePagination from "@/components/shared/TablePagination";
+import ScrollEnd from "@/components/shared/ScrollEnd";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Avatar from "@/components/shared/Avatar";
 import DateField from "@/components/shared/DateField";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
 import { toTimeInput } from "@/services/mappers/employee";
 import { toApiDay } from "@/lib/dateFilter";
-import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { queryKey, invalidate } from "@/lib/query/useQuery";
+import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 
 /**
@@ -43,6 +46,9 @@ const STATUS_TONE: Record<EmployeeRecord["status"], Tone> = {
   Absent: "rose",
 };
 
+// Still the source of the state's type, though the options now live on
+// the dropdown itself.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const FILTERS = ["All Employees", "Present", "On Leave", "Absent"] as const;
 
 const FIELD =
@@ -76,20 +82,6 @@ function FilterIcon() {
   );
 }
 
-function CaretIcon({ open }: { open: boolean }) {
-  return (
-    <svg
-      width="20"
-      height="20"
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden
-      className={`shrink-0 transition-transform duration-150 ${open ? "rotate-180" : ""}`}
-    >
-      <path d="m7 10 5 5 5-5" fill="currentColor" />
-    </svg>
-  );
-}
 
 function PayrollIcon() {
   return (
@@ -117,8 +109,12 @@ export default function AttendancePage() {
   const [term, setTerm] = useState("");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("All Employees");
   const [filterOpen, setFilterOpen] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
+  // Rows per request. Not a page size anyone picks — the table scrolls.
+  const pageSize = 25;
+  const router = useRouter();
+  /** The row opens this person's month. The action menu stops the bubble so
+      "Check in" does not also navigate away from the screen it acts on. */
+  const openSheet = (id: string) => id && router.push(`/hrm/attendance/${id}`);
   const [day, setDay] = useState<Date | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const filterRef = useRef<HTMLDivElement>(null);
@@ -140,26 +136,32 @@ export default function AttendancePage() {
   // Every input the answer depends on is in the key. Leaving the status filter
   // or the day out would let "All Employees" and "Present" share one slot and
   // show each other's rows.
-  const { data, loading, fetching, error, refetch } = useQuery(
+  const {
+    rows,
+    total,
+    loading,
+    loadingMore,
+    fetching,
+    error,
+    hasMore,
+    sentinelRef,
+    refetch,
+  } = useInfiniteRows(
     queryKey("employees", {
-      page,
-      limit: pageSize,
       search: term,
       status: filter === "All Employees" ? undefined : filter,
       day: apiDay,
     }),
-    () =>
+    (p, limit) =>
       HrmService.getEmployees({
         search: term || undefined,
         status: filter === "All Employees" ? undefined : filter,
         day: apiDay,
-        page,
-        limit: pageSize,
-      })
+        page: p,
+        limit,
+      }),
+    { pageSize }
   );
-
-  const rows = data?.data ?? [];
-  const total = data?.total ?? 0;
 
   useEffect(() => {
     if (!filterOpen) return;
@@ -210,7 +212,6 @@ export default function AttendancePage() {
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
-                setPage(1);
               }}
               placeholder="Search by name, department or designation..."
               aria-label="Search employees"
@@ -228,52 +229,23 @@ export default function AttendancePage() {
         </div>
 
         <div className="flex flex-col items-stretch gap-[12px] sm:flex-row sm:items-center sm:gap-[16px]">
-          <div ref={filterRef} className="relative shrink-0">
-            <button
-              type="button"
-              onClick={() => setFilterOpen((v) => !v)}
-              aria-haspopup="listbox"
-              aria-expanded={filterOpen}
-              className="flex h-[48px] w-full cursor-pointer items-center justify-between gap-[12px] rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] py-[12px] text-[16px] leading-[24px] font-medium whitespace-nowrap text-[#525252] transition-colors hover:bg-[#fafafa] sm:w-auto"
-            >
-              {filter}
-              <CaretIcon open={filterOpen} />
-            </button>
-
-            {filterOpen && (
-              <ul
-                role="listbox"
-                className="absolute right-0 z-30 mt-[6px] w-[168px] overflow-hidden rounded-[10px] border border-[#eaeaea] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)]"
-              >
-                {FILTERS.map((f) => (
-                  <li key={f}>
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={f === filter}
-                      onClick={() => {
-                        setFilter(f);
-                        setPage(1);
-                        setFilterOpen(false);
-                      }}
-                      className={`w-full cursor-pointer px-[14px] py-[9px] text-left text-[14px] transition-colors hover:bg-[#fdf7e6] ${
-                        f === filter ? "bg-[#fdf7e6] font-medium text-[#1e1e1e]" : "text-[#525252]"
-                      }`}
-                    >
-                      {f}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          <FilterDropdown
+            label="Attendance"
+            value={filter === "All Employees" ? "" : filter}
+            onChange={(next) => setFilter((next || "All Employees") as typeof filter)}
+            options={[
+              { value: "All Employees", label: "All employees" },
+              { value: "Present", label: "Present" },
+              { value: "On Leave", label: "On leave" },
+              { value: "Absent", label: "Absent" },
+            ]}
+          />
 
           <DateField
             value={day}
             onChange={(d) => {
               setDay(d);
               // Page 1 of the new day, not page 5 of the old one.
-              setPage(1);
             }}
             ariaLabel="Filter attendance by date"
           />
@@ -310,10 +282,16 @@ export default function AttendancePage() {
         )}
 
         {/* Table — 59:17443 */}
+        {/* One scroller for the table, the phone cards and the load trigger.
+            The trigger has to sit INSIDE it — below the scroller it never
+            leaves the screen, and every page loads at once the moment the
+            table opens. */}
+        <div className="table-scroll">
+
         <div className="hidden px-[16px] pt-[16px] md:block">
-          <div className="overflow-x-auto">
+          <div>
             <div className="min-w-[1050px]">
-              <div className={`grid ${GRID} items-start overflow-clip`}>
+              <div className={`table-head grid ${GRID} items-start overflow-clip bg-white`}>
                 <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>#</span></div>
                 <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Employee</span></div>
                 <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Department</span></div>
@@ -326,10 +304,10 @@ export default function AttendancePage() {
                 <QueryBoundary
                   loading={loading}
                   error={error}
-                  hasData={data !== undefined}
+                  hasData={!loading && !error}
                   skeleton={
                     <div className="col-span-8">
-                      <TableSkeleton columns={GRID} rows={pageSize} />
+                      <TableSkeleton columns={GRID} rows={8} />
                     </div>
                   }
                   errorMessage={HrmService.describeError(error)}
@@ -355,29 +333,32 @@ export default function AttendancePage() {
 
                 {rows.map((e, i) => (
                     <React.Fragment key={e.id || e.index}>
-                      <div className={`${CELL} h-[54px] ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                      <div onClick={() => openSheet(e.id)} className={`${CELL} h-[54px] cursor-pointer ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
                         <span className={BODY}>{e.index}</span>
                       </div>
-                      <div className={`${CELL} h-[54px] gap-[8px] ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                      <div onClick={() => openSheet(e.id)} className={`${CELL} h-[54px] cursor-pointer gap-[8px] ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
                         <Avatar radius={4} name={e.name} />
                         <span className={`${BODY} truncate`}>{e.name}</span>
                       </div>
-                      <div className={`${CELL} h-[54px] ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                      <div onClick={() => openSheet(e.id)} className={`${CELL} h-[54px] cursor-pointer ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
                         <span className={`${BODY} truncate`}>{e.department}</span>
                       </div>
-                      <div className={`${CELL} h-[54px] ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                      <div onClick={() => openSheet(e.id)} className={`${CELL} h-[54px] cursor-pointer ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
                         <span className={`${BODY} truncate`}>{e.designation}</span>
                       </div>
-                      <div className={`${CELL} h-[54px] ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                      <div onClick={() => openSheet(e.id)} className={`${CELL} h-[54px] cursor-pointer ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
                         <span className={BODY}>{e.checkIn}</span>
                       </div>
-                      <div className={`${CELL} h-[54px] ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                      <div onClick={() => openSheet(e.id)} className={`${CELL} h-[54px] cursor-pointer ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
                         <span className={BODY}>{e.checkOut}</span>
                       </div>
-                      <div className={`${CELL} h-[54px] justify-center ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                      <div onClick={() => openSheet(e.id)} className={`${CELL} h-[54px] cursor-pointer justify-center ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
                         <StatusPill label={e.status} tone={STATUS_TONE[e.status] ?? "slate"} />
                       </div>
-                      <div className={`${CELL} h-[54px] justify-center ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}>
+                      <div
+                        onClick={(ev) => ev.stopPropagation()}
+                        className={`${CELL} h-[54px] justify-center ${i === rows.length - 1 ? "" : "border-b border-solid border-[#eaeaea]"}`}
+                      >
                         <RowActionMenu
                           label={`Actions for ${e.name}`}
                           actions={[
@@ -403,7 +384,7 @@ export default function AttendancePage() {
           <CardListState
             loading={loading}
             error={error}
-            hasData={data !== undefined}
+            hasData={!loading && !error}
             isEmpty={rows.length === 0}
             errorMessage={HrmService.describeError(error)}
             emptyMessage={term || filter !== "All Employees" || day ? "No employees match this view." : "No employees yet."}
@@ -429,16 +410,15 @@ export default function AttendancePage() {
           ))}
         </div>
 
-        <TablePagination
-          page={page}
-          pageSize={pageSize}
+        <ScrollEnd
+          sentinelRef={sentinelRef}
+          hasMore={hasMore}
+          loadingMore={loadingMore}
+          shown={rows.length}
           total={total}
-          onPageChange={setPage}
-          onPageSizeChange={(n) => {
-            setPageSize(n);
-            setPage(1);
-          }}
+          noun="employees"
         />
+        </div>
       </div>
 
       {/* Check in / check out — the time is editable before it is saved. */}
