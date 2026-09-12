@@ -131,6 +131,27 @@ export const DEFAULT_ONLINE_METHODS: readonly string[] = [
   "Others",
 ];
 
+/**
+ * How money goes BACK, which is a shorter list than how it comes in.
+ *
+ * These are the server's own `PaymentMethod` values, not the shop-configured
+ * tender names above: a refund names one of them directly. CREDIT and OTHER
+ * are absent on purpose — CREDIT is the absence of a payment, so it cannot be
+ * refunded as one.
+ *
+ * Shared because the refund FORM and the refund LIST both need it, and two
+ * copies of a four-row list is two copies that can disagree about whether
+ * MOBILE says "bKash" or "Mobile banking".
+ */
+export const REFUND_METHODS = [
+  { value: "CASH", label: "Cash" },
+  { value: "CARD", label: "Card" },
+  { value: "MOBILE", label: "bKash" },
+  { value: "BANK", label: "Bank Transfer" },
+] as const;
+
+export type RefundMethod = (typeof REFUND_METHODS)[number]["value"];
+
 /** Lowercased spelling -> catalogue entry, built once. */
 const BY_SPELLING = new Map<string, PaymentMethodOption>();
 for (const option of PAYMENT_METHOD_CATALOGUE) {
