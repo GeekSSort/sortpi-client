@@ -1,5 +1,6 @@
 import { PurchaseRecord, PurchaseQueryFilter } from "@/types/purchases";
-import { apiFetch, apiList, toAmount } from "./apiClient";
+import { apiDownload, apiFetch, apiList, apiUpload, saveBlob, toAmount } from "./apiClient";
+import { variantLabelOf } from "./mappers/product";
 import { toPurchaseRecord } from "./mappers/purchase";
 
 export interface PurchaseDetailLine {
@@ -9,6 +10,14 @@ export interface PurchaseDetailLine {
   /** What an edit sends back, and the only stable handle on a line. */
   variantId: string;
   name: string;
+  /**
+   * WHICH variant was ordered — "500ml".
+   *
+   * A purchase line names a variant, not a product: "20 × Coca-Cola" is not
+   * something a supplier can pick against when the product comes in three
+   * sizes, and it is not something a receiving clerk can book in either.
+   */
+  variantLabel: string;
   sku: string;
   quantity: number;
   unitCost: number;
@@ -64,6 +73,57 @@ export interface CreatePurchasePayload {
   items: NewPurchaseLine[];
 }
 
+
+/**
+ * One row of the import report, as the screen shows it.
+ *
+ * A row error does NOT fail the request — the file around it still imports —
+ * so both statuses arrive in the same list and the screen decides what to do
+ * with each.
+ */
+export interface PurchaseImportRow {
+  /** The line in the spreadsheet, so somebody can go and find it. Row 1 is the
+      heading, so the first item is row 2. */
+  line: number;
+  status: "ok" | "error";
+  product: string;
+  variant: string;
+  quantity: string;
+  unitCost: string;
+  /** Importing this row would add a product the shop does not have. */
+  newProduct: boolean;
+  /** …or a new size of one it does. */
+  newVariant: boolean;
+  /** Written for a shopkeeper: "Quantity is missing." */
+  message: string | null;
+  code: string | null;
+}
+
+/** A resolved line, in the shape the Add Purchase table renders. */
+export interface PurchaseImportLine {
+  variantId: string;
+  productName: string;
+  variantName: string;
+  sku: string;
+  quantity: number;
+  unitCost: number;
+  taxRate: number;
+  newProduct: boolean;
+  newVariant: boolean;
+}
+
+export interface PurchaseImportReport {
+  /** False for a check — which wrote nothing and returned no usable lines. */
+  committed: boolean;
+  total: number;
+  valid: number;
+  failed: number;
+  newProducts: number;
+  newVariants: number;
+  rows: PurchaseImportRow[];
+  lines: PurchaseImportLine[];
+}
+
 export class PurchaseService {
   /**
    * Draft a purchase order.
@@ -99,6 +159,80 @@ export class PurchaseService {
       },
       toPurchaseRecord
     );
+  }
+
+
+  /**
+   * Turn a CSV of items into purchase lines.
+   *
+   * This does NOT create a purchase, and that is what lets both screens share
+   * it: the Add Purchase page needs the lines BEFORE the purchase exists so a
+   * buyer can check them and press its own Save, and the Purchases list builds
+   * its own header and posts the lines to the same `POST /purchases/`. One
+   * import path, one purchase path — and the second is the one that was
+   * already there.
+   *
+   * `commit: false` is the check, and it is what a screen asks for first: it
+   * writes nothing at all — no product, no variant — while reporting exactly
+   * what the real run would do.
+   */
+  static async importCsv(file: File, commit = false): Promise<PurchaseImportReport> {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("commit", commit ? "true" : "false");
+
+    const row = await apiUpload<any>("/purchases/import/", form);
+    const pick = <T,>(source: any, ...names: string[]): T | undefined => {
+      for (const name of names) if (source?.[name] !== undefined) return source[name] as T;
+      return undefined;
+    };
+    return {
+      committed: Boolean(row?.commit),
+      total: Number(row?.total ?? 0),
+      valid: Number(row?.valid ?? 0),
+      failed: Number(row?.failed ?? 0),
+      newProducts: Number(pick(row, "newProducts", "new_products") ?? 0),
+      newVariants: Number(pick(row, "newVariants", "new_variants") ?? 0),
+      rows: (Array.isArray(row?.rows) ? row.rows : []).map((r: any) => ({
+        line: Number(r?.line ?? 0),
+        status: r?.status === "ok" ? "ok" : "error",
+        product: String(r?.product ?? ""),
+        variant: String(r?.variant ?? ""),
+        quantity: String(r?.quantity ?? ""),
+        unitCost: String(pick(r, "unitCost", "unit_cost") ?? ""),
+        newProduct: Boolean(pick(r, "newProduct", "new_product")),
+        newVariant: Boolean(pick(r, "newVariant", "new_variant")),
+        message: (r?.message as string) ?? null,
+        code: (r?.code as string) ?? null,
+      })),
+      lines: (Array.isArray(row?.lines) ? row.lines : []).map((l: any) => ({
+        variantId: String(l?.variant ?? ""),
+        productName: String(pick(l, "productName", "product_name") ?? ""),
+        variantName: String(pick(l, "variantName", "variant_name") ?? ""),
+        sku: String(l?.sku ?? ""),
+        quantity: toAmount(l?.quantity),
+        unitCost: toAmount(pick(l, "unitCost", "unit_cost")),
+        taxRate: toAmount(pick(l, "taxRate", "tax_rate")),
+        newProduct: Boolean(pick(l, "newProduct", "new_product")),
+        newVariant: Boolean(pick(l, "newVariant", "new_variant")),
+      })),
+    };
+  }
+
+  /**
+   * Download the template a shop fills in.
+   *
+   * Through the API rather than a static file in `public/`: the columns are
+   * defined beside the importer that reads them, so a template served from
+   * there is always one the import accepts. A copy in the front end is a copy
+   * that goes stale the first time a column is added.
+   */
+  static async downloadTemplate(): Promise<void> {
+    const { blob, filename } = await apiDownload(
+      "/purchases/import-template/",
+      "purchase-import-template.csv"
+    );
+    saveBlob(blob, filename);
   }
 
   /**
@@ -163,6 +297,9 @@ export class PurchaseService {
         id: String(it?.id ?? ""),
         variantId: String(it?.variant ?? ""),
         name: String(it?.productName ?? it?.product_name ?? it?.sku ?? ""),
+        // A purchase line names a VARIANT: an order for twenty Coca-Cola is
+        // twenty of ONE size, and the receiving clerk has to know which.
+        variantLabel: variantLabelOf(it),
         sku: String(it?.sku ?? ""),
         quantity: toAmount(it?.quantity),
         unitCost: toAmount(it?.unitCost ?? it?.unit_cost),
