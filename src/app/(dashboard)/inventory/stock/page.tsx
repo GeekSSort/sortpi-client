@@ -5,12 +5,15 @@ import { StockItem } from "@/types/stock";
 import { StockService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
-import TablePagination from "@/components/shared/TablePagination";
+import ScrollEnd from "@/components/shared/ScrollEnd";
+import FilterDropdown from "@/components/shared/FilterDropdown";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
-import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { queryKey, invalidate } from "@/lib/query/useQuery";
+import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import ProductImage from "@/components/shared/ProductImage";
+import VariantChip from "@/components/shared/VariantChip";
 import { isRowClick } from "@/lib/rowClick";
 
 /**
@@ -47,13 +50,6 @@ function SearchIcon() {
   );
 }
 
-function FilterIcon() {
-  return (
-    <svg className="block size-[18px] shrink-0" viewBox="0 0 18 18" fill="none" aria-hidden>
-      <path d="M2.25 4.5h13.5M4.5 9h9M7.5 13.5h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 // Product Name  SKU  Warehouse  Available  Reserved  Low Stock  Status  Action
 // Product Name  SKU  Warehouse  Available  Reserved  Low Stock  Manage  Status  Action
@@ -174,8 +170,9 @@ export default function StockPage() {
       can no longer overwrite the rows for "sony" — it belongs to a key that is
       no longer on screen. */
   const [term, setTerm] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
+  // Rows per request. Not a page size anyone picks — the table scrolls.
+  const pageSize = 25;
+  const [stockStatus, setStockStatus] = useState("");
   const [adjusting, setAdjusting] = useState(false);
   /** Which row is mid-write, so only that one's control locks. */
   const [countingId, setCountingId] = useState<string | null>(null);
@@ -202,10 +199,27 @@ export default function StockPage() {
   // product the warehouse has never held has no row, so 207 of a 514-product
   // catalogue were unreachable from the one screen that can count them in.
   // Being at zero is exactly when somebody comes looking for a product.
-  const { data, loading, fetching, error, refetch } = useQuery(
-    queryKey("stock", { page, limit: pageSize, search: term, all: true }),
-    () =>
-      StockService.getStock({ search: term, page, limit: pageSize, includeUnstocked: true })
+  const {
+    rows,
+    total,
+    loading,
+    loadingMore,
+    fetching,
+    error,
+    hasMore,
+    sentinelRef,
+    refetch,
+  } = useInfiniteRows(
+    queryKey("stock", { search: term, all: true, stockStatus }),
+    (p, limit) =>
+      StockService.getStock({
+        search: term,
+        stockStatus: stockStatus || undefined,
+        page: p,
+        limit,
+        includeUnstocked: true,
+      }),
+    { pageSize }
   );
 
   /**
@@ -269,12 +283,6 @@ export default function StockPage() {
     }
   };
 
-  const total = data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const current = Math.min(page, totalPages);
-  // The server already sliced. `rows` is the page.
-  const rows = data?.data ?? [];
-
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 57:13119 */}
@@ -286,21 +294,27 @@ export default function StockPage() {
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
-                setPage(1);
               }}
               placeholder="Search by product name, SKU or barcode..."
               aria-label="Search stock"
               className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
             />
-          </div>
-          <button
-            type="button"
-            aria-label="Filter"
-            onClick={() => setNote("Filter panel not designed yet")}
-            className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e]"
-          >
-            <FilterIcon />
-          </button>
+          </div>        </div>
+
+        {/* The filters, beside the search box: a narrowed list has to
+            say on screen that it is narrowed. */}
+        <div className="flex shrink-0 flex-wrap items-center gap-[12px]">
+          <FilterDropdown
+            label="Stock level"
+            value={stockStatus}
+            onChange={setStockStatus}
+            options={[
+              { value: "", label: "Any level" },
+              { value: "in", label: "In stock" },
+              { value: "low", label: "Running low" },
+              { value: "out", label: "Out of stock" },
+            ]}
+          />
         </div>
 
       </div>
@@ -308,10 +322,16 @@ export default function StockPage() {
       {/* Table card — 57:13151 */}
       <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
         <RefreshBar active={fetching} />
+        {/* One scroller for the table, the phone cards and the load trigger.
+            The trigger has to sit INSIDE it — below the scroller it never
+            leaves the screen, and every page loads at once the moment the
+            table opens. */}
+        <div className="table-scroll">
+
         <div className="hidden px-[16px] pt-[16px] md:block">
-          <div className="overflow-x-auto">
+          <div>
             <div className="min-w-[1128px]">
-              <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
+              <div className={`table-head grid ${GRID} items-start overflow-clip rounded-[6px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Product Name</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>SKU</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Warehouse</span></div>
@@ -327,8 +347,8 @@ export default function StockPage() {
                 <QueryBoundary
                   loading={loading}
                   error={error}
-                  hasData={data !== undefined}
-                  skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
+                  hasData={!loading && !error}
+                  skeleton={<TableSkeleton columns={GRID} rows={8} />}
                   // The server names the real problem — most often that no
                   // branch is active, so there is no one shelf to report zero
                   // against — and that is more use than "try again".
@@ -370,7 +390,13 @@ export default function StockPage() {
                       <span className="relative size-[28px] shrink-0 overflow-hidden rounded-[6px]">
                         <ProductImage src={r.image} alt="" sizes="28px" />
                       </span>
+                      {/* A Stock row is keyed on variant + warehouse, so a
+                          product sold in three sizes is three rows all reading
+                          "Coca-Cola" — told apart by nothing but the SKU, which
+                          is a code rather than a name. The chip is shrink-0, so
+                          the size survives a long product name. */}
                       <span className={`${TEXT} truncate`}>{r.name}</span>
+                      <VariantChip label={r.variantLabel} size="xs" />
                     </div>
                     <div className={CELL}><span className={`${TEXT} truncate`}>{r.sku}</span></div>
                     <div className={CELL}><span className={`${TEXT} truncate`}>{r.warehouse}</span></div>
@@ -419,7 +445,7 @@ export default function StockPage() {
           <CardListState
             loading={loading}
             error={error}
-            hasData={data !== undefined}
+            hasData={!loading && !error}
             isEmpty={rows.length === 0}
             errorMessage={error instanceof Error && error.message ? error.message : "Stock could not be loaded."}
             emptyMessage={term ? "No stock matches that search." : "No stock lines yet."}
@@ -450,7 +476,10 @@ export default function StockPage() {
                     <ProductImage src={r.image} alt="" sizes="28px" />
                   </span>
                   <div className="min-w-0">
-                    <p className={`${TEXT} truncate !text-[#1e1e1e]`}>{r.name}</p>
+                    <p className="flex min-w-0 items-center gap-[6px]">
+                      <span className={`${TEXT} truncate !text-[#1e1e1e]`}>{r.name}</span>
+                      <VariantChip label={r.variantLabel} size="xs" />
+                    </p>
                     <p className="mt-[2px] truncate text-[12px] tracking-[-0.24px] text-[#525252]">
                       {r.sku} · {r.warehouse}
                     </p>
@@ -475,16 +504,15 @@ export default function StockPage() {
 
         {/* Pagination — 57:13603 */}
         <div className="mt-[9px]">
-          <TablePagination
-            page={current}
-            pageSize={pageSize}
+          <ScrollEnd
+            sentinelRef={sentinelRef}
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            shown={rows.length}
             total={total}
-            onPageChange={setPage}
-            onPageSizeChange={(n) => {
-              setPageSize(n);
-              setPage(1);
-            }}
+            noun="lines"
           />
+        </div>
         </div>
       </div>
 
