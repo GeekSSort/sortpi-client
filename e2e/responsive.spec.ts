@@ -417,19 +417,26 @@ test.describe("pricing the whole catalogue", () => {
     await settle(page);
   });
 
-  test("the header tick takes the page, and says there is more", async ({ page }) => {
-    await page.getByRole("button", { name: /select every product on this page/i }).click();
+  test("the header tick takes every product the filters match", async ({ page }) => {
+    await page
+      .getByRole("button", { name: /select every product the filters match/i })
+      .click();
 
-    // Sixteen of thirty — and the escape hatch has to be visible, because the
-    // assumption that this meant "all" is the whole defect.
-    await expect(page.getByText(/^16 selected$/)).toBeVisible();
-    await expect(page.getByRole("button", { name: /select all 30/i })).toBeVisible();
+    // THIRTY, not sixteen. The tick used to take a page and look like it had
+    // taken the shop, which is the defect this describe block is named for;
+    // the pager is gone, so the table IS every matching row and the tick can
+    // finally mean what everybody read it to mean.
+    await expect(page.getByText(/^30 selected$/)).toBeVisible();
   });
 
-  test("Select all reaches every matching product", async ({ page }) => {
-    await page.getByRole("button", { name: /select every product on this page/i }).click();
-    await page.getByRole("button", { name: /select all 30/i }).click();
+  test("ticking it again clears the selection", async ({ page }) => {
+    const tick = page.getByRole("button", {
+      name: /select every product the filters match/i,
+    });
+    await tick.click();
     await expect(page.getByText(/^30 selected$/)).toBeVisible();
+    await tick.click();
+    await expect(page.getByText(/selected$/)).toHaveCount(0);
   });
 
   test("Price all is offered in the All Categories view", async ({ page }) => {
