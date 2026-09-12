@@ -78,6 +78,18 @@ const ALL_PERMISSIONS = [
   "expense.create",
   "expense.update",
   "expense.delete",
+  // The category CRUD behind the "+ New category" link and the Vouchers
+  // screen's Categories button. Both were absent, so every stubbed run
+  // rendered those controls hidden and no test could have caught a break in
+  // them.
+  "income_category.view",
+  "income_category.create",
+  "income_category.update",
+  "income_category.delete",
+  "expense_category.view",
+  "expense_category.create",
+  "expense_category.update",
+  "expense_category.delete",
   "branch.view",
   "branch.create",
   "billing.view",
