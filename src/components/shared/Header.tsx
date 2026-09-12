@@ -16,6 +16,7 @@ import {
   UpgradePlanChip,
 } from "./UpgradeButton";
 import PosViewToggle from "@/components/modules/pos/PosViewToggle";
+import PosMaximizeToggle from "@/components/modules/pos/PosMaximizeToggle";
 import { NotificationItem } from "@/types/notifications";
 import { useSidebar } from "./SidebarContext";
 import { ListSkeleton } from "./Skeleton";
@@ -74,9 +75,11 @@ function MenuIcon() {
 /** Which line sits under the title, for each page. */
 function subtitleForPath(pathname: string): string | null {
   if (pathname === "/pos") return "Ring up a sale, take payment, and print the receipt.";
+  if (pathname.startsWith("/settings"))
+    return "Your company details, and how the till prices and takes payment.";
   if (pathname.startsWith("/reports")) return "Sales, payments and stock movement over a period you choose.";
   if (pathname.startsWith("/discount")) return "Create and manage discounts, offers and coupon codes.";
-  if (pathname.startsWith("/sales-pos/sales")) return "View & manage all sales, invoice or order";
+  if (pathname.startsWith("/sales-pos/sales")) return "Every invoice rung up at the till.";
   if (pathname.startsWith("/sales-pos/return/new"))
     return "Find the sale, choose what came back, and refund it.";
   if (pathname.startsWith("/sales-pos/return")) return "View & manage all returns and refunds";
@@ -117,15 +120,19 @@ function subtitleForPath(pathname: string): string | null {
     return "Manage, organize, and monitor all products across your inventory.";
   if (pathname.startsWith("/finance/income-expense"))
     return "What the shop took and what it spent, month by month.";
+  if (pathname.startsWith("/finance/vouchers"))
+    return "Money in and out, written as numbered documents you can print and sign.";
+  if (pathname.startsWith("/finance/regular-payments"))
+    return "Rent, salaries and bills — what is due, what is late, and what it costs a month.";
   return null;
 }
 
 /** The title for each page, using the sidebar's own names. */
 function titleForPath(pathname: string): string {
   if (pathname === "/pos") return "POS";
-  if (pathname.startsWith("/sales-pos/sales")) return "Sales";
+  if (pathname.startsWith("/sales-pos/sales")) return "Invoices";
   if (pathname.startsWith("/sales-pos/return/new")) return "New Return";
-  if (pathname.startsWith("/sales-pos/return")) return "Returns";
+  if (pathname.startsWith("/sales-pos/return")) return "Returns and Refunds";
 
   if (pathname.startsWith("/customers")) return "Customers";
   if (pathname.startsWith("/inventory/stock/add")) return "Add Stock";
@@ -148,6 +155,8 @@ function titleForPath(pathname: string): string {
   if (pathname.startsWith("/discount")) return "Discount";
   if (pathname.startsWith("/ceo-overview")) return "CEO Overview";
   if (pathname.startsWith("/finance/income-expense")) return "Income & Expense";
+  if (pathname.startsWith("/finance/vouchers")) return "Vouchers";
+  if (pathname.startsWith("/finance/regular-payments")) return "Regular Payments";
   return "Dashboard";
 }
 
@@ -335,9 +344,16 @@ export default function Header({ title, subtitle, user }: HeaderProps) {
             control the cashier's own top bar carries. Below sm there is no
             room for two or three columns anyway, so the choice is moot. */}
         {pathname === "/pos" && (
-          <div className="hidden sm:block">
-            <PosViewToggle />
-          </div>
+          <>
+            {/* Before the column switcher: both are "how much screen does the
+                till get", and full screen is the coarser of the two. Not
+                behind the sm gate the switcher uses — columns are moot on a
+                narrow screen, but reclaiming the frame is worth MORE there. */}
+            <PosMaximizeToggle />
+            <div className="hidden sm:block">
+              <PosViewToggle />
+            </div>
+          </>
         )}
         <UpgradePlanChip />
         <UpgradeBarButton onClick={() => setUpgradeOpen(true)} />
