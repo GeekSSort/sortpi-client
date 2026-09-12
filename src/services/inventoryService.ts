@@ -1,6 +1,7 @@
 import { InventoryProduct, InventoryQueryFilter } from "@/types/inventory";
 import { ApiError, apiDownload, apiFetch, apiList, apiUpload, saveBlob } from "./apiClient";
-import { toInventoryProduct } from "./mappers/inventory";
+import { toInventoryProduct, toInventoryVariants } from "./mappers/inventory";
+import { invalidate } from "@/lib/query/useQuery";
 
 /** An id and a name, for the form's dropdowns. */
 export interface CatalogOption {
@@ -48,6 +49,87 @@ export interface CreateProductPayload {
   sku?: string;
   barcode?: string;
   reorderLevel?: number;
+  /**
+   * The sizes, colours or forms this product is sold in.
+   *
+   * Left out, or one row, is the ordinary product: one thing sold one way,
+   * exactly the payload this method has always sent. Two or more makes it a
+   * VARIABLE product, which is the server's own word for it — `type` governs
+   * how many variants a product may have, and sending several against SIMPLE
+   * is refused with SIMPLE_PRODUCT_CANNOT_HAVE_VARIANTS.
+   *
+   * Each carries its OWN prices and SKU, because two sizes are two things on
+   * a shelf: they are counted apart, scanned apart and charged apart.
+   */
+  variants?: ProductVariantInput[];
+}
+
+/** A variant as the API just created it — what opening stock is counted against. */
+export interface CreatedVariant {
+  id: string;
+  name: string;
+  sku: string;
+}
+
+/** What `createProduct` answers with: the list row, plus every variant made. */
+export type CreatedProduct = InventoryProduct & { variants: CreatedVariant[] };
+
+/** One sellable form of a product — "500ml", "Red / Large". */
+export interface ProductVariantInput {
+  /** What distinguishes it. "Default" for a product sold only one way. */
+  name: string;
+  sku?: string;
+  /** What the customer is charged for THIS one. */
+  sellingPrice?: number;
+  /** What the shop paid for THIS one. */
+  purchasePrice?: number;
+  /** The code on THIS one's packet. Sizes carry different numbers. */
+  barcode?: string;
+  /** The one a barcode-less lookup resolves to. Exactly one must be true. */
+  isDefault?: boolean;
+}
+
+/**
+ * The `variants` list to POST, from either shape of payload.
+ *
+ * One product sold one way is still one row called "Default" — the payload
+ * this has always sent, unchanged, so the CSV import, the demo seeder and
+ * every existing caller keep working. A payload carrying its own variants
+ * sends those instead, each with its own SKU and prices.
+ *
+ * Exactly one is marked default whatever the caller asked for: the server
+ * nominates the first when nobody does, and two defaults would make a
+ * barcode-less lookup ambiguous. The first wins, which is the order the form
+ * lists them in.
+ */
+function variantRows(payload: CreateProductPayload): Record<string, unknown>[] {
+  const supplied = (payload.variants ?? []).filter((v) => v.name.trim().length > 0);
+  if (supplied.length === 0) {
+    return [
+      {
+        name: "Default",
+        is_default: true,
+        ...(payload.sku ? { sku: payload.sku } : {}),
+        ...(payload.purchasePrice != null ? { cost_price: payload.purchasePrice } : {}),
+      },
+    ];
+  }
+  const defaultAt = Math.max(
+    0,
+    supplied.findIndex((v) => v.isDefault)
+  );
+  return supplied.map((v, index) => ({
+    name: v.name.trim(),
+    is_default: index === defaultAt,
+    ...(v.sku?.trim() ? { sku: v.sku.trim() } : {}),
+    ...(v.purchasePrice != null ? { cost_price: v.purchasePrice } : {}),
+    // Zero is not a price, it is an unpriced variant — the same rule the
+    // top-level `price` follows above.
+    ...(v.sellingPrice != null && v.sellingPrice > 0
+      ? { selling_price: v.sellingPrice }
+      : {}),
+    ...(v.barcode?.trim() ? { barcode: v.barcode.trim() } : {}),
+  }));
 }
 
 /** One row of an import, as the server reports it back. */
@@ -89,7 +171,17 @@ export class InventoryService {
   /**
    * Fetch inventory products catalog with search & filters
    */
-  static async getProducts(params?: InventoryQueryFilter): Promise<{ data: InventoryProduct[]; total: number }> {
+  /**
+   * The catalogue rows themselves, before anything decides what a ROW means.
+   *
+   * Shared by `getProducts` (one row per product) and `getVariants` (one per
+   * variant): the request and its paging are identical, and only the mapping
+   * differs. Two copies of this drifted the last time a filter was added to
+   * one of them.
+   */
+  private static async rawProducts(
+    params?: InventoryQueryFilter
+  ): Promise<{ data: any[]; total: number; offset: number }> {
     const searchParams = new URLSearchParams();
     if (params?.search) searchParams.set("search", params.search);
     if (params?.category) searchParams.set("category", params.category);
@@ -116,8 +208,46 @@ export class InventoryService {
     // eight products — the only thing on the row that says where you are.
     const offset = ((params?.page ?? 1) - 1) * (params?.limit ?? 200);
 
+    return { data: rows.data, total: rows.total, offset };
+  }
+
+  /** Fetch inventory products catalog with search & filters — one per PRODUCT. */
+  static async getProducts(
+    params?: InventoryQueryFilter
+  ): Promise<{ data: InventoryProduct[]; total: number }> {
+    const rows = await InventoryService.rawProducts(params);
     return {
-      data: rows.data.map((row: any, i: number) => toInventoryProduct(row, offset + i + 1)),
+      data: rows.data.map((row: any, i: number) =>
+        toInventoryProduct(row, rows.offset + i + 1)
+      ),
+      total: rows.total,
+    };
+  }
+
+  /**
+   * The catalogue as SELLABLE UNITS — one row per variant.
+   *
+   * What a purchase line, a transfer line and a stock count are each picking:
+   * every one of them names a variant. Those pickers were built on
+   * `getProducts`, which returns one row per product carrying the DEFAULT
+   * variant — so a product sold in three sizes could only ever be bought,
+   * moved or counted as one of them.
+   *
+   * `total` stays the server's PRODUCT count, as the POS list does: it is what
+   * the pager pages through, and reporting the expanded row count would make
+   * the last page arrive early and leave rows unreachable.
+   */
+  static async getVariants(
+    params?: InventoryQueryFilter
+  ): Promise<{ data: InventoryProduct[]; total: number }> {
+    const rows = await InventoryService.rawProducts(params);
+    let index = 0;
+    return {
+      data: rows.data.flatMap((row: any) => {
+        const made = toInventoryVariants(row, index + 1);
+        index += made.length;
+        return made;
+      }),
       total: rows.total,
     };
   }
@@ -199,7 +329,8 @@ export class InventoryService {
    * a failure here has to reach the form, because the previous version's
    * fallback is exactly what let a 400 look like a saved product.
    */
-  static async createProduct(payload: CreateProductPayload): Promise<InventoryProduct> {
+  static async createProduct(payload: CreateProductPayload): Promise<CreatedProduct> {
+    const rows = variantRows(payload);
     const created = await apiFetch<any>("/products/", {
       method: "POST",
       body: JSON.stringify({
@@ -208,27 +339,59 @@ export class InventoryService {
         unit: payload.unitId,
         ...(payload.brandId ? { brand: payload.brandId } : {}),
         ...(payload.taxId ? { tax: payload.taxId } : {}),
-        ...(payload.barcode ? { barcode: payload.barcode } : {}),
         ...(payload.reorderLevel != null ? { reorder_level: payload.reorderLevel } : {}),
-        // Only when there is one. `price` writes a ProductPrice row, and a row
-        // saying 0 is a product the till will sell for nothing — which reads
-        // exactly like a product nobody has priced, and is not.
-        ...(payload.sellingPrice != null && payload.sellingPrice > 0
-          ? { price: payload.sellingPrice }
-          : {}),
-        // One variant, spelled out rather than left to the `sku` convenience,
-        // because that shortcut has nowhere to put a cost price.
-        variants: [
-          {
-            name: "Default",
-            is_default: true,
-            ...(payload.sku ? { sku: payload.sku } : {}),
-            ...(payload.purchasePrice != null ? { cost_price: payload.purchasePrice } : {}),
-          },
-        ],
+        /**
+         * The top-level conveniences, ONLY for the one-variant product.
+         *
+         * `price`, `sku` and `barcode` each land on the default variant, so
+         * with a variants list they are a second, quieter way to set what the
+         * rows already say — and the rows are the ones on screen. Sending both
+         * is how the two come to disagree: the server prefers a row's own
+         * figure, so a stale top-level price sat in the payload doing nothing
+         * until the day a row arrived without one.
+         */
+        ...(rows.length > 1
+          ? {}
+          : {
+              ...(payload.barcode ? { barcode: payload.barcode } : {}),
+              // A row saying 0 is a product the till will sell for nothing —
+              // which reads exactly like a product nobody has priced, and is
+              // not.
+              ...(payload.sellingPrice != null && payload.sellingPrice > 0
+                ? { price: payload.sellingPrice }
+                : {}),
+            }),
+        /**
+         * `type` is what governs how many variants a product may have —
+         * SIMPLE means exactly one and the server refuses a second with
+         * SIMPLE_PRODUCT_CANNOT_HAVE_VARIANTS. So it is derived from the
+         * payload rather than asked for on the form: a shopkeeper adding a
+         * second size is telling us this is a VARIABLE product, and making
+         * them also pick the word out of a dropdown is asking the same
+         * question twice.
+         */
+        ...(rows.length > 1 ? { type: "VARIABLE" } : {}),
+        // Spelled out rather than left to the `sku` convenience, because that
+        // shortcut has nowhere to put a cost price or a second variant.
+        variants: rows,
       }),
     });
-    return toInventoryProduct(created, 1);
+    /**
+     * Every variant that was created, not just the default.
+     *
+     * The caller needs them to count OPENING STOCK, which is per variant: a
+     * product created with 250ml, 500ml and 1L has three shelves to count,
+     * and `InventoryProduct` carries only the default's id. Returned in the
+     * order the API created them, which is the order they were sent.
+     */
+    return {
+      ...toInventoryProduct(created, 1),
+      variants: (Array.isArray(created?.variants) ? created.variants : []).map((v: any) => ({
+        id: String(v?.id ?? ""),
+        name: String(v?.name ?? ""),
+        sku: String(v?.sku ?? ""),
+      })),
+    };
   }
 
   /**
@@ -433,5 +596,72 @@ export class CatalogService {
 
   static async remove(kind: CatalogKind, id: string): Promise<void> {
     await apiFetch<unknown>(`${PATHS[kind]}${id}/`, { method: "DELETE" });
+  }
+}
+
+/**
+ * The units a shop sells in — pieces, metres, kilograms.
+ *
+ * Its own service rather than another `CatalogKind`, because a unit is not a
+ * plain named lookup: it carries the short name that prints beside a quantity
+ * and the flag that decides whether a fraction of it can be sold at all.
+ * `UnitService.validate_quantity` on the server refuses 2.5 pieces; this is
+ * where a shop says which of its units are like that.
+ */
+export interface UnitOption {
+  id: string;
+  name: string;
+  /** "pcs", "m", "kg" — what prints beside the number. */
+  shortName: string;
+  /** Whether half of one can be sold. Cloth yes, bottles no. */
+  allowDecimal: boolean;
+}
+
+export class UnitsService {
+  static async list(): Promise<UnitOption[]> {
+    const res = await apiList<any>("/units/?limit=200", { method: "GET" }, (r) => r);
+    return res.data
+      .filter((r: any) => r?.id)
+      .map((r: any) => ({
+        id: String(r.id),
+        name: String(r?.name ?? ""),
+        shortName: String(r?.shortName ?? r?.short_name ?? ""),
+        allowDecimal: (r?.allowDecimal ?? r?.allow_decimal ?? false) === true,
+      }))
+      .sort((a: UnitOption, b: UnitOption) => a.name.localeCompare(b.name));
+  }
+
+  static async create(input: Omit<UnitOption, "id">): Promise<void> {
+    await apiFetch("/units/", {
+      method: "POST",
+      body: JSON.stringify({
+        name: input.name.trim(),
+        short_name: input.shortName.trim(),
+        allow_decimal: input.allowDecimal,
+      }),
+    });
+    invalidate("inventory", "units", "pos-products");
+  }
+
+  static async update(id: string, input: Omit<UnitOption, "id">): Promise<void> {
+    await apiFetch(`/units/${id}/`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: input.name.trim(),
+        short_name: input.shortName.trim(),
+        allow_decimal: input.allowDecimal,
+      }),
+    });
+    // The till prints the short name beside every quantity, so a rename has to
+    // reach the product wall as well as this screen.
+    invalidate("inventory", "units", "pos-products");
+  }
+
+  static async remove(id: string): Promise<void> {
+    // The API refuses one that products still point at, and that refusal is
+    // the useful answer — passed through rather than pre-empted with a count
+    // this screen would have to keep in step.
+    await apiFetch(`/units/${id}/`, { method: "DELETE" });
+    invalidate("inventory", "units", "pos-products");
   }
 }
