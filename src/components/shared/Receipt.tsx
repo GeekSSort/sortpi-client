@@ -39,8 +39,21 @@ export interface ReceiptProps {
   };
   /** SALES INVOICE, RETURN SLIP, PURCHASE ORDER… */
   title: string;
-  /** Customer, Phone, Cashier, Terminal ID, Invoice No, Date. */
+  /** Terminal ID, Invoice No, Date, Branch, Payment. NOT the customer — they
+      have their own block below, and not the cashier, who is on nobody's
+      receipt: the shop knows who rang it up, the customer holding the slip
+      does not need to. */
   meta: { label: string; value: string }[];
+  /**
+   * Who the sale was for, in a block of its own between the invoice details
+   * and the items.
+   *
+   * Its own section because it is the one part of the header the CUSTOMER
+   * checks — that the name and number on the slip are theirs, before they
+   * leave the counter. As one more `Customer:` line among Invoice No, Date and
+   * Branch it was a row in a list of the shop's own reference numbers.
+   */
+  customer?: { name: string; phone?: string };
   /** A centred message above the items, if the branch has one. */
   note?: string;
   /** Heading for the description column, e.g. "Item". */
@@ -65,6 +78,7 @@ export default function Receipt({
   business,
   title,
   meta,
+  customer,
   note,
   itemsHeading = "Item Description",
   items,
@@ -101,6 +115,26 @@ export default function Receipt({
           </p>
         ))}
       </div>
+
+      {/* Built exactly like the SALES INVOICE block above it: a centred bold
+          heading over `Label: value` rows. It is a section of the same
+          receipt, so it has to be the same shape — a left-aligned heading over
+          bare values read as a different document stapled to this one. */}
+      {customer && (
+        <>
+          <Rule />
+          {/* A string expression, not bare JSX text: the apostrophe would trip
+              react/no-unescaped-entities, and &rsquo; renders a curly quote
+              that sits wrong in a monospace till slip. */}
+          <p className="text-center font-bold tracking-[0.08em]">{"CUSTOMER'S INFO"}</p>
+          <div className="mt-[6px] flex flex-col">
+            <p className="break-words">Name: {customer.name}</p>
+            {/* Only when there is one. A walk-in has no number, and "Phone: —"
+                is a blank the customer is invited to read as an error. */}
+            {customer.phone && <p className="break-words">Phone: {customer.phone}</p>}
+          </div>
+        </>
+      )}
 
       {note && (
         <>
