@@ -5,12 +5,14 @@ import Link from "next/link";
 import { SupplierRecord } from "@/types/suppliers";
 import { SupplierService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
+import FilterDropdown from "@/components/shared/FilterDropdown";
 import RowActionMenu from "@/components/shared/RowActionMenu";
-import TablePagination from "@/components/shared/TablePagination";
+import ScrollEnd from "@/components/shared/ScrollEnd";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Avatar from "@/components/shared/Avatar";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
-import { useQuery, queryKey, setQueryData, invalidate } from "@/lib/query/useQuery";
+import { queryKey, invalidate } from "@/lib/query/useQuery";
+import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import { clampTypedAmount } from "@/lib/money";
 import { AmountLabel } from "@/components/shared/MaxButton";
@@ -41,13 +43,6 @@ function SearchIcon() {
   );
 }
 
-function FilterIcon() {
-  return (
-    <svg className="block size-[18px] shrink-0" viewBox="0 0 18 18" fill="none" aria-hidden>
-      <path d="M2.25 4.5h13.5M4.5 9h9M7.5 13.5h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 function PlusIcon() {
   return (
@@ -59,6 +54,23 @@ function PlusIcon() {
 
 // #  Supplier Name  Phone  Mail  Total Purchases  Balance  Last Purchase  Status  Action
 const GRID = "grid-cols-[52fr_176fr_156fr_196fr_132fr_118fr_128fr_104fr_83fr]";
+/** The same glyph the Sales, Purchases and Customers lists export under. */
+function ExportIcon() {
+  const s = {
+    stroke: "currentColor",
+    strokeWidth: 1.5,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+  };
+  return (
+    <svg className="block size-[18px] shrink-0" viewBox="0 0 18 18" fill="none" aria-hidden>
+      <path d="M12.33 6.675C15.03 6.9075 16.1325 8.295 16.1325 11.3325V11.43C16.1325 14.7825 14.79 16.125 11.4375 16.125H6.555C3.2025 16.125 1.86 14.7825 1.86 11.43V11.3325C1.86 8.3175 2.9475 6.93 5.6025 6.6825" {...s} />
+      <path d="M9 11.25V2.715" {...s} />
+      <path d="M11.5125 4.3875L9 1.875L6.4875 4.3875" {...s} />
+    </svg>
+  );
+}
+
 const CELL = "flex min-w-0 items-center p-[12px]";
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e]";
 const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
@@ -66,6 +78,9 @@ const FIELD =
   "h-[44px] w-full rounded-[10px] bg-white px-[12px] text-[14px] leading-[1.5] tracking-[-0.28px] text-[#1e1e1e] shadow-[inset_0_0_0_1px_#eaeaea] outline-none transition-shadow placeholder:text-[#a3a3a3] focus:shadow-[inset_0_0_0_1px_#f5b800]";
 const LABEL = "text-[13px] leading-[1.5] font-medium tracking-[-0.26px] text-[#1e1e1e]";
 
+// Still the source of the state's type, though the options now live on the
+// dropdown itself.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const STATUS_FILTERS = ["All", "Active", "Inactive"] as const;
 type StatusFilter = (typeof STATUS_FILTERS)[number];
 
@@ -79,9 +94,10 @@ export default function SuppliersPage() {
   const [term, setTerm] = useState("");
   const [status, setStatus] = useState<StatusFilter>("All");
   const [filterOpen, setFilterOpen] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
+  // Rows per request. Not a page size anyone picks — the table scrolls.
+  const pageSize = 25;
   const [note, setNote] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   const [detailOf, setDetailOf] = useState<SupplierRecord | null>(null);
   const [editOf, setEditOf] = useState<SupplierRecord | null>(null);
@@ -122,19 +138,75 @@ export default function SuppliersPage() {
   // Status goes to the API too, and so does the page — so both belong in the
   // key, or "Active" and "All" would share one cache slot.
   const key = queryKey("suppliers", {
-    page,
-    limit: pageSize,
     search: term,
     status: status === "All" ? undefined : status,
   });
-  const { data, loading, fetching, error, refetch } = useQuery(key, () =>
-    SupplierService.getSuppliers({
-      search: term,
-      status: status === "All" ? undefined : status,
-      page,
-      limit: pageSize,
-    })
+  const {
+    rows,
+    total,
+    loading,
+    loadingMore,
+    fetching,
+    error,
+    hasMore,
+    sentinelRef,
+    refetch,
+    patch: patchLoadedRows,
+  } = useInfiniteRows(
+    key,
+    (p, limit) =>
+      SupplierService.getSuppliers({
+        search: term,
+        status: status === "All" ? undefined : status,
+        page: p,
+        limit,
+      }),
+    { pageSize }
   );
+
+  /** A field is safe in a CSV only once quotes are doubled and it is wrapped:
+      a supplier called "Rahman, Md." split one row into two columns. */
+  const csvCell = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+
+  /**
+   * The suppliers on screen, as a spreadsheet.
+   *
+   * `balance` is what the shop owes THEM, and it goes out as a number so the
+   * column can be totalled — which is the reason to take this list off the
+   * screen in the first place.
+   */
+  const exportCsv = async () => {
+    setExporting(true);
+    setNote(null);
+    try {
+      const head = ["Supplier", "Phone", "Email", "Total Purchases", "Balance", "Last Purchase", "Status"];
+      const csv = [
+        head,
+        ...rows.map((r) => [
+          r.name,
+          r.phone,
+          r.mail,
+          r.totalPurchases,
+          r.balance,
+          r.lastPurchase,
+          r.status,
+        ]),
+      ]
+        .map((line) => line.map(csvCell).join(","))
+        .join("\n");
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "suppliers.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+      setNote(`Exported ${rows.length} supplier${rows.length === 1 ? "" : "s"} on this page`);
+    } catch {
+      setNote("Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // The funnel popover closes on an outside click or Escape, like every other
   // popover in the app.
@@ -152,12 +224,6 @@ export default function SuppliersPage() {
     };
   }, [filterOpen]);
 
-  const total = data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const current = Math.min(page, totalPages);
-  // The server already filtered and sliced. `rows` is the page.
-  const rows = data?.data ?? [];
-
   /**
    * Rewrite this page in the cache.
    *
@@ -166,10 +232,7 @@ export default function SuppliersPage() {
    * the entry is what keeps the change visible until the next refetch replaces
    * it with the server's answer.
    */
-  const patchRows = (fn: (list: SupplierRecord[]) => SupplierRecord[]) => {
-    if (!data) return;
-    setQueryData(key, { ...data, data: fn(data.data) });
-  };
+  const patchRows = (fn: (list: SupplierRecord[]) => SupplierRecord[]) => patchLoadedRows(fn);
 
   const patch = (id: string, next: Partial<SupplierRecord>) =>
     patchRows((list) => list.map((s) => (s.id === id ? { ...s, ...next } : s)));
@@ -208,7 +271,6 @@ export default function SuppliersPage() {
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
-                setPage(1);
               }}
               placeholder="Search by name, phone or mail..."
               aria-label="Search suppliers"
@@ -217,39 +279,32 @@ export default function SuppliersPage() {
           </div>
 
           {/* Status filter — the funnel was dead in the scaffold */}
-          <div ref={filterRef} className="relative shrink-0">
-            <button
-              type="button"
-              aria-label="Filter by status"
-              aria-expanded={filterOpen}
-              onClick={() => setFilterOpen((v) => !v)}
-              className={`cursor-pointer transition-colors ${status === "All" ? "text-[#525252] hover:text-[#1e1e1e]" : "text-[#f5b800]"}`}
-            >
-              <FilterIcon />
-            </button>
-            {filterOpen && (
-              <div className="absolute top-[28px] right-0 z-30 w-[150px] overflow-hidden rounded-[10px] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)] ring-1 ring-[#eaeaea]">
-                {STATUS_FILTERS.map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => {
-                      setStatus(s);
-                      setPage(1);
-                      setFilterOpen(false);
-                    }}
-                    className={`block w-full cursor-pointer px-[12px] py-[9px] text-left text-[13px] transition-colors hover:bg-[#fafafa] ${
-                      status === s ? "font-medium text-[#f5b800]" : "text-[#525252]"
-                    }`}
-                  >
-                    {s === "All" ? "All suppliers" : s}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          <FilterDropdown
+            label="Status"
+            value={status === "All" ? "" : status}
+            onChange={(next) => setStatus((next || "All") as StatusFilter)}
+            options={[
+              { value: "", label: "All suppliers" },
+              { value: "Active", label: "Active" },
+              { value: "Inactive", label: "Inactive" },
+            ]}
+          />
         </div>
 
+        <div className="flex shrink-0 flex-wrap items-center gap-[12px]">
+        <button
+          type="button"
+          onClick={exportCsv}
+          disabled={exporting || rows.length === 0}
+          style={{
+            backgroundImage:
+              "linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0) 100%), linear-gradient(90deg, rgb(245,184,0) 0%, rgb(245,184,0) 100%)",
+          }}
+          className="flex h-[48px] cursor-pointer items-center justify-center gap-[8px] overflow-clip rounded-[10px] border border-solid border-[#f5b800] px-[24px] text-[14px] leading-[1.5] font-semibold tracking-[-0.28px] whitespace-nowrap text-white shadow-[inset_0px_0px_0px_1.8px_rgba(255,255,255,0.25)] disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          <ExportIcon />
+          Export
+        </button>
         <Link
           href="/purchases/suppliers/add"
           style={{ backgroundImage: GOLD_GRADIENT }}
@@ -258,15 +313,22 @@ export default function SuppliersPage() {
           <PlusIcon />
           Add New
         </Link>
+        </div>
       </div>
 
       {/* Table card */}
       <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
         <RefreshBar active={fetching} />
+        {/* One scroller for the table, the phone cards and the load trigger.
+            The trigger has to sit INSIDE it — below the scroller it never
+            leaves the screen, and every page loads at once the moment the
+            table opens. */}
+        <div className="table-scroll">
+
         <div className="hidden px-[16px] pt-[16px] md:block">
-          <div className="overflow-x-auto">
+          <div>
             <div className="min-w-[1145px]">
-              <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
+              <div className={`table-head grid ${GRID} items-start overflow-clip rounded-[6px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>#</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Supplier Name</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Phone</span></div>
@@ -282,8 +344,8 @@ export default function SuppliersPage() {
                 <QueryBoundary
                   loading={loading}
                   error={error}
-                  hasData={data !== undefined}
-                  skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
+                  hasData={!loading && !error}
+                  skeleton={<TableSkeleton columns={GRID} rows={8} />}
                   errorMessage="Suppliers could not be loaded."
                   onRetry={refetch}
                 >
@@ -352,7 +414,7 @@ export default function SuppliersPage() {
           <CardListState
             loading={loading}
             error={error}
-            hasData={data !== undefined}
+            hasData={!loading && !error}
             isEmpty={rows.length === 0}
             errorMessage="Suppliers could not be loaded."
             emptyMessage={term || status !== "All" ? "No suppliers match that search or filter." : "No suppliers yet."}
@@ -395,16 +457,15 @@ export default function SuppliersPage() {
         {note && <p className="px-[16px] pt-[10px] text-[13px] text-[#525252]">{note}</p>}
 
         <div className="mt-[9px]">
-          <TablePagination
-            page={current}
-            pageSize={pageSize}
+          <ScrollEnd
+            sentinelRef={sentinelRef}
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            shown={rows.length}
             total={total}
-            onPageChange={setPage}
-            onPageSizeChange={(n) => {
-              setPageSize(n);
-              setPage(1);
-            }}
+            noun="suppliers"
           />
+        </div>
         </div>
       </div>
 
