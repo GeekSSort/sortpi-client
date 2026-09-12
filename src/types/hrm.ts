@@ -10,6 +10,17 @@ export interface EmployeeRecord {
   status: "Present" | "On Leave" | "Absent";
 }
 
+/** One day on one person's attendance sheet. */
+export interface AttendanceDay {
+  id: string;
+  /** yyyy-mm-dd */
+  date: string;
+  status: "Present" | "On Leave" | "Absent" | "Holiday";
+  /** "" when nothing was recorded — a day off has no clock times. */
+  checkIn: string;
+  checkOut: string;
+}
+
 export interface HrmQueryFilter {
   /** Which day's attendance to show against each employee. Defaults to today. */
   day?: string;
