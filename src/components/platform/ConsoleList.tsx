@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import TablePagination from "@/components/shared/TablePagination";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import { SkeletonBlock, StatCardsSkeleton } from "@/components/shared/Skeleton";
 import { EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
@@ -123,8 +122,6 @@ export default function ConsoleList<T extends { id: string }>({
   emptyLine?: string;
 }) {
   const [query, setQuery] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
   const [filter, setFilter] = useState(filters?.[0] ?? "");
   const [filterOpen, setFilterOpen] = useState(false);
   const filterRef = useRef<HTMLDivElement>(null);
@@ -146,7 +143,10 @@ export default function ConsoleList<T extends { id: string }>({
   const grid = useMemo(() => columns.map((c) => c.width).join(" "), [columns]);
   // Development only, and beside the memo that already walks the same array.
   assertUniqueKeys(columns);
-  const shown = rows.slice((page - 1) * pageSize, page * pageSize);
+  // Every row, in a list that scrolls. They are all in memory already —
+  // this component is handed the rows — so there was never a request
+  // behind the pager, only a slice.
+  const shown = rows;
   const primary = columns[1] ?? columns[0];
   const waiting = Boolean(loading) && !hasData;
 
@@ -201,7 +201,6 @@ export default function ConsoleList<T extends { id: string }>({
                 value={query}
                 onChange={(e) => {
                   setQuery(e.target.value);
-                  setPage(1);
                   onSearch(e.target.value);
                 }}
                 placeholder={searchPlaceholder || "Search..."}
@@ -237,7 +236,6 @@ export default function ConsoleList<T extends { id: string }>({
                           aria-selected={f === filter}
                           onClick={() => {
                             setFilter(f);
-                            setPage(1);
                             setFilterOpen(false);
                             onFilter?.(f);
                           }}
@@ -286,7 +284,7 @@ export default function ConsoleList<T extends { id: string }>({
                 <div className="overflow-x-auto">
                   <div style={{ minWidth }}>
                     {head}
-                    <TableSkeleton rows={pageSize} columns={skeletonGrid ?? ""} />
+                    <TableSkeleton rows={8} columns={skeletonGrid ?? ""} />
                   </div>
                 </div>
               </div>
@@ -299,8 +297,13 @@ export default function ConsoleList<T extends { id: string }>({
             </>
           }
         >
+          {/* Fixed height, rows scrolling inside. Every row renders now that
+              the pager is gone, and an unbounded list would run the console
+              off the bottom of the window. */}
+          <div className="table-scroll">
+
           <div className="hidden px-[16px] pt-[16px] md:block">
-            <div className="overflow-x-auto">
+            <div>
               <div style={{ minWidth }}>
                 {head}
 
@@ -352,18 +355,9 @@ export default function ConsoleList<T extends { id: string }>({
               </div>
             ))}
           </div>
+          </div>
         </QueryBoundary>
 
-        <TablePagination
-          page={page}
-          pageSize={pageSize}
-          total={rows.length}
-          onPageChange={setPage}
-          onPageSizeChange={(n) => {
-            setPageSize(n);
-            setPage(1);
-          }}
-        />
       </div>
     </div>
   );
