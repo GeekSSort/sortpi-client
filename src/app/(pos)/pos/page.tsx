@@ -74,6 +74,30 @@ export default function PosPage() {
     });
   };
 
+  /**
+   * Set a quantity outright, from the box the cashier typed in.
+   *
+   * Separate from the stepper because it is a different operation: the stepper
+   * moves BY an amount and can never overshoot the shelf by more than one, and
+   * this one lands ON an amount and has to be capped against it. Sharing the
+   * handler meant the typed figure was read as a delta and a cashier typing 3
+   * added three to what was already there.
+   */
+  const handleSetQuantity = (productId: string, next: number) => {
+    setCart((prev) => {
+      return prev
+        .map((item) => {
+          if (item.product.id !== productId) return item;
+          // A whole-number unit refuses fractions at the server, so the till
+          // rounds rather than sending one it knows will be refused.
+          const wanted = item.product.allowDecimal ? next : Math.round(next);
+          const capped = capFor(item.product, wanted);
+          return capped > 0 ? { ...item, quantity: capped } : item;
+        })
+        .filter(Boolean) as CartItem[];
+    });
+  };
+
   const handleUpdateQuantity = (productId: string, delta: number) => {
     setCart((prev) => {
       return prev
@@ -133,6 +157,7 @@ export default function PosPage() {
             <SelectedItems
               cart={cart}
               onUpdateQuantity={handleUpdateQuantity}
+            onSetQuantity={handleSetQuantity}
               onRemoveItem={handleRemoveItem}
               onClearCart={handleClearCart}
             />
@@ -143,6 +168,7 @@ export default function PosPage() {
               cart={cart}
               showItems={false}
               onUpdateQuantity={handleUpdateQuantity}
+            onSetQuantity={handleSetQuantity}
               onRemoveItem={handleRemoveItem}
               onClearCart={handleClearCart}
               onRestoreCart={handleRestoreCart}
@@ -176,6 +202,7 @@ export default function PosPage() {
           <CartPanel
             cart={cart}
             onUpdateQuantity={handleUpdateQuantity}
+            onSetQuantity={handleSetQuantity}
             onRemoveItem={handleRemoveItem}
             onClearCart={handleClearCart}
             onRestoreCart={handleRestoreCart}
