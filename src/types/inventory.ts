@@ -5,6 +5,16 @@ export interface InventoryProduct {
   variantId: string;
   index: string;
   name: string;
+  /**
+   * WHICH variant this row is — "500ml".
+   *
+   * On the products LIST this is the default variant's, and usually empty. On
+   * a picker built with `toInventoryVariants` it is the one being picked, and
+   * it is the only thing telling three "Coca-Cola" rows apart.
+   */
+  variantLabel: string;
+  /** How many sellable variants the product has. 1 for an ordinary product. */
+  variantCount: number;
   image: string;
   category: "Electronics" | "Home & Living" | "Accessories" | "Footwear" | "Bags";
   brand: string;
