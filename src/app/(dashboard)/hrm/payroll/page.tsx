@@ -4,13 +4,15 @@ import React, { useEffect, useRef, useState } from "react";
 import { PayrollRecord } from "@/types/payroll";
 import { PayrollService } from "@/services/payrollService";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
+import FilterDropdown from "@/components/shared/FilterDropdown";
 import { formatMoney } from "@/lib/format";
-import TablePagination from "@/components/shared/TablePagination";
+import ScrollEnd from "@/components/shared/ScrollEnd";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Avatar from "@/components/shared/Avatar";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
 import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 
 /**
@@ -33,6 +35,9 @@ const MONEY_FIELD =
   "h-[44px] w-full rounded-[10px] bg-white px-[12px] text-[14px] text-[#1e1e1e] shadow-[inset_0_0_0_1px_#eaeaea] outline-none focus:shadow-[inset_0_0_0_1.5px_#f5b800]";
 
 const STATUS_TONE: Record<PayrollRecord["status"], Tone> = { Paid: "green", "Not Paid": "rose" };
+// Still the source of the state's type, though the options now live on
+// the dropdown itself.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const FILTERS = ["Payroll", "Paid", "Not Paid"] as const;
 
 function SearchIcon() {
@@ -67,20 +72,6 @@ function ChevronIcon({ dir }: { dir: "left" | "right" }) {
   );
 }
 
-function CaretIcon({ open }: { open: boolean }) {
-  return (
-    <svg
-      width="20"
-      height="20"
-      viewBox="0 0 20 20"
-      fill="none"
-      aria-hidden
-      className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
-    >
-      <path d="m5.5 7.75 4.5 4.5 4.5-4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
 
 function AddIcon() {
   return (
@@ -97,8 +88,8 @@ export default function PayrollPage() {
   const [term, setTerm] = useState("");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("Payroll");
   const [filterOpen, setFilterOpen] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
+  // Rows per request. Not a page size anyone picks — the table scrolls.
+  const pageSize = 25;
   const [note, setNote] = useState<string | null>(null);
   /** Which wage is mid-payment, so its row can say so. */
   const [paying, setPaying] = useState<string | null>(null);
@@ -121,22 +112,31 @@ export default function PayrollPage() {
     return () => clearTimeout(id);
   }, [query, term]);
 
-  const { data, loading, fetching, error, refetch } = useQuery(
+  const {
+    rows,
+    total,
+    loading,
+    loadingMore,
+    fetching,
+    error,
+    hasMore,
+    sentinelRef,
+    refetch,
+  } = useInfiniteRows(
     queryKey("payroll", {
-      page,
-      limit: pageSize,
       search: term,
       month,
       status: filter === "Payroll" ? undefined : filter,
     }),
-    () =>
+    (p, limit) =>
       PayrollService.getPayroll({
         search: term || undefined,
         status: filter === "Payroll" ? undefined : filter,
         month,
-        page,
-        limit: pageSize,
-      })
+        page: p,
+        limit,
+      }),
+    { pageSize }
   );
 
   /** Which months have anything in them, so the picker can offer them. */
@@ -146,8 +146,6 @@ export default function PayrollPage() {
     { staleMs: 60_000 }
   );
 
-  const rows = data?.data ?? [];
-  const total = data?.total ?? 0;
 
   useEffect(() => {
     if (!monthOpen) return;
@@ -316,7 +314,6 @@ export default function PayrollPage() {
           "Nobody is paid yet — mark each wage as paid from the rows below."
       );
       setRunOpen(false);
-      setPage(1);
       // A run writes a payslip per employee and NOTHING to the ledger — the
       // wage bill posts as each one is paid. So only the payroll list changes
       // here; the finance caches move when `payOne` does.
@@ -339,7 +336,6 @@ export default function PayrollPage() {
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
-                setPage(1);
               }}
               placeholder="Search by name, ID, email, phone..."
               aria-label="Search payroll"
@@ -369,7 +365,6 @@ export default function PayrollPage() {
                 aria-label="Previous month"
                 onClick={() => {
                   setMonth((m) => PayrollService.shiftMonth(m, -1));
-                  setPage(1);
                 }}
                 className="flex h-full w-[40px] cursor-pointer items-center justify-center rounded-l-[12px] text-[#525252] transition-colors hover:bg-[#fafafa]"
               >
@@ -389,7 +384,6 @@ export default function PayrollPage() {
                 aria-label="Next month"
                 onClick={() => {
                   setMonth((m) => PayrollService.shiftMonth(m, 1));
-                  setPage(1);
                 }}
                 className="flex h-full w-[40px] cursor-pointer items-center justify-center rounded-r-[12px] text-[#525252] transition-colors hover:bg-[#fafafa]"
               >
@@ -418,7 +412,6 @@ export default function PayrollPage() {
                         aria-selected={m === month}
                         onClick={() => {
                           setMonth(m);
-                          setPage(1);
                           setMonthOpen(false);
                         }}
                         className={`flex w-full cursor-pointer items-center justify-between gap-[8px] px-[14px] py-[9px] text-left text-[14px] transition-colors hover:bg-[#fdf7e6] ${
@@ -436,45 +429,16 @@ export default function PayrollPage() {
             )}
           </div>
 
-          <div ref={filterRef} className="relative shrink-0">
-            <button
-              type="button"
-              onClick={() => setFilterOpen((v) => !v)}
-              aria-haspopup="listbox"
-              aria-expanded={filterOpen}
-              className="flex h-[48px] w-full cursor-pointer items-center justify-between gap-[12px] rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] py-[12px] text-[16px] leading-[24px] font-medium whitespace-nowrap text-[#525252] transition-colors hover:bg-[#fafafa] sm:w-auto"
-            >
-              {filter}
-              <CaretIcon open={filterOpen} />
-            </button>
-
-            {filterOpen && (
-              <ul
-                role="listbox"
-                className="absolute right-0 z-30 mt-[6px] w-[168px] overflow-hidden rounded-[10px] border border-[#eaeaea] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)]"
-              >
-                {FILTERS.map((f) => (
-                  <li key={f}>
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={f === filter}
-                      onClick={() => {
-                        setFilter(f);
-                        setPage(1);
-                        setFilterOpen(false);
-                      }}
-                      className={`w-full cursor-pointer px-[14px] py-[9px] text-left text-[14px] transition-colors hover:bg-[#fdf7e6] ${
-                        f === filter ? "bg-[#fdf7e6] font-medium text-[#1e1e1e]" : "text-[#525252]"
-                      }`}
-                    >
-                      {f === "Payroll" ? "All payslips" : f}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          <FilterDropdown
+            label="Status"
+            value={filter === "Payroll" ? "" : filter}
+            onChange={(next) => setFilter((next || "Payroll") as typeof filter)}
+            options={[
+              { value: "Payroll", label: "All payslips" },
+              { value: "Paid", label: "Paid" },
+              { value: "Not Paid", label: "Not paid" },
+            ]}
+          />
 
           {/* Settle the whole month in one press. Shown only while something
               is actually owed, so it is not a button that does nothing. */}
@@ -517,10 +481,16 @@ export default function PayrollPage() {
         )}
 
         {/* Table — 75:5560 */}
+        {/* One scroller for the table, the phone cards and the load trigger.
+            The trigger has to sit INSIDE it — below the scroller it never
+            leaves the screen, and every page loads at once the moment the
+            table opens. */}
+        <div className="table-scroll">
+
         <div className="hidden px-[16px] pt-[16px] md:block">
-          <div className="overflow-x-auto">
+          <div>
             <div className="min-w-[1050px]">
-              <div className={`grid ${GRID} items-start overflow-clip`}>
+              <div className={`table-head grid ${GRID} items-start overflow-clip bg-white`}>
                 <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>#</span></div>
                 <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Employee</span></div>
                 <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Basic Salary</span></div>
@@ -533,10 +503,10 @@ export default function PayrollPage() {
                 <QueryBoundary
                   loading={loading}
                   error={error}
-                  hasData={data !== undefined}
+                  hasData={!loading && !error}
                   skeleton={
                     <div className="col-span-8">
-                      <TableSkeleton columns={GRID} rows={pageSize} />
+                      <TableSkeleton columns={GRID} rows={8} />
                     </div>
                   }
                   errorMessage={PayrollService.describeError(error)}
@@ -610,7 +580,7 @@ export default function PayrollPage() {
           <CardListState
             loading={loading}
             error={error}
-            hasData={data !== undefined}
+            hasData={!loading && !error}
             isEmpty={rows.length === 0}
             errorMessage={PayrollService.describeError(error)}
             emptyMessage={
@@ -642,16 +612,15 @@ export default function PayrollPage() {
           ))}
         </div>
 
-        <TablePagination
-          page={page}
-          pageSize={pageSize}
+        <ScrollEnd
+          sentinelRef={sentinelRef}
+          hasMore={hasMore}
+          loadingMore={loadingMore}
+          shown={rows.length}
           total={total}
-          onPageChange={setPage}
-          onPageSizeChange={(n) => {
-            setPageSize(n);
-            setPage(1);
-          }}
+          noun="payslips"
         />
+        </div>
       </div>
 
       {/* Add New runs payroll: the server writes one payslip per employee. */}
