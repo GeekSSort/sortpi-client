@@ -1,22 +1,28 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { SaleRecord } from "@/types/sales";
 import { SalesService, ReturnService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
-import TablePagination from "@/components/shared/TablePagination";
+import ScrollEnd from "@/components/shared/ScrollEnd";
+import FilterDropdown from "@/components/shared/FilterDropdown";
+import DateFilter, { ALL_DATES, DateValue, resolveDates } from "@/components/shared/DateFilter";
 import TableSkeleton from "@/components/shared/TableSkeleton";
-import DateField from "@/components/shared/DateField";
-import { toApiDay } from "@/lib/dateFilter";
 import { formatMoney } from "@/lib/format";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
 import { useQuery, queryKey } from "@/lib/query/useQuery";
+import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardListState, EmptyState, ErrorState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import { DetailSkeleton } from "@/components/shared/Skeleton";
 import Receipt from "@/components/shared/Receipt";
 import { useShopProfile } from "@/components/shared/useShopProfile";
+import { usePartialPayment } from "@/components/shared/usePartialPayment";
+import { CustomerService } from "@/services";
+import { clampTypedAmount } from "@/lib/money";
+import { AmountLabel } from "@/components/shared/MaxButton";
+import { invalidate } from "@/lib/query/useQuery";
 
 /**
  * Sales — Figma 45:3002.
@@ -30,9 +36,14 @@ import { useShopProfile } from "@/components/shared/useShopProfile";
 
 const STATUS_TONE: Record<SaleRecord["status"], Tone> = {
   Paid: "green",
+  Partial: "gold",
   Unpaid: "orange",
   Pending: "amber",
   Refunded: "slate",
+  // Not slate: a sale with some of its goods back is still a live invoice —
+  // it may still owe money — and greying it out the way a finished one is
+  // greyed would file it under "dealt with".
+  "Partially Refunded": "gold",
 };
 
 function ExportIcon() {
@@ -55,15 +66,18 @@ function SearchIcon() {
   );
 }
 
-function FilterIcon() {
-  return (
-    <svg className="block size-[18px] shrink-0" viewBox="0 0 18 18" fill="none" aria-hidden>
-      <path d="M2.25 4.5h13.5M4.5 9h9M7.5 13.5h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
 
-const GRID = "grid-cols-[166fr_247fr_155fr_150fr_150fr_130fr_130fr]";
+/**
+ * Two shapes, because the table has two.
+ *
+ * A shop that takes part payments needs Paid and Due beside the total; one
+ * that does not would get a Paid column forever equal to Total Amount and a
+ * Due column forever zero, crowding out the columns that say something. Which
+ * one is live is `pos.allow_partial_payment` — see `usePartialPayment`.
+ */
+const GRID_FULL = "grid-cols-[166fr_247fr_155fr_150fr_150fr_130fr_130fr]";
+const GRID_PARTIAL =
+  "grid-cols-[145fr_195fr_140fr_128fr_165fr_120fr_130fr_112fr_105fr]";
 const CELL = "flex min-w-0 items-center p-[12px]";
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e]";
 const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
@@ -79,12 +93,77 @@ export default function SalesPage() {
       longer land on top of the rows for "ahmed" — it belongs to a key that is
       no longer on screen. */
   const [term, setTerm] = useState("");
-  const [date, setDate] = useState<Date | null>(null);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
+  // How many rows come back per request. Not a page size anyone picks any
+  // more — the table scrolls — just the size of each batch.
+  const pageSize = 25;
+  /** Empty is "no filter". Both go to the server: the list loads a batch at a
+      time, so narrowing in the browser would only hide the rows already
+      fetched. */
+  const [payStatus, setPayStatus] = useState("");
+  const [dates, setDates] = useState<DateValue>(ALL_DATES);
+  /**
+   * Whether this shop takes part payments, which decides how much of the
+   * settlement this screen reports. Off, it is the table it was before part
+   * payment existed: one Total Amount column and a Status of Paid.
+   */
+  const { allowPartial } = usePartialPayment();
+  const GRID = allowPartial ? GRID_PARTIAL : GRID_FULL;
+  /**
+   * The filter actually in force.
+   *
+   * Part payment switched off while "Partial" is selected would leave the
+   * list narrowed by an option no longer in the dropdown: an empty table with
+   * nothing on screen to explain it. Derived rather than written back into
+   * `payStatus` from an effect — that is a cascading render, and it would
+   * also forget the cashier's choice if they switched the setting back on.
+   */
+  const livePayStatus =
+    !allowPartial && (payStatus === "partial" || payStatus === "unpaid") ? "" : payStatus;
   const [exporting, setExporting] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [invoiceOf, setInvoiceOf] = useState<SaleRecord | null>(null);
+  /**
+   * Collecting the rest of an invoice, from the row that shows it owing.
+   *
+   * The money is posted to the CUSTOMER's ledger with an allocation naming
+   * this sale — the same endpoint the Customers screen uses — because that is
+   * where a debt lives. A sale row is insert-only and settling one by editing
+   * it would leave the customer's balance untouched.
+   */
+  const [collectFor, setCollectFor] = useState<SaleRecord | null>(null);
+  const [collectAmount, setCollectAmount] = useState("");
+  const [collectError, setCollectError] = useState<string | null>(null);
+  const [collecting, setCollecting] = useState(false);
+  /**
+   * The idempotency key this collection posts under.
+   *
+   * Insert-only ledgers, so the key has to hold across a RETRY: a fresh one
+   * per attempt turns a double-tapped Save into two payments, correctable
+   * only by a manual reversing entry.
+   *
+   * But it must also change when the AMOUNT does. The server hashes the body
+   * against the key and answers 409 to the same key carrying a different one —
+   * correctly, because that is a different payment. Keyed on the dialog
+   * session alone, a cashier whose 5,000 was refused and who corrected it to
+   * 500 got "conflict" and no way forward but reloading the page.
+   *
+   * So: one session per dialog opening, and the amount in the key. The same
+   * figure retried replays; a corrected figure is its own payment; a second
+   * deliberate payment on the same invoice opens a new dialog and a new
+   * session.
+   */
+  const collectSession = useRef("");
+  /**
+   * A latch, not the `collecting` flag.
+   *
+   * `collecting` is React state: two clicks landing in one tick both read
+   * `false` and both call through. A ref is written synchronously, so the
+   * second one sees the first. The idempotency key makes the duplicate a
+   * replay rather than a second payment, but a request that never leaves is
+   * better than one the server has to deduplicate — and the key only covers
+   * it while the amount is unchanged.
+   */
+  const collectingRef = useRef(false);
   const [receiptOf, setReceiptOf] = useState<SaleRecord | null>(null);
   const [withdrawOf, setWithdrawOf] = useState<SaleRecord | null>(null);
   const [withdrawing, setWithdrawing] = useState(false);
@@ -104,7 +183,7 @@ export default function SalesPage() {
    */
   // The refund dialog is included: it has to say which products go back on
   // the shelf, and that is on the sale's lines rather than on the list row.
-  const openSaleId = invoiceOf?.id ?? receiptOf?.id ?? null;
+  const openSaleId = invoiceOf?.id ?? receiptOf?.id ?? collectFor?.id ?? null;
   const {
     data: saleDetail,
     loading: saleDetailLoading,
@@ -116,18 +195,45 @@ export default function SalesPage() {
     { enabled: openSaleId !== null }
   );
 
+  /**
+   * What the collect dialog is allowed to take, and whose account it credits.
+   *
+   * The loaded DETAIL is preferred over the clicked row: both carry the
+   * ledger's outstanding, but the detail was fetched when the dialog opened
+   * while the row may have been sitting on screen since before someone else
+   * took a payment. Guarded on the id so a detail still loading for a
+   * different sale cannot set the ceiling for this one.
+   *
+   * The row is the fallback so the dialog opens with a sensible cap rather
+   * than a disabled Max button for the length of a round trip.
+   */
+  const collectDetail =
+    saleDetail && collectFor && saleDetail.id === collectFor.id ? saleDetail : null;
+  const outstanding = collectDetail?.due ?? collectFor?.dueAmount ?? 0;
+  /** Empty until the detail lands — only it carries the customer's id. */
+  const customerId = collectDetail?.customerId ?? "";
+
   useEffect(() => {
     if (query === term) return;
     const id = setTimeout(() => setTerm(query), 250);
     return () => clearTimeout(id);
   }, [query, term]);
 
+
   // The day goes to the API and so does the page, and both are part of the
   // key. Both used to be applied in the browser over one capped page, so
   // filtering to an older day found nothing that had not already been
   // fetched, and the pager called 200 the total.
-  const day = date ? toApiDay(date) : undefined;
-  const key = queryKey("sales", { page, limit: pageSize, search: term, day });
+  const span = resolveDates(dates);
+  // Primitives only: queryKey stringifies each value with String(), so an
+  // object becomes "[object Object]" and the key stops changing when its
+  // contents do — the list then keeps serving the previous filter's rows.
+  const key = queryKey("sales", {
+    search: term,
+    from: span.from,
+    to: span.to,
+    payStatus: livePayStatus,
+  });
   // The refund documents on the sale being withdrawn. A cancelled sale carries
   // the auto-return the cancel wrote; that is the one to undo.
   const { data: withdrawable, loading: withdrawableLoading } = useQuery(
@@ -135,26 +241,44 @@ export default function SalesPage() {
     () => ReturnService.getReturnsForInvoice(withdrawOf!.invoiceNo),
     { enabled: withdrawOf !== null }
   );
-  const openRefund = useMemo(
-    () => (withdrawable ?? []).find((r) => r.status !== "Rejected") ?? null,
-    [withdrawable]
-  );
+  /**
+   * The refund this withdraw would undo: the most recent one still standing.
+   *
+   * The list is newest first and the API now returns confirmed refunds only —
+   * a withdrawn one did not, in the end, happen — so the first row IS the
+   * open refund. The `!== "Rejected"` guard this replaced was doing that job
+   * in the browser, over a list that could also contain already-withdrawn
+   * documents.
+   *
+   * Newest first matters on a sale refunded twice: withdrawing the older
+   * document while a newer one stands would leave the books describing a
+   * sequence that never happened.
+   */
+  const openRefund = useMemo(() => (withdrawable ?? [])[0] ?? null, [withdrawable]);
 
-  const { data, loading, fetching, error, refetch } = useQuery(key, () =>
-    SalesService.getSales({
-      search: term,
-      startDate: day,
-      endDate: day,
-      page,
-      limit: pageSize,
-    })
+  const {
+    rows: sales,
+    total,
+    loading,
+    loadingMore,
+    fetching,
+    error,
+    hasMore,
+    sentinelRef,
+    refetch,
+  } = useInfiniteRows(
+    key,
+    (p, limit) =>
+      SalesService.getSales({
+        search: term,
+        startDate: span.from,
+        endDate: span.to,
+        paymentStatus: livePayStatus || undefined,
+        page: p,
+        limit,
+      }),
+    { pageSize }
   );
-
-  const total = data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const current = Math.min(page, totalPages);
-  // The server already filtered and sliced. `rows` is the page.
-  const sales = data?.data ?? [];
   const rows = sales;
 
   /** A field is safe in a CSV only once quotes are doubled and it is wrapped:
@@ -168,7 +292,19 @@ export default function SalesPage() {
       // Exports what the filters actually left on screen. This also used to
       // call SalesService.exportSales(), which downloaded a SECOND file built
       // from the bundled sample rows -- two files a click, one of them fake.
-      const head = ["Invoice No.", "Date & Time", "Customer", "Total Amount", "Payment Method", "Status"];
+      // The columns on screen, in the order they are on screen. An export
+      // that carried figures the table does not show — or omitted ones it
+      // does — is a spreadsheet nobody can reconcile against the page it
+      // came from.
+      const head = [
+        "Invoice No.",
+        "Date & Time",
+        "Customer",
+        "Total Amount",
+        ...(allowPartial ? ["Amount Received", "Due"] : []),
+        "Payment Method",
+        "Status",
+      ];
       const csv = [
         head,
         ...sales.map((s) => [
@@ -176,6 +312,7 @@ export default function SalesPage() {
           s.dateTime,
           s.customerName,
           s.totalAmount,
+          ...(allowPartial ? [s.paidAmount, s.dueAmount] : []),
           s.paymentMethod,
           s.status,
         ]),
@@ -207,34 +344,41 @@ export default function SalesPage() {
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
-                setPage(1);
               }}
               placeholder="Search by customer name, Invoice or Phone..."
               aria-label="Search sales"
               className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
             />
           </div>
-          <button
-            type="button"
-            aria-label="Filter"
-            onClick={() => setNote("Filter panel not designed yet")}
-            className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e]"
-          >
-            <FilterIcon />
-          </button>
         </div>
 
-        <div className="flex shrink-0 items-center gap-[16px]">
-          <DateField value={date} onChange={(d) => {
-              setDate(d);
-              // Page 1 of the new filter, not page 5 of the old one.
-              setPage(1);
-            }} ariaLabel="Filter sales by date" />
+        {/* The filters, beside the search box rather than behind a funnel:
+            a narrowed list has to say on screen that it is narrowed. */}
+        <div className="flex shrink-0 flex-wrap items-center gap-[12px]">
+          <FilterDropdown
+            label="Status"
+            value={livePayStatus}
+            onChange={setPayStatus}
+            options={[
+              { value: "", label: "Any status" },
+              { value: "paid", label: "Paid" },
+              // Only a shop that can CREATE these has anything to filter for.
+              ...(allowPartial
+                ? [
+                    { value: "partial", label: "Partial" },
+                    { value: "unpaid", label: "Unpaid" },
+                  ]
+                : []),
+              { value: "partial_refund", label: "Partly refunded" },
+              { value: "refunded", label: "Refunded" },
+            ]}
+          />
+          <DateFilter value={dates} onChange={setDates} />
 
           <button
             type="button"
             onClick={exportCsv}
-            disabled={exporting}
+            disabled={exporting || sales.length === 0}
             style={{
               backgroundImage:
                 "linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0) 100%), linear-gradient(90deg, rgb(245,184,0) 0%, rgb(245,184,0) 100%)",
@@ -250,15 +394,31 @@ export default function SalesPage() {
       {/* Table card — 45:3098 */}
       <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
         <RefreshBar active={fetching} />
+        {/* One scroller for the table, the phone cards and the load trigger.
+            The trigger has to sit INSIDE it — below the scroller it never
+            leaves the screen, and every page loads at once the moment the
+            table opens. */}
+        <div className="table-scroll">
+
         {/* Table — 45:3102 */}
         <div className="hidden px-[16px] pt-[16px] md:block">
-          <div className="overflow-x-auto">
-            <div className="min-w-[1128px]">
-              <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
+          <div>
+            <div className={allowPartial ? "min-w-[1400px]" : "min-w-[1128px]"}>
+              <div className={`table-head grid ${GRID} items-start overflow-clip rounded-[6px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Invoice No.</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Date &amp; Time</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Customer</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Total Amount</span></div>
+                {allowPartial && (
+                  <>
+                    {/* "Amount Received" — the till's own words for it. The
+                        payment dialog asks for an amount received, so the
+                        column reporting it says the same thing; "Paid" also
+                        collided with the Paid in the Status column beside it. */}
+                    <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Amount Received</span></div>
+                    <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Due</span></div>
+                  </>
+                )}
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Payment Method</span></div>
                 <div className={`${CELL} h-[40px] justify-center bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Status</span></div>
                 <div className={`${CELL} h-[40px] justify-center bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Action</span></div>
@@ -268,7 +428,7 @@ export default function SalesPage() {
                 <QueryBoundary
                   loading={loading}
                   error={error}
-                  hasData={data !== undefined}
+                  hasData={!loading && !error}
                   skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
                   errorMessage="Sales could not be loaded."
                   onRetry={refetch}
@@ -276,9 +436,9 @@ export default function SalesPage() {
                 {rows.length === 0 && (
                   <EmptyState
                     message={
-                      term || date ? "No sales match that search or date." : "No sales yet."
+                      term || dates.mode !== "all" ? "No sales match that search or date." : "No sales yet."
                     }
-                    hint={term || date ? undefined : "Sales rung up at the till show up here."}
+                    hint={term || dates.mode !== "all" ? undefined : "Sales rung up at the till show up here."}
                   />
                 )}
                 {rows.map((s, i) => (
@@ -300,6 +460,19 @@ export default function SalesPage() {
                     <div className={`${CELL}`}><span className={`${TEXT} truncate`}>{s.dateTime}</span></div>
                     <div className={`${CELL}`}><span className={`${TEXT} truncate`}>{s.customerName}</span></div>
                     <div className={`${CELL}`}><span className={`${TEXT} truncate`}>{s.totalAmountFormatted}</span></div>
+                    {allowPartial && (
+                      <>
+                        <div className={`${CELL}`}><span className={`${TEXT} truncate`}>{s.paidAmountFormatted}</span></div>
+                        {/* Red only when there IS one. Money still owed is
+                            what this column exists to surface, and a column of
+                            red zeroes would bury the rows that matter. */}
+                        <div className={`${CELL}`}>
+                          <span className={`${TEXT} truncate ${s.dueAmount > 0 ? "!font-semibold !text-[#e63946]" : ""}`}>
+                            {s.dueAmountFormatted}
+                          </span>
+                        </div>
+                      </>
+                    )}
                     <div className={`${CELL}`}>
                       <div className="flex flex-col min-w-0">
                         <span className={`${TEXT} truncate`}>{s.paymentMethod}</span>
@@ -348,12 +521,26 @@ export default function SalesPage() {
                                     ),
                                 },
                               ]
-                            : [
+                            : []),
+                          /**
+                           * Withdraw whenever ANYTHING has already come back.
+                           *
+                           * This was the `else` of the branch above, so it
+                           * appeared only on a fully refunded sale — a partly
+                           * refunded one offered Refund and nothing else. That
+                           * was survivable while the Returns list carried its
+                           * own Withdraw; it no longer does, and without this
+                           * a refund of two items out of four could not be
+                           * undone from anywhere in the application.
+                           */
+                          ...(s.status === "Refunded" || s.status === "Partially Refunded"
+                            ? [
                                 {
                                   label: "Withdraw refund",
                                   onSelect: () => setWithdrawOf(s),
                                 },
-                              ]),
+                              ]
+                            : []),
                         ]}
                       />
                     </div>
@@ -373,10 +560,10 @@ export default function SalesPage() {
           <CardListState
             loading={loading}
             error={error}
-            hasData={data !== undefined}
+            hasData={!loading && !error}
             isEmpty={rows.length === 0}
             errorMessage="Sales could not be loaded."
-            emptyMessage={term || date ? "No sales match that search or date." : "No sales yet."}
+            emptyMessage={term || dates.mode !== "all" ? "No sales match that search or date." : "No sales yet."}
             onRetry={refetch}
             rows={4}
           />
@@ -406,6 +593,17 @@ export default function SalesPage() {
                 <span className="truncate text-[12px] tracking-[-0.24px] text-[#525252]">{s.dateTime}</span>
                 <span className={`${TEXT} shrink-0`}>{s.totalAmountFormatted}</span>
               </div>
+              {/* Below md the columns become rows, so the settlement gets a
+                  line of its own rather than being dropped: a phone is where
+                  a shopkeeper checks who still owes them. */}
+              {allowPartial && (
+                <div className="mt-[4px] flex items-center justify-between text-[12px] tracking-[-0.24px] text-[#525252]">
+                  <span>Received {s.paidAmountFormatted}</span>
+                  <span className={s.dueAmount > 0 ? "font-semibold text-[#e63946]" : ""}>
+                    Due {s.dueAmountFormatted}
+                  </span>
+                </div>
+              )}
               <div className="mt-[4px] flex items-center justify-between text-[12px] tracking-[-0.24px] text-[#525252]">
                 <span>{s.paymentMethod}</span>
                 {s.referenceNo && (
@@ -418,18 +616,16 @@ export default function SalesPage() {
 
         {note && <p className="px-[16px] pt-[10px] text-[13px] text-[#525252]">{note}</p>}
 
-        {/* Pagination — 45:3224 */}
-        <div className="mt-[9px]">
-          <TablePagination
-            page={current}
-            pageSize={pageSize}
-            total={total}
-            onPageChange={setPage}
-            onPageSizeChange={(n) => {
-              setPageSize(n);
-              setPage(1);
-            }}
-          />
+        {/* The pager was here (45:3224). The table scrolls instead, and this
+            is both the end-of-list line and the thing that asks for more. */}
+        <ScrollEnd
+          sentinelRef={sentinelRef}
+          hasMore={hasMore}
+          loadingMore={loadingMore}
+          shown={rows.length}
+          total={total}
+          noun="sales"
+        />
         </div>
       </div>
 
@@ -444,6 +640,29 @@ export default function SalesPage() {
             <button type="button" className={MODAL_GHOST} onClick={() => setInvoiceOf(null)}>
               Close
             </button>
+            {/* Only while something is actually owed. A settled invoice with a
+                Collect button on it invites a payment the server will refuse,
+                and a cancelled one is not a debt at all. The figure comes from
+                the loaded detail, which is the ledger's answer — the row's own
+                Due is the same number until a refetch is in flight. */}
+            {(saleDetail?.due ?? invoiceOf?.dueAmount ?? 0) > 0 &&
+              invoiceOf?.status !== "Refunded" && (
+                <button
+                  type="button"
+                  className={MODAL_GHOST}
+                  onClick={() => {
+                    const sale = invoiceOf;
+                    if (!sale) return;
+                    setCollectAmount("");
+                    setCollectError(null);
+                    collectSession.current = `${sale.id}-${Date.now().toString(36)}`;
+                    setInvoiceOf(null);
+                    setCollectFor(sale);
+                  }}
+                >
+                  Collect payment
+                </button>
+              )}
             <button
               type="button"
               style={{ backgroundImage: GOLD_GRADIENT }}
@@ -593,8 +812,24 @@ export default function SalesPage() {
                       false,
                     ],
                     ["Total", formatMoney(saleDetail.grandTotal, MONEY), true],
-                    ["Paid", formatMoney(saleDetail.paid, MONEY), false],
-                    ["Due", formatMoney(saleDetail.due, MONEY), saleDetail.due > 0],
+                    /**
+                     * The split, when it says anything.
+                     *
+                     * Off, and fully settled, Paid is the total again and Due
+                     * is zero — two rows restating the one above them, which
+                     * is the breakdown this panel showed before part payment
+                     * existed. A sale that DOES carry a debt keeps them
+                     * whatever the setting says: money owed is not hidden by
+                     * a display preference, and a shop that switched the
+                     * setting off still has to see what it was owed from
+                     * before.
+                     */
+                    ...(allowPartial || saleDetail.due > 0
+                      ? [
+                          ["Paid", formatMoney(saleDetail.paid, MONEY), false],
+                          ["Due", formatMoney(saleDetail.due, MONEY), saleDetail.due > 0],
+                        ]
+                      : []),
                   ].map(([label, value, strong]) => (
                     <div
                       key={label as string}
@@ -664,11 +899,13 @@ export default function SalesPage() {
                   bin: shop.bin,
                 }}
                 title="SALES INVOICE"
+                customer={{
+                  name: saleDetail.customerName,
+                  phone: saleDetail.customerPhone,
+                }}
                 meta={[
                   { label: "Invoice No", value: saleDetail.invoiceNo || receiptOf.invoiceNo },
                   { label: "Date", value: receiptOf.dateTime },
-                  { label: "Customer", value: saleDetail.customerName },
-                  { label: "Cashier", value: saleDetail.cashierName || "—" },
                   { label: "Branch", value: saleDetail.branchName || "—" },
                   { label: "Payment", value: saleDetail.paymentMethod || receiptOf.paymentMethod },
                   ...(saleDetail.referenceNo || receiptOf.referenceNo
@@ -708,10 +945,39 @@ export default function SalesPage() {
                       ]
                     : []),
                   { label: "Total Amount", value: formatMoney(saleDetail.grandTotal, MONEY), strong: true, ruleAbove: true },
-                  { label: "Paid", value: formatMoney(saleDetail.paid, MONEY) },
-                  ...(saleDetail.due
-                    ? [{ label: "Due", value: formatMoney(saleDetail.due, MONEY), strong: true }]
-                    : []),
+                  // A reprint has to match the slip handed over at the
+                  // counter, so it follows the till's rule: the settlement
+                  // when the shop takes part payments or this sale carries a
+                  // debt, and the plain Net Payable line otherwise.
+                  ...(allowPartial || saleDetail.due > 0
+                    ? [
+                        { label: "Paid", value: formatMoney(saleDetail.paid, MONEY), strong: true },
+                        ...(saleDetail.due > 0
+                          ? [{ label: "Due", value: formatMoney(saleDetail.due, MONEY), strong: true }]
+                          : []),
+                        /**
+                         * The word, not just the figures — a reprint showing
+                         * two numbers left the customer to work out whether
+                         * the sale was settled.
+                         *
+                         * The ROW's status, which is the one the list shows.
+                         * This was `paymentStateOf(paid, due)` with a special
+                         * case for CANCELLED, and a sale whose goods had all
+                         * come back owes nothing — so the reprint of a
+                         * refunded invoice printed "Paid", in the customer's
+                         * hand, next to the money they had just been given
+                         * back. Goods returned outranks money owed, and the
+                         * row already knows it from the server's own reading
+                         * of the lines.
+                         */
+                        { label: "Status", value: receiptOf.status },
+                      ]
+                    : [
+                        { label: "Net Payable", value: formatMoney(saleDetail.grandTotal, MONEY), strong: true },
+                        // Not the hardcoded "Paid" this used to print: a cash
+                        // sale refunded in full reached here too.
+                        { label: "Status", value: receiptOf.status },
+                      ]),
                 ]}
                 footerNotes={["Thank you for your purchase.", "Goods once sold are exchangeable within 7 days with this receipt."]}
                 system={{ name: "SortPi" }}
@@ -719,6 +985,148 @@ export default function SalesPage() {
             ) : (
               <ErrorState message="Could not load this receipt." onRetry={refetchSale} compact />
             )}
+          </div>
+        )}
+      </Modal>
+
+      {/* Collect the rest of an invoice ─────────────────────────────────── */}
+      <Modal
+        open={collectFor !== null}
+        onClose={() => !collecting && setCollectFor(null)}
+        title="Collect payment"
+        width={440}
+        footer={
+          <>
+            <button
+              type="button"
+              disabled={collecting}
+              className={MODAL_GHOST}
+              onClick={() => setCollectFor(null)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              // Not merely `collecting`: the customer id arrives with the
+              // DETAIL, and until it does there is no account to credit.
+              // Enabled early, Save answered "this sale has no customer on
+              // it" — a sentence about the data rather than about the wait.
+              disabled={collecting || outstanding <= 0 || !customerId}
+              style={{ backgroundImage: GOLD_GRADIENT }}
+              className={MODAL_PRIMARY}
+              onClick={async () => {
+                if (!collectFor || collecting || collectingRef.current) return;
+                const amount = Number(collectAmount);
+                if (!collectAmount.trim() || Number.isNaN(amount) || amount <= 0) {
+                  return setCollectError("Enter an amount greater than zero.");
+                }
+                if (amount > outstanding + 0.00005) {
+                  return setCollectError(
+                    `Amount can't exceed the ${formatMoney(outstanding, MONEY)} outstanding.`
+                  );
+                }
+                if (!customerId) {
+                  return setCollectError(
+                    "This sale has no customer on it, so there is no account to credit."
+                  );
+                }
+                collectingRef.current = true;
+                setCollecting(true);
+                setCollectError(null);
+                try {
+                  /**
+                   * Allocated to THIS invoice, not left on account.
+                   *
+                   * The allocation is the whole point of collecting from a
+                   * row: without it the money lands against the customer's
+                   * oldest debt and the invoice the cashier was looking at
+                   * stays open, which is not what they were told would
+                   * happen.
+                   */
+                  await CustomerService.recordPayment(
+                    customerId,
+                    amount,
+                    `Payment against ${collectFor.invoiceNo}`,
+                    {
+                      allocations: [{ saleId: collectFor.id, amount }],
+                      // The amount is IN the key: see `collectSession`.
+                      idempotencyKey: `collect-${collectSession.current}-${amount.toFixed(4)}`,
+                    }
+                  );
+                  setNote(
+                    `${formatMoney(amount, MONEY)} collected against ${collectFor.invoiceNo}`
+                  );
+                  setCollectFor(null);
+                  /**
+                   * Refetched, never patched on screen.
+                   *
+                   * The ledger owns these figures — Amount Received, Due and
+                   * the Status pill are all derived from it server-side — so
+                   * the row has to come back from the server rather than be
+                   * adjusted here. The customer's balance and the dashboard's
+                   * takings move on the same posting.
+                   */
+                  invalidate("sales", "customers", "dashboard", "overview-sales");
+                } catch (error) {
+                  setCollectError(
+                    error instanceof Error && error.message
+                      ? error.message
+                      : "The payment could not be recorded."
+                  );
+                } finally {
+                  collectingRef.current = false;
+                  setCollecting(false);
+                }
+              }}
+            >
+              {collecting ? "Saving…" : "Save payment"}
+            </button>
+          </>
+        }
+      >
+        {collectFor && (
+          <div className="flex flex-col gap-[12px]">
+            <p className="text-[14px] leading-[1.6] text-[#525252]">
+              <span className="font-medium text-[#1e1e1e]">{collectFor.invoiceNo}</span> ·{" "}
+              {collectFor.customerName} still owes{" "}
+              <span className="font-medium text-[#1e1e1e]">
+                {formatMoney(outstanding, MONEY)}
+              </span>{" "}
+              of {formatMoney(collectFor.totalAmount, MONEY)}.
+            </p>
+            <div className="flex flex-col gap-[6px]">
+              <AmountLabel
+                htmlFor="sale-collect"
+                onMax={() => {
+                  // Four decimals, as the ceiling is: the server refuses an
+                  // allocation a hundredth of a paisa over what is owed.
+                  setCollectAmount(String(outstanding));
+                  setCollectError(null);
+                }}
+                maxDisabled={outstanding <= 0}
+              >
+                Amount
+              </AmountLabel>
+              <input
+                id="sale-collect"
+                autoFocus
+                value={collectAmount}
+                onChange={(e) => {
+                  setCollectAmount(clampTypedAmount(e.target, outstanding));
+                  setCollectError(null);
+                }}
+                inputMode="decimal"
+                placeholder="0"
+                aria-label="Payment amount"
+                className="flex h-[44px] items-center rounded-[10px] bg-white px-[12px] text-[14px] tracking-[-0.28px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] outline-none placeholder:text-[rgba(82,82,82,0.6)]"
+              />
+            </div>
+            {/* Why Save is greyed out for a beat. Without it the button looked
+                broken rather than busy. */}
+            {!customerId && !collectError && (
+              <p className="text-[13px] text-[#8f8d87]">Loading this invoice…</p>
+            )}
+            {collectError && <p className="text-[13px] text-[#ef4444]">{collectError}</p>}
           </div>
         )}
       </Modal>
