@@ -4,14 +4,17 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { CartItem, ProductItem } from "@/types/pos";
 import ProductPeek, { PeekAnchor } from "./ProductPeek";
 import { PosService } from "@/services";
-import TablePagination from "@/components/shared/TablePagination";
+import ScrollEnd from "@/components/shared/ScrollEnd";
 import { useQuery, queryKey } from "@/lib/query/useQuery";
+import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardGridSkeleton } from "@/components/shared/Skeleton";
 import { QueryBoundary, RefreshBar, EmptyState } from "@/components/shared/QueryBoundary";
 import ProductImage from "@/components/shared/ProductImage";
+import VariantChip from "@/components/shared/VariantChip";
 import ChipScroller from "@/components/shared/ChipScroller";
 import { useProductDiscounts } from "@/lib/usePosDiscounts";
-import ScannerPanel, { ScannerPill } from "./ScannerStatus";
+import ScannerPanel from "./ScannerStatus";
+import PosToolbar, { BrowseMode } from "./PosToolbar";
 import { readPosDraft } from "@/components/modules/pos/posCart";
 import ScanResult, { ScanOutcome } from "./ScanResult";
 import OutOfStockDialog from "./OutOfStockDialog";
@@ -35,37 +38,7 @@ import { formatMoney } from "@/lib/format";
  * There is no Figma frame for that; it is our choice.
  */
 
-/** Magnifier, node 45:2174. */
-function SearchIcon() {
-  return (
-    <svg className="block size-[24px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="10.5" cy="10.5" r="7.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M16 16L21 21" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      <path
-        d="M8.5 3.75a6.75 6.75 0 0 1 6.75 6.75"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        opacity="0.45"
-      />
-    </svg>
-  );
-}
 
-/** Barcode scanner, node 45:2179. */
-function ScanIcon() {
-  return (
-    <svg className="block size-[24px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path
-        d="M3 8V5.5A2.5 2.5 0 0 1 5.5 3H8M16 3h2.5A2.5 2.5 0 0 1 21 5.5V8M21 16v2.5a2.5 2.5 0 0 1-2.5 2.5H16M8 21H5.5A2.5 2.5 0 0 1 3 18.5V16"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-      <path d="M7 8.5v7M10 8.5v7M13.5 8.5v7M17 8.5v7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 /** The upright "more" dots, node 45:2196. */
 function MoreIcon() {
@@ -149,6 +122,18 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
 
   /** "" is every category. Held as an ID, which is what the API filters on. */
   const [categoryId, setCategoryId] = useState("");
+  /** "" is every brand. The API takes `brand` as an id, same as `category`. */
+  const [brandId, setBrandId] = useState("");
+  /**
+   * What this column is showing: the wall, or the list behind Category/Brand.
+   *
+   * The toolbar's two buttons do not filter in place — they put a LIST where
+   * the products were. A shop with sixty categories cannot pick one out of a
+   * chip strip that scrolls past the fold, and picking one is the only reason
+   * to open it, so choosing a row filters the wall and comes straight back.
+   */
+  const [browse, setBrowse] = useState<BrowseMode>("products");
+
   /**
    * Hide what the till cannot sell.
    *
@@ -169,19 +154,37 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
       request for a word rather than one per letter, and a slow answer for "so"
       cannot land on top of the rows for "sony". */
   const [term, setTerm] = useState("");
-  const [page, setPage] = useState(1);
   // Nine a page: three across, three down, as in the design. On a wider
   // screen the grid adds columns instead of stretching the cards.
-  const [pageSize, setPageSize] = useState(9);
+  // Rows per request. Not a page size anyone picks — the wall scrolls.
+  const pageSize = 24;
+
+  /**
+   * Changing what the column shows empties the search field.
+   *
+   * The field is labelled for whatever is on screen — "Search Brand" while the
+   * brands are up — so text left in it from the previous list is a term the
+   * new label does not describe, against rows it was never typed for.
+   */
+  const showBrowse = useCallback((next: BrowseMode) => {
+    setBrowse(next);
+    queryRef.current = "";
+    setQuery("");
+    setTerm("");
+  }, []);
 
   useEffect(() => {
+    // Only the wall searches the server. While a chooser is up the field is
+    // labelled "Search Category" and filters the rows on screen, so letting it
+    // through here would fire a product search per keystroke for a term that
+    // was never about products — against a wall nobody is looking at.
+    if (browse !== "products") return;
     if (query === term) return;
     const id = window.setTimeout(() => {
       setTerm(query);
-      setPage(1);
     }, 250);
     return () => window.clearTimeout(id);
-  }, [query, term]);
+  }, [query, term, browse]);
 
   // The chips come from the catalogue, not from the products on this page —
   // with one page in hand, a category with nothing on it would simply vanish
@@ -189,31 +192,67 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
   const { data: categoryRows } = useQuery(queryKey("pos-categories"), () =>
     PosService.getCategories()
   );
+  // The "everything" row is a PosGrouping like the rest so the chooser renders
+  // one shape; its count is unused (see `isAll` where the card is drawn).
+  const ALL_ROW = { productCount: 0, image: null, description: null };
   const categories = useMemo(
-    () => [{ id: "", name: "All Categories" }, ...(categoryRows ?? [])],
+    () => [{ id: "", name: "All Categories", ...ALL_ROW }, ...(categoryRows ?? [])],
+    // ALL_ROW is a literal rebuilt each render and is deliberately not a dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [categoryRows]
   );
+
+  // Only fetched once somebody opens the Brand list. A till that never uses
+  // the button should not pay for the request on every screen.
+  const { data: brandRows } = useQuery(
+    queryKey("pos-brands"),
+    () => PosService.getBrands(),
+    { enabled: browse === "brands" }
+  );
+  const brands = useMemo(
+    () => [{ id: "", name: "All Brands", ...ALL_ROW }, ...(brandRows ?? [])],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [brandRows]
+  );
+
+  /**
+   * What the chooser shows: the list, narrowed by the search field.
+   *
+   * Filtered here rather than at the API, and against `query` rather than the
+   * debounced `term`: both lists arrive whole (limit=200) and are a few dozen
+   * rows, so this is a substring match over an array already in hand and the
+   * results should keep up with the keystroke.
+   *
+   * The "everything" row survives the filter. It is how you clear the one you
+   * picked, and a typo that hid it would strand a cashier on a filtered wall
+   * with no visible way back.
+   */
+  const browseRows = useMemo(() => {
+    const rows = browse === "categories" ? categories : brands;
+    const needle = query.trim().toLowerCase();
+    if (!needle) return rows;
+    return rows.filter((r) => r.id === "" || r.name.toLowerCase().includes(needle));
+  }, [browse, categories, brands, query]);
 
   // SERVER-side, a page at a time. It used to ask for 60 products and search
   // them in the browser, so on a real catalogue the wall held the first 60 by
   // name and a cashier searching for anything after them was told there was no
   // such product — while the same product sat plainly on the stock screen.
   const {
-    data,
+    rows: products,
+    total,
     loading,
+    loadingMore,
     fetching,
     error,
+    hasMore,
+    sentinelRef,
     refetch,
-  } = useQuery(
-    queryKey("pos-products", { page, limit: pageSize, search: term, category: categoryId }),
-    () => PosService.getProducts({ page, limit: pageSize, search: term, categoryId }),
-    { staleMs: 60_000 }
+  } = useInfiniteRows(
+    queryKey("pos-products", { search: term, category: categoryId, brand: brandId }),
+    (p, limit) => PosService.getProducts({ page: p, limit, search: term, categoryId, brandId }),
+    { pageSize, staleMs: 60_000 }
   );
-
-  const products = data?.data;
-  const total = data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const current = Math.min(page, totalPages);
   // The server already sliced. This is the page, less anything the "in stock
   // only" filter hides.
   const shown = useMemo(() => {
@@ -229,6 +268,25 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
    * and answers on an exact barcode. Only if that finds nothing does the box
    * fall back to being a search box.
    */
+  /**
+   * Choose a category or a brand: filter the wall and go back to it, because
+   * filtering is the only reason the list was opened.
+   *
+   * Shared by the card and by Enter in the search field, so the two cannot
+   * drift into doing different things.
+   */
+  const pickBrowseRow = useCallback(
+    (id: string) => {
+      if (browse === "categories") setCategoryId(id);
+      else if (browse === "brands") setBrandId(id);
+      showBrowse("products");
+      // A USB scanner sends keystrokes to the focused element; the field has
+      // to be ready again the moment the wall is.
+      searchRef.current?.focus();
+    },
+    [browse, showBrowse]
+  );
+
   const clearScanNote = useCallback(() => setScanNote(null), []);
 
   /**
@@ -262,13 +320,13 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
         // at the payment screen means unpicking a basket in front of a queue.
         setOutOfStock(product);
         setScanNote(null);
-        reportScanResult(false, `${product.name} is out of stock`);
+        reportScanResult(false, `${product.fullName} is out of stock`);
         beep(false);
         return;
       }
       onSelectProduct?.(product);
-      setScanNote({ kind: "added", text: `Added ${product.name}` });
-      reportScanResult(true, `Added ${product.name}`);
+      setScanNote({ kind: "added", text: `Added ${product.fullName}` });
+      reportScanResult(true, `Added ${product.fullName}`);
       beep(true);
     };
 
@@ -359,86 +417,56 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
   return (
     <div className="relative flex h-full w-full flex-col">
       <RefreshBar active={fetching} />
-      {/* Search, and the scanner's state beside it — 45:2172.
-          The field is capped rather than run to the full width of the wall: a
-          barcode is at most a couple of dozen characters, and a search box
-          three feet wide is a lot of white space for a cashier's eye to cross
-          between the code and the products it filtered. What the width buys
-          instead is a place on the same line for the device state, at the same
-          height and radius, so the two read as one strip. */}
-      <div className="flex w-full shrink-0 items-center gap-[10px]">
-        <div className="flex h-[44px] min-w-0 max-w-[520px] flex-1 items-center overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea]">
-          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
-            <SearchIcon />
-            <input
-              ref={searchRef}
-              autoFocus
-              value={query}
-              onChange={(e) => {
-                queryRef.current = e.target.value;
-                setQuery(e.target.value);
-                clearScanNote();
-              }}
-              onKeyDown={(e) => {
-                // Enter on something TYPED. A scan never reaches here — the
-                // detector ends the burst and clears the box first — so this is
-                // the cashier keying a code in by hand, which has to work when a
-                // scanner dies mid-queue.
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  void submitScanRef.current();
-                }
-              }}
-              disabled={scanning}
-              placeholder="Scan a barcode, or search by name or SKU..."
-              aria-label="Scan a barcode or search products"
-              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] font-normal tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252] disabled:opacity-60"
-            />
-          </div>
-        </div>
+      {/* The product column's toolbar — Figma 6:890. Search, Scan, Category,
+          Brand and notifications on one 12px-gap row.
 
-        {/* Right-aligned, and all three of the same 44px and 10px radius as the
-            field, so the row reads as one strip rather than three controls that
-            happen to be adjacent. */}
-        <div className="ml-auto flex shrink-0 items-center gap-[8px]">
-          <ScannerPill onClick={() => setScannerOpen(true)} />
-
-          <button
-            type="button"
-            /**
-             * One press, not two.
-             *
-             * With no scanner attached this IS the connect — `requestPort()`
-             * needs a real click, and sending somebody into a panel to find a
-             * second button to press is a step that exists only because the
-             * code was organised that way. Once a scanner is connected the same
-             * button opens the panel, which is where the state, the last code
-             * and the disconnect live.
-             */
-            onClick={() => {
-              if (serial.status !== "connected" && serialSupported()) {
-                void connectSerialScanner();
-                return;
-              }
-              setScannerOpen(true);
-            }}
-            aria-label={
-              serial.status === "connected" ? "Open the scanner panel" : "Connect a scanner"
-            }
-            title={serial.status === "connected" ? "Scanner" : "Connect a scanner"}
-            className="flex h-[44px] shrink-0 cursor-pointer items-center gap-[7px] rounded-[10px] bg-white px-[14px] text-[13px] leading-[1.4] font-medium tracking-[-0.26px] whitespace-nowrap text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e]"
-          >
-            <ScanIcon />
-            <span className="hidden md:inline">
-              {serial.status === "connecting"
-                ? "Connecting…"
-                : serial.status === "connected"
-                  ? "Scanner"
-                  : "Connect device"}
-            </span>
-          </button>
-        </div>
-      </div>
+          It replaced a 44px search field with the scanner pill and a connect
+          button beside it. The scanner's state did not go with them: it is the
+          dot on Scan, and the panel behind that button is still where a device
+          is connected and disconnected. */}
+      <PosToolbar
+        query={query}
+        onQueryChange={(next) => {
+          queryRef.current = next;
+          setQuery(next);
+          clearScanNote();
+        }}
+        onSubmit={() => {
+          if (browse === "products") {
+            void submitScanRef.current();
+            return;
+          }
+          // Enter on a narrowed list takes the first row that is not the
+          // "everything" one — pressing Enter to mean "all brands" is not
+          // what anyone types a name to do.
+          const first = browseRows.find((r) => r.id !== "");
+          if (first) pickBrowseRow(first.id);
+        }}
+        searchRef={searchRef}
+        scanning={scanning}
+        browse={browse}
+        onBrowseChange={showBrowse}
+        scannerConnected={serial.status === "connected"}
+        onOpenScanner={() => {
+          // The panel ALWAYS opens. It used to `return` after firing
+          // `requestPort()` when no scanner was attached — one press instead
+          // of two, which reads well until you notice what it costs: on any
+          // desktop Chrome (every one of which supports Web Serial) the button
+          // opened a device chooser and nothing else, so somebody with no
+          // serial scanner — a shop using a keyboard-wedge reader, or none —
+          // could not reach the panel AT ALL. The beep volume, the scanner
+          // help and the manual code box all live in there.
+          //
+          // The connect still happens on the same press, because `requestPort`
+          // needs a real user gesture and this is one; it just no longer
+          // stands in the way of the panel. "Connect scanner" inside the panel
+          // remains for a second attempt.
+          if (serial.status !== "connected" && serialSupported()) {
+            void connectSerialScanner();
+          }
+          setScannerOpen(true);
+        }}
+      />
 
       <ScannerPanel
         open={scannerOpen}
@@ -461,11 +489,16 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
         onRestocked={(product) => {
           setOutOfStock(null);
           onSelectProduct?.(product);
-          setScanNote({ kind: "added", text: `Counted in and added ${product.name}` });
+          setScanNote({ kind: "added", text: `Counted in and added ${product.fullName}` });
           beep(true);
         }}
       />
 
+      {/* The chip strip and the wall are the products view. Category and
+          Brand replace them rather than sitting above them: two ways to
+          pick a category, both on screen, is two things to keep in step. */}
+      {browse === "products" && (
+        <>
       {/* Categories — 45:2183, 16px below the search bar. The strip used to be
           a bare overflow-x scroller: on a till there is no comfortable way to
           drag a 4px horizontal scrollbar, and with a shop's real category list
@@ -480,7 +513,6 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
                 type="button"
                 onClick={() => {
                   setCategoryId(c.id);
-                  setPage(1);
                 }}
                 className={`flex shrink-0 cursor-pointer items-center justify-center rounded-[10px] whitespace-nowrap transition-colors ${
                   active
@@ -542,6 +574,94 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
         </div>
       </div>
 
+        </>
+      )}
+
+      {/* Category / Brand — what the toolbar's buttons put in place of the
+          wall. The SAME card as a product: same grid track, same 10px radius
+          and hairline, same square tile over a name — a chooser that looked
+          like a different screen made picking a category feel like leaving the
+          till. Under the name is what you actually choose on: how many
+          products are in there. Picking one filters the wall and returns to
+          it, because filtering is the only reason the list was opened. */}
+      {browse !== "products" && (
+        <div className="mt-[24px] flex min-h-0 w-full flex-1 flex-col overflow-y-auto">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-x-[12.5px] gap-y-[14px]">
+            {browseRows.map((row) => {
+              const selected = row.id === (browse === "categories" ? categoryId : brandId);
+              // "All" carries no count of its own — it is every product on the
+              // wall, which the pager under the wall already states.
+              const isAll = row.id === "";
+              return (
+                <button
+                  key={row.id || "all"}
+                  type="button"
+                  onClick={() => pickBrowseRow(row.id)}
+                  className={`flex cursor-pointer items-center overflow-clip rounded-[10px] border-[0.6px] border-solid bg-white p-[10px] text-left transition-colors ${
+                    selected ? "border-[#f5b800]" : "border-[#eaeaea] hover:border-[#f5b800]"
+                  }`}
+                >
+                  <div className="flex w-full flex-col items-center justify-center gap-[12px]">
+                    <div className="relative aspect-square w-full overflow-hidden rounded-[8px] border-[0.3px] border-solid border-[#eaeaea] bg-[#fafafa]">
+                      {row.image ? (
+                        <ProductImage src={row.image} alt={row.name} sizes="180px" />
+                      ) : (
+                        // Categories and brands almost never carry artwork.
+                        // Initials are what the product tiles already fall back
+                        // to, so an imageless wall and an imageless chooser
+                        // look like one system rather than two.
+                        <span
+                          aria-hidden
+                          className="flex h-full w-full items-center justify-center text-[22px] font-semibold text-[#c9c9c9]"
+                        >
+                          {isAll ? "ALL" : initials(row.name)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex w-full flex-col items-start gap-[4px]">
+                      <p
+                        className={`w-full truncate text-[14px] leading-[24px] ${
+                          selected ? "font-medium text-[#f5b800]" : "font-normal text-[#525252]"
+                        }`}
+                      >
+                        {row.name}
+                      </p>
+                      <p className="w-full truncate text-[12px] leading-[1.4] text-[#737373]">
+                        {isAll
+                          ? browse === "categories"
+                            ? "Every category"
+                            : "Every brand"
+                          : `${row.productCount} ${row.productCount === 1 ? "product" : "products"}`}
+                      </p>
+                      {row.description && (
+                        <p className="w-full truncate text-[12px] leading-[1.4] text-[#a3a3a3]">
+                          {row.description}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* An empty answer is not a loading one. A catalogue with no brands
+              at all is a real state, and it must not read as a wall that
+              failed to arrive. */}
+          {browseRows.length <= 1 && (
+            <p className="mt-[12px] text-[13px] leading-[1.4] text-[#666]">
+              {query.trim()
+                ? `Nothing matching “${query.trim()}”.`
+                : browse === "categories"
+                  ? "No categories yet."
+                  : "No brands yet."}
+            </p>
+          )}
+        </div>
+      )}
+
+      {browse === "products" && (
+        <>
       {/* Grid — 45:2197, 24px below the category row */}
       <ProductPeek anchor={peeked} />
 
@@ -589,7 +709,7 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
             <div className="flex w-full flex-col items-center justify-center gap-[12px]">
               <div className="relative aspect-square w-full overflow-hidden rounded-[8px] border-[0.3px] border-solid border-[#eaeaea] bg-[#fafafa]">
                 {p.image ? (
-                  <ProductImage src={p.image} alt={p.name} sizes="180px" />
+                  <ProductImage src={p.image} alt={p.fullName} sizes="180px" />
                 ) : (
                   // Real products have no image yet, and an empty src makes the
                   // browser reload the page. Initials are enough to tell two
@@ -603,9 +723,22 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
                 )}
               </div>
               <div className="flex w-full flex-col items-start gap-[8px]">
-                <p className="w-full truncate text-[14px] leading-[24px] font-normal text-[#525252]">
-                  {p.name}
-                </p>
+                <div className="w-full min-w-0">
+                  <p className="w-full truncate text-[14px] leading-[24px] font-normal text-[#525252]">
+                    {p.name}
+                  </p>
+                  {/* Which one of it. Shown only when the product HAS more than
+                      the one unnamed variant — see `labelFor` — so a shop that
+                      sells one size of everything gets the tile it always had,
+                      and a shop selling 250ml beside 1L can tell two tiles
+                      carrying the same product name apart. Without this the
+                      wall showed "Coca-Cola" three times over. */}
+                  {p.variantLabel && (
+                    <span className="mt-[2px] flex w-full min-w-0">
+                      <VariantChip label={p.variantLabel} />
+                    </span>
+                  )}
+                </div>
                 <div className="flex w-full flex-col items-start gap-[4px]">
                   <span className="flex min-w-0 max-w-full items-baseline gap-[6px]">
                     <span className="min-w-0 truncate text-[16px] leading-[24px] font-medium text-[#f5b800]">
@@ -666,19 +799,17 @@ export default function ProductGrid({ onSelectProduct }: ProductGridProps) {
       {/* Pagination — 45:2309. mt-auto pins it to the bottom of the column so it
           lines up with the pay buttons opposite. */}
       <div className="mt-auto pt-[14px]">
-        <TablePagination
-          dense
-          sizes={[9, 18, 27, 54]}
-          page={current}
-          pageSize={pageSize}
+        <ScrollEnd
+          sentinelRef={sentinelRef}
+          hasMore={hasMore}
+          loadingMore={loadingMore}
+          shown={(products ?? []).length}
           total={total}
-          onPageChange={setPage}
-          onPageSizeChange={(n) => {
-            setPageSize(n);
-            setPage(1);
-          }}
+          noun="products"
         />
       </div>
+        </>
+      )}
     </div>
   );
 }
