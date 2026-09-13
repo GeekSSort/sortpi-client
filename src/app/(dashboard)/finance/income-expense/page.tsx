@@ -307,13 +307,16 @@ export default function IncomeExpensePage() {
                 onClick={() => setViewMenu((v) => !v)}
                 onBlur={() => window.setTimeout(() => setViewMenu(false), 120)}
                 aria-expanded={viewMenu}
-                className="flex h-[34px] cursor-pointer items-center gap-[10px] rounded-[8px] bg-[#f5b800] px-[9px] text-[16px] font-medium tracking-[-0.32px] whitespace-nowrap text-white transition-colors hover:bg-[#e5a612]"
+                // The same 44px control as the Type and month menus beside it.
+                // It was a 34px gold pill with 16px text — a title-row toggle
+                // from when it sat inside the card, out of place in a toolbar.
+                className={`${CONTROL} justify-between`}
               >
                 {view === "monthly" ? "Monthly Summary" : "Yearly Summary"}
                 <CaretIcon />
               </button>
               {viewMenu && (
-                <div className="absolute top-[40px] left-0 z-30 w-[190px] overflow-hidden rounded-[10px] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)] ring-1 ring-[#eaeaea]">
+                <div className="absolute top-[50px] left-0 z-30 w-[190px] overflow-hidden rounded-[10px] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)] ring-1 ring-[#eaeaea]">
                   {(
                     [
                       { key: "monthly" as const, label: "Monthly Summary" },
