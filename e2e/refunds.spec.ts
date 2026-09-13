@@ -103,6 +103,23 @@ const DISCOUNTED = {
   items: [{ ...PAID.items[0], line_total: "800.0000" }],
 };
 
+/**
+ * ৳1,000 of goods, a 10% coupon, ৳900 taken.
+ *
+ * `line_total` is still ৳1,000 — the coupon comes off the BILL after the lines
+ * are priced — and `charged_total` is the server's ৳900 share. The screen must
+ * quote the second.
+ */
+const COUPONED = {
+  ...PAID,
+  id: "s-coupon",
+  invoice_number: "MAIN-26-000612",
+  grand_total: "900.0000",
+  paid_amount: "900.0000",
+  settled_amount: "900.0000",
+  items: [{ ...PAID.items[0], line_total: "1000.0000", charged_total: "900.0000" }],
+};
+
 /** Two lines, one of them already part returned. */
 const MIXED = {
   ...PAID,
@@ -268,6 +285,30 @@ test.describe("refunding a sale", () => {
 
     await expect(page.getByTestId("goods-value")).toHaveText("৳ 800");
     await expect(page.getByTestId("refund-total")).toHaveText("৳ 800");
+  });
+
+  test("a coupon sale quotes what was paid, not the line total", async ({ page }) => {
+    // ৳900 taken for ৳1,000 of goods. This quoted ৳1,000 — the coupon paid out a
+    // second time, in cash — and the server refunded it too.
+    await stubApi(page);
+    await withSales(page, [COUPONED]);
+    await refundPage(page, "MAIN-26-000612");
+
+    await page.getByRole("button", { name: "Refund all items" }).click();
+
+    await expect(page.getByTestId("goods-value")).toHaveText("৳ 900");
+    await expect(page.getByTestId("refund-total")).toHaveText("৳ 900");
+  });
+
+  test("a part return of a coupon sale is a share of what was paid", async ({ page }) => {
+    await stubApi(page);
+    await withSales(page, [COUPONED]);
+    await refundPage(page, "MAIN-26-000612");
+
+    // Four of the ten: 4/10 of ৳900.
+    await page.getByLabel("Quantity of Coca-Cola returning").fill("4");
+
+    await expect(page.getByTestId("refund-total")).toHaveText("৳ 360");
   });
 
   test("a part paid sale refunds only what the customer actually paid", async ({ page }) => {
