@@ -13,9 +13,10 @@ import { useProductDiscounts } from "@/lib/usePosDiscounts";
 import { amountOff } from "@/services/discountService";
 import { usePosDraft, patchPosDraft } from "@/components/modules/pos/posCart";
 import { parseOnlineMethods } from "@/lib/paymentMethods";
+import { roundToWhole } from "@/lib/money";
 import { readLoyaltyRules, blocksIn, discountForPoints, redeemablePoints } from "./loyalty";
 import { CouponService, type CouponCheck } from "@/services";
-import PaymentFields, { PaymentEntry, EMPTY_ENTRY, payableWith, dueFor } from "./PaymentFields";
+import PaymentFields, { PaymentEntry, EMPTY_ENTRY, payableWith } from "./PaymentFields";
 import { paymentStateOf } from "@/services/mappers/sale";
 
 /**
@@ -440,6 +441,9 @@ export default function CartPanel({
       // Whether a cashier may type a quantity rather than only stepping it.
       allowManualQuantity:
         String(shopValues?.["pos.allow_manual_quantity"] ?? "false") === "true",
+      // Whether the payable is rounded to a whole taka. The server rounds with
+      // the same rule, so this only decides what the screen shows.
+      roundToWhole: String(shopValues?.["pos.round_to_whole"] ?? "false") === "true",
     };
   }, [shopValues]);
 
@@ -823,7 +827,21 @@ export default function CartPanel({
     : 0;
   const redeem = usePoints ? maxRedeemable : 0;
   const pointsOff = showPoints ? discountForPoints(loyaltyRules, redeem, afterCoupon) : 0;
-  const netPayable = Math.max(0, afterCoupon - pointsOff);
+  /**
+   * What the customer pays, rounded to a whole taka when the shop asks for it.
+   *
+   * LAST, after the coupon and the points — the order the server uses. It is a
+   * rule about the figure handed over, not about the price, so rounding any
+   * earlier would round a number nobody pays. `roundingOff` is signed: +0.60
+   * when ৳100.40 becomes ৳101, −0.39 when ৳100.39 becomes ৳100.
+   *
+   * Every figure below reads `netPayable` — the summary, the Confirm button,
+   * the tender the dialog starts at, the due and the body sent to the server —
+   * so none of them can disagree about whether the paisa were kept.
+   */
+  const beforeRounding = Math.max(0, afterCoupon - pointsOff);
+  const netPayable = shop.roundToWhole ? roundToWhole(beforeRounding) : beforeRounding;
+  const roundingOff = Math.round((netPayable - beforeRounding) * 10_000) / 10_000;
   /** "3%" — only the PERCENT scheme has one to show. */
   const pointsPercent =
     loyaltyRules.redeemMode === "PERCENT" ? blocksIn(loyaltyRules, redeem) * loyaltyRules.redeemPercent : 0;
@@ -960,6 +978,8 @@ export default function CartPanel({
     shipping: number;
     discount: number;
     tax: number;
+    /** Signed. Zero unless the shop rounds to a whole taka. */
+    rounding: number;
     total: number;
     /** What was actually taken. Below `total` on a part payment. */
     paid: number;
@@ -1172,7 +1192,12 @@ export default function CartPanel({
         shipping: totals.shipping,
         discount: booked?.discount ?? totals.discount,
         tax: Math.round(booked?.tax ?? totals.tax),
-        total: booked?.grandTotal ?? totals.total,
+        // The recorded figures first. Without a response, `netPayable` — the
+        // bill after the coupon, the points and the rounding — rather than the
+        // cart total, which is none of those and printed a slip for a sum the
+        // customer was never asked to pay.
+        rounding: booked?.rounding ?? roundingOff,
+        total: booked?.grandTotal ?? netPayable,
         /**
          * The RECORDED settlement, not the tender that was typed.
          *
@@ -1186,11 +1211,13 @@ export default function CartPanel({
           booked?.paid ??
           (shop.allowPartial
             ? Math.max(0, tender.received || 0)
-            : payableWith(totals.total, tender)),
+            : netPayable),
         // Locked, the tender IS the bill, so nothing can be outstanding —
         // stating that beats deriving it from an entry the locked field was
         // only ever displaying.
-        due: booked?.due ?? (shop.allowPartial ? dueFor(totals.total, tender) : 0),
+        due:
+          booked?.due ??
+          (shop.allowPartial ? Math.max(0, netPayable - Math.max(0, tender.received || 0)) : 0),
         lines: cart.map((i) => ({
           name: i.product.fullName,
           price: amount(i.product.price),
@@ -1841,6 +1868,20 @@ export default function CartPanel({
                   Capped at {+(shop.maxDiscount * 100).toFixed(2)}% &mdash; the most this shop allows.
                 </span>
               )}
+              {/* Its own row, signed, whenever the shop rounds to a whole
+                  taka and the bill was not already whole. Folded silently into
+                  the total it would be a figure the line items do not add up
+                  to, and the first thing a customer checking a receipt does is
+                  add it up. */}
+              {roundingOff !== 0 && (
+                <p className="flex justify-between gap-[12px]">
+                  <span>Rounding</span>
+                  <span>
+                    {roundingOff > 0 ? "+" : "-"}
+                    {money(Math.abs(roundingOff))}
+                  </span>
+                </p>
+              )}
             </div>
             <div className="h-px w-full bg-[#eaeaea]" />
             {/* NET of the points, because that is what will be charged.
@@ -1849,7 +1890,9 @@ export default function CartPanel({
                 which the customer was about to pay. */}
             <p className="flex w-full justify-between gap-[12px] text-[16px] leading-[24px] font-semibold text-[#1e1e1e]">
               <span>Total</span>
-              <span>{money(Math.max(0, totals.total - couponOff - pointsOff))}</span>
+              {/* `netPayable`: the coupon, the points AND the rounding, the
+                  same figure the payment dialog and the server charge. */}
+              <span>{money(netPayable)}</span>
             </p>
           </div>
         </div>
@@ -1949,6 +1992,7 @@ export default function CartPanel({
             total={netPayable - Math.max(0, entry.additional || 0)}
             pointsOff={pointsOff}
             couponOff={couponOff}
+            roundingOff={roundingOff}
             couponCode={coupon?.code ?? ""}
             entry={entry}
             onChange={setEntry}
@@ -2005,6 +2049,7 @@ export default function CartPanel({
             total={netPayable - Math.max(0, entry.additional || 0)}
             pointsOff={pointsOff}
             couponOff={couponOff}
+            roundingOff={roundingOff}
             couponCode={coupon?.code ?? ""}
             entry={entry}
             onChange={setEntry}
@@ -2241,6 +2286,16 @@ export default function CartPanel({
                   label: shop.vatIncluded ? "VAT (in price):" : "(+)VAT:",
                   value: amount(receipt.tax),
                 },
+                // Signed, on its own line, only when the shop rounds and this
+                // bill was not already whole — so the slip still adds up.
+                ...(receipt.rounding !== 0
+                  ? [
+                      {
+                        label: "Rounding:",
+                        value: `${receipt.rounding > 0 ? "+" : "-"}${amount(Math.abs(receipt.rounding))}`,
+                      },
+                    ]
+                  : []),
                 {
                   label: "Total Amount:",
                   value: amount(receipt.total),
