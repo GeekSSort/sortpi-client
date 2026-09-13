@@ -9,6 +9,13 @@ import RowActionMenu from "@/components/shared/RowActionMenu";
 import ScrollEnd from "@/components/shared/ScrollEnd";
 import FilterDropdown from "@/components/shared/FilterDropdown";
 import DateFilter, { ALL_DATES, DateValue, resolveDates } from "@/components/shared/DateFilter";
+import {
+  ActionButton,
+  ExportIcon,
+  PageToolbar,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import { formatMoney } from "@/lib/format";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
@@ -45,26 +52,6 @@ const STATUS_TONE: Record<SaleRecord["status"], Tone> = {
   // greyed would file it under "dealt with".
   "Partially Refunded": "gold",
 };
-
-function ExportIcon() {
-  const s = { stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
-  return (
-    <svg className="block size-[18px] shrink-0" viewBox="0 0 18 18" fill="none" aria-hidden>
-      <path d="M12.33 6.675C15.03 6.9075 16.1325 8.295 16.1325 11.3325V11.43C16.1325 14.7825 14.79 16.125 11.4375 16.125H6.555C3.2025 16.125 1.86 14.7825 1.86 11.43V11.3325C1.86 8.3175 2.9475 6.93 5.6025 6.6825" {...s} />
-      <path d="M9 11.25V2.715" {...s} />
-      <path d="M11.5125 4.3875L9 1.875L6.4875 4.3875" {...s} />
-    </svg>
-  );
-}
-
-function SearchIcon() {
-  return (
-    <svg className="block size-[24px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="10.5" cy="10.5" r="7.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M16 16L21 21" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 
 /**
@@ -335,64 +322,50 @@ export default function SalesPage() {
 
   return (
     <div className="flex w-full flex-col gap-[14px]">
-      {/* Headline — 45:3003 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
-          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
-            <SearchIcon />
-            <input
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-              }}
-              placeholder="Search by customer name, Invoice or Phone..."
-              aria-label="Search sales"
-              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
-            />
-          </div>
-        </div>
-
+      {/* Headline — 45:3003: search left, filters and Export right. */}
+      <PageToolbar
+        search={
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder="Search by customer name, Invoice or Phone..."
+            label="Search sales"
+          />
+        }
+      >
         {/* The filters, beside the search box rather than behind a funnel:
             a narrowed list has to say on screen that it is narrowed. */}
-        <div className="flex shrink-0 flex-wrap items-center gap-[12px]">
-          <FilterDropdown
-            label="Status"
-            value={livePayStatus}
-            onChange={setPayStatus}
-            options={[
-              { value: "", label: "Any status" },
-              { value: "paid", label: "Paid" },
-              // Only a shop that can CREATE these has anything to filter for.
-              ...(allowPartial
-                ? [
-                    { value: "partial", label: "Partial" },
-                    { value: "unpaid", label: "Unpaid" },
-                  ]
-                : []),
-              { value: "partial_refund", label: "Partly refunded" },
-              { value: "refunded", label: "Refunded" },
-            ]}
-          />
-          <DateFilter value={dates} onChange={setDates} />
+        <FilterDropdown
+          label="Status"
+          value={livePayStatus}
+          onChange={setPayStatus}
+          options={[
+            { value: "", label: "Any status" },
+            { value: "paid", label: "Paid" },
+            // Only a shop that can CREATE these has anything to filter for.
+            ...(allowPartial
+              ? [
+                  { value: "partial", label: "Partial" },
+                  { value: "unpaid", label: "Unpaid" },
+                ]
+              : []),
+            { value: "partial_refund", label: "Partly refunded" },
+            { value: "refunded", label: "Refunded" },
+          ]}
+        />
+        <DateFilter value={dates} onChange={setDates} />
 
-          <button
-            type="button"
-            onClick={exportCsv}
-            disabled={exporting || sales.length === 0}
-            style={{
-              backgroundImage:
-                "linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0) 100%), linear-gradient(90deg, rgb(245,184,0) 0%, rgb(245,184,0) 100%)",
-            }}
-            className="flex h-[48px] cursor-pointer items-center justify-center gap-[8px] overflow-clip rounded-[10px] border border-solid border-[#f5b800] px-[24px] text-[14px] leading-[1.5] font-semibold tracking-[-0.28px] whitespace-nowrap text-white shadow-[inset_0px_0px_0px_1.8px_rgba(255,255,255,0.25)] disabled:cursor-not-allowed disabled:opacity-70"
-          >
-            <ExportIcon />
-            Export
-          </button>
-        </div>
-      </div>
+        {/* Secondary, as Export is on every list. It was the one gold, 48px
+            button in a row of 44px controls — the mismatch this toolbar was
+            standardised to remove. */}
+        <ActionButton onClick={exportCsv} disabled={exporting || sales.length === 0}>
+          <ExportIcon />
+          Export
+        </ActionButton>
+      </PageToolbar>
 
       {/* Table card — 45:3098 */}
-      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className={TABLE_CARD}>
         <RefreshBar active={fetching} />
         {/* One scroller for the table, the phone cards and the load trigger.
             The trigger has to sit INSIDE it — below the scroller it never
