@@ -106,3 +106,24 @@ export function clampTypedAmount(
 function trim(max: number): string {
   return String(Math.round(max * 10_000) / 10_000);
 }
+
+/**
+ * The payable, rounded to a whole taka under `pos.round_to_whole`.
+ *
+ * A fraction of .40 or more rounds UP, anything under .40 rounds DOWN:
+ * ৳100.39 is ৳100, ৳100.40 is ৳101, ৳100.75 is ৳101. The SERVER applies the
+ * identical rule (`round_to_whole` in `apps/sales/pricing.py`) and checks the
+ * tender against its own result, so this is the till showing the figure it is
+ * about to be charged — never a figure of its own.
+ *
+ * Worked in ten-thousandths, not in floats. `100.4` reached by arithmetic is
+ * often 100.39999999999999, whose fraction is JUST under .40: rounded as a
+ * float it goes down, the server's Decimal goes up, and the tender is refused
+ * for being sixty paisa short of a bill the screen never showed.
+ */
+export function roundToWhole(amount: number): number {
+  const units = Math.round(amount * 10_000);
+  if (units <= 0) return units / 10_000;
+  const whole = Math.floor(units / 10_000);
+  return units - whole * 10_000 >= 4_000 ? whole + 1 : whole;
+}
