@@ -5,6 +5,12 @@ import TableSkeleton from "@/components/shared/TableSkeleton";
 import { SkeletonBlock, StatCardsSkeleton } from "@/components/shared/Skeleton";
 import { EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import StatCard, { StatCardProps } from "./StatCard";
+import {
+  PageToolbar,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
+import { TRIGGER } from "@/components/shared/FilterDropdown";
 
 /**
  * The console's one table.
@@ -27,15 +33,6 @@ export interface Column<T> {
   cell: (row: T) => React.ReactNode;
   /** Shown on the phone card. Leave out to hide it there. */
   mobile?: boolean;
-}
-
-function SearchIcon() {
-  return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden className="shrink-0">
-      <circle cx="11" cy="11" r="7.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="m20 20-3.2-3.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
 }
 
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e] whitespace-nowrap";
@@ -193,25 +190,23 @@ export default function ConsoleList<T extends { id: string }>({
         ) : null)}
 
       {(onSearch || actions || filters) && (
-        <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
-          {onSearch ? (
-            <div className="flex h-[44px] w-full items-center gap-[6px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
-              <SearchIcon />
-              <input
+        // The toolbar every listing page in the tenant app uses, so the console
+        // reads as the same product rather than a second one.
+        <PageToolbar
+          search={
+            onSearch ? (
+              <SearchInput
                 value={query}
-                onChange={(e) => {
-                  setQuery(e.target.value);
-                  onSearch(e.target.value);
+                onChange={(next) => {
+                  setQuery(next);
+                  onSearch(next);
                 }}
                 placeholder={searchPlaceholder || "Search..."}
-                aria-label={searchPlaceholder || "Search"}
-                className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
+                label={searchPlaceholder || "Search"}
               />
-            </div>
-          ) : (
-            <span />
-          )}
-          <div className="flex flex-col items-stretch gap-[12px] sm:flex-row sm:items-center sm:gap-[16px]">
+            ) : undefined
+          }
+        >
             {filters && filters.length > 1 && (
               <div ref={filterRef} className="relative shrink-0">
                 <button
@@ -219,10 +214,10 @@ export default function ConsoleList<T extends { id: string }>({
                   onClick={() => setFilterOpen((v) => !v)}
                   aria-haspopup="listbox"
                   aria-expanded={filterOpen}
-                  className="flex h-[48px] w-full cursor-pointer items-center justify-between gap-[12px] rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] py-[12px] text-[16px] leading-[24px] font-medium whitespace-nowrap text-[#525252] transition-colors hover:bg-[#fafafa] sm:w-auto"
+                  className={`${TRIGGER} w-full justify-between text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] hover:text-[#1e1e1e] sm:w-auto`}
                 >
                   {filter}
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden className={`shrink-0 transition-transform ${filterOpen ? "rotate-180" : ""}`}>
+                  <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden className={`shrink-0 transition-transform ${filterOpen ? "rotate-180" : ""}`}>
                     <path d="m5.5 7.75 4.5 4.5 4.5-4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                 </button>
@@ -252,12 +247,11 @@ export default function ConsoleList<T extends { id: string }>({
               </div>
             )}
             {actions}
-          </div>
-        </div>
+        </PageToolbar>
       )}
 
       {/* `relative` because RefreshBar is absolutely positioned across the top. */}
-      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className={TABLE_CARD}>
         <RefreshBar active={Boolean(fetching)} />
         {/* A failed refresh with rows behind it is reported BESIDE them; only a
             failure with nothing to show takes the card over, below. */}
