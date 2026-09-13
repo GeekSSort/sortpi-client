@@ -10,6 +10,10 @@ import { formatMoney } from "@/lib/format";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import { statGood, statMoney, statTotal, statWait } from "@/components/platform/stats";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
+import {
+  ActionButton,
+  PlusIcon,
+} from "@/components/shared/Toolbar";
 
 /**
  * The plans a company can be on.
@@ -48,14 +52,6 @@ const BLANK: PlanInput = {
   isPublic: true,
   isActive: true,
 };
-
-function AddIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden className="shrink-0">
-      <path d="M10 4.375v11.25M4.375 10h11.25" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 /**
  * A ceiling box: a number, or blank for "no limit".
@@ -313,15 +309,10 @@ export default function PlatformPlansPage() {
       minWidth={1200}
       emptyLine="No plans set up."
       actions={
-        <button
-          type="button"
-          onClick={() => openEditor()}
-          style={{ backgroundImage: GOLD_GRADIENT }}
-          className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-        >
-          <AddIcon />
+        <ActionButton variant="primary" onClick={() => openEditor()}>
+          <PlusIcon />
           New plan
-        </button>
+        </ActionButton>
       }
     />
 
