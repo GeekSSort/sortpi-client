@@ -165,6 +165,7 @@ export default function PaymentFields({
   pointsOff = 0,
   couponOff = 0,
   couponCode = "",
+  roundingOff = 0,
   lockReceived = false,
   lockReason,
   disabled,
@@ -194,6 +195,11 @@ export default function PaymentFields({
   /** What a coupon took off, and which code did it. One line, like the points. */
   couponOff?: number;
   couponCode?: string;
+  /**
+   * What rounding to a whole taka added (+) or took off (−). One line, like
+   * the coupon. `total` already includes it — this is the explanation.
+   */
+  roundingOff?: number;
   /**
    * Hold the tender at the full amount — what the till did before part payment
    * was a thing, and what it does again when `pos.allow_partial_payment` is
@@ -254,6 +260,15 @@ export default function PaymentFields({
               <div className="mt-[4px] flex items-center justify-between text-[13px] font-medium text-[#1f9d55]">
                 <span>Points discount</span>
                 <span>− {money(pointsOff)}</span>
+              </div>
+            )}
+            {roundingOff !== 0 && (
+              <div className="mt-[4px] flex items-center justify-between text-[13px] text-[#8f8d87]">
+                <span>Rounding</span>
+                <span>
+                  {roundingOff > 0 ? "+ " : "− "}
+                  {money(Math.abs(roundingOff))}
+                </span>
               </div>
             )}
             <div className="mt-[8px] flex items-center justify-between border-t border-[#eaeaea] pt-[8px] text-[14px] font-semibold text-[#1e1e1e]">
