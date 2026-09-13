@@ -24,6 +24,16 @@ import ProductImage from "@/components/shared/ProductImage";
 import { useProductDiscounts } from "@/lib/usePosDiscounts";
 import { priceAfter } from "@/services/discountService";
 import { formatMoney } from "@/lib/format";
+import {
+  ActionButton,
+  ActionLink,
+  ExportIcon,
+  ImportIcon,
+  PageToolbar,
+  PlusIcon,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
 
 /**
  * Products — Figma 51:10942.
@@ -40,42 +50,6 @@ const STATUS_TONE: Record<InventoryProduct["status"], Tone> = {
   "Low Stock": "gold",
   "Out of Stock": "rose",
 };
-
-function ImportIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden className="shrink-0">
-      <path d="M10 12.5V3M10 12.5 6.5 9M10 12.5 13.5 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M3.5 13.5v1.5a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function ExportIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden className="shrink-0">
-      <path d="M10 3v9.5M10 3 6.5 6.5M10 3l3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M3.5 13.5v1.5a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function AddIcon() {
-  return (
-    <svg className="block size-[20px] shrink-0" viewBox="0 0 20 20" fill="none" aria-hidden>
-      <rect x="0.9" y="0.9" width="18.2" height="18.2" rx="5" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M10 6.4v7.2M6.4 10h7.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function SearchIcon() {
-  return (
-    <svg className="block size-[24px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="10.5" cy="10.5" r="7.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M16 16L21 21" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 
 // #  Product Name  Category  Brand  Price  Stock  SKU  Status  Action
@@ -395,122 +369,95 @@ export default function InventoryPage() {
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 51:10943 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:min-h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
-        {/* WRAPS on a phone. The search box is `w-full` and the filter group
-            beside it is `shrink-0`, so on one line they came to 559px inside
-            328px — and nothing above them scrolls, so the Brand dropdown was
-            simply unreachable at 360px. Wrapping puts the filters on their own
-            line there and changes nothing from `lg` up, where the search box
-            is capped at 370px and both fit. */}
-        <div className="flex w-full min-w-0 flex-wrap items-center gap-[12px] lg:flex-nowrap lg:flex-1">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[180px] lg:max-w-[370px] lg:flex-1">
-          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
-            <SearchIcon />
-            <input
+      <PageToolbar
+        search={
+          // WRAPS on a phone. The search box is `w-full` and the filter group
+          // beside it is `shrink-0`, so on one line they came to 559px inside
+          // 328px — and nothing above them scrolls, so the Brand dropdown was
+          // simply unreachable at 360px. Wrapping puts the filters on their own
+          // line there and changes nothing from `lg` up, where the search box
+          // is capped at 370px and both fit.
+          <div className="flex w-full min-w-0 flex-wrap items-center gap-[12px] lg:flex-nowrap lg:flex-1">
+            <SearchInput
               value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-              }}
+              onChange={setQuery}
               placeholder="Search by product name, SKU or barcode..."
-              aria-label="Search products"
-              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
+              label="Search products"
             />
+
+            {/* The filters, beside the search box: a narrowed list has to
+                say on screen that it is narrowed. */}
+            <div className="flex shrink-0 flex-wrap items-center gap-[12px]">
+              <FilterDropdown
+                label="Status"
+                value={status}
+                onChange={setStatus}
+                options={[
+                  { value: "", label: "Any status" },
+                  { value: "active", label: "Active" },
+                  { value: "archived", label: "Archived" },
+                ]}
+              />
+              <FilterDropdown
+                label="Category"
+                value={category}
+                onChange={setCategory}
+                options={[
+                  { value: "", label: "Any category" },
+                  ...(catalog.data?.categories ?? []).map((c) => ({ value: c.id, label: c.name })),
+                ]}
+              />
+              <FilterDropdown
+                label="Brand"
+                value={brand}
+                onChange={setBrand}
+                options={[
+                  { value: "", label: "Any brand" },
+                  ...brandOptions.map((b) => ({ value: b.id, label: b.name })),
+                ]}
+              />
+            </div>
           </div>
-        </div>
-
-        {/* The filters, beside the search box: a narrowed list has to
-            say on screen that it is narrowed. */}
-        <div className="flex shrink-0 flex-wrap items-center gap-[12px]">
-          <FilterDropdown
-            label="Status"
-            value={status}
-            onChange={setStatus}
-            options={[
-              { value: "", label: "Any status" },
-              { value: "active", label: "Active" },
-              { value: "archived", label: "Archived" },
-            ]}
-          />
-          <FilterDropdown
-            label="Category"
-            value={category}
-            onChange={setCategory}
-            options={[
-              { value: "", label: "Any category" },
-              ...(catalog.data?.categories ?? []).map((c) => ({ value: c.id, label: c.name })),
-            ]}
-          />
-          <FilterDropdown
-            label="Brand"
-            value={brand}
-            onChange={setBrand}
-            options={[
-              { value: "", label: "Any brand" },
-              ...brandOptions.map((b) => ({ value: b.id, label: b.name })),
-            ]}
-          />
-        </div>
-
-        </div>
-
-        <div className="flex shrink-0 flex-wrap items-center gap-[12px]">
-          {/* Categories and brands were read-only from the app: the add-product
-              form offered whatever was already there and a shop had no way to
-              make its own. They sit here rather than in Settings because this
-              is the screen where somebody notices one is missing. */}
-          <button
-            type="button"
-            onClick={() => setManaging("category")}
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[12px] bg-white px-[16px] py-[8px] text-[15px] leading-[24px] font-medium whitespace-nowrap text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e]"
-          >
-            <TagIcon />
-            Categories
-          </button>
-          <button
-            type="button"
-            onClick={() => setManaging("brand")}
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[12px] bg-white px-[16px] py-[8px] text-[15px] leading-[24px] font-medium whitespace-nowrap text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e]"
-          >
-            <BrandIcon />
-            Brands
-          </button>
-          {/* Import and Export sit either side of nothing by accident: they are
-              the two halves of the same job — take the catalogue out, put a
-              corrected one back — and they belong beside Add New because that
-              is the button somebody reaches for when they have fifty products
-              to enter and realise one at a time will not do. */}
-          {mayImport && (
-          <button
-            type="button"
-            onClick={() => setImportOpen(true)}
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[12px] bg-white px-[16px] py-[8px] text-[15px] leading-[24px] font-medium whitespace-nowrap text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e]"
-          >
+        }
+      >
+        {/* Categories and brands were read-only from the app: the add-product
+            form offered whatever was already there and a shop had no way to
+            make its own. They sit here rather than in Settings because this
+            is the screen where somebody notices one is missing. */}
+        <ActionButton onClick={() => setManaging("category")}>
+          <TagIcon />
+          Categories
+        </ActionButton>
+        <ActionButton onClick={() => setManaging("brand")}>
+          <BrandIcon />
+          Brands
+        </ActionButton>
+        {/* Import and Export sit either side of nothing by accident: they are
+            the two halves of the same job — take the catalogue out, put a
+            corrected one back — and they belong beside Add New because that
+            is the button somebody reaches for when they have fifty products
+            to enter and realise one at a time will not do. */}
+        {mayImport && (
+          <ActionButton onClick={() => setImportOpen(true)}>
             <ImportIcon />
             Import
-          </button>
-          )}
-          <button
-            type="button"
-            onClick={() => setExportOpen(true)}
-            title="Download what is on screen as CSV"
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[12px] bg-white px-[16px] py-[8px] text-[15px] leading-[24px] font-medium whitespace-nowrap text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <ExportIcon />
-            {exporting ? "Exporting…" : "Export"}
-          </button>
-          <Link
-            href="/inventory/add"
-            style={{ backgroundImage: GOLD_GRADIENT }}
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-          >
-            <AddIcon />
-            Add New
-          </Link>
-        </div>
-      </div>
+          </ActionButton>
+        )}
+        <ActionButton
+          onClick={() => setExportOpen(true)}
+          title="Download what is on screen as CSV"
+        >
+          <ExportIcon />
+          {exporting ? "Exporting…" : "Export"}
+        </ActionButton>
+        <ActionLink href="/inventory/add" variant="primary">
+          <PlusIcon />
+          Add New
+        </ActionLink>
+      </PageToolbar>
 
       {/* Table card — 51:10975 */}
-      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className={TABLE_CARD}>
         <RefreshBar active={fetching} />
         {/* One scroller for the table, the phone cards and the load trigger.
             The trigger has to sit INSIDE it — below the scroller it never
