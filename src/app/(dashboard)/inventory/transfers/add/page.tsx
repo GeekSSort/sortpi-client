@@ -432,7 +432,7 @@ export default function AddTransferPage() {
             </button>
             <Link
               href="/inventory/transfers"
-              className="flex h-[44px] w-full cursor-pointer items-center justify-center rounded-[12px] bg-white text-[14px] font-medium text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa]"
+              className="flex h-[48px] w-full cursor-pointer items-center justify-center rounded-[12px] bg-white px-[16px] text-[16px] leading-[24px] font-semibold text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e]"
             >
               Cancel
             </Link>
