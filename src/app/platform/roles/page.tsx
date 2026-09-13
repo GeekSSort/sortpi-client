@@ -9,6 +9,10 @@ import StatusPill from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
 import { statGood, statTotal, statWait } from "@/components/platform/stats";
+import {
+  ActionButton,
+  PlusIcon,
+} from "@/components/shared/Toolbar";
 
 /**
  * What a console account can be given.
@@ -39,14 +43,6 @@ const OWNER_REQUIRED = ["staff.create", "staff.update", "role.create", "role.upd
 /** `tenant.view` -> "tenant". The module is how the picker is grouped. */
 function moduleOf(code: string): string {
   return code.split(".")[0];
-}
-
-function AddIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden className="shrink-0">
-      <path d="M10 4.375v11.25M4.375 10h11.25" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
 }
 
 interface Draft {
@@ -236,15 +232,10 @@ export default function PlatformRolesPage() {
         minWidth={1000}
         emptyLine="No roles set up."
         actions={
-          <button
-            type="button"
-            onClick={() => open()}
-            style={{ backgroundImage: GOLD_GRADIENT }}
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-          >
-            <AddIcon />
+          <ActionButton variant="primary" onClick={() => open()}>
+            <PlusIcon />
             New role
-          </button>
+          </ActionButton>
         }
       />
 
