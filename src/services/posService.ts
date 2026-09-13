@@ -552,6 +552,7 @@ export class PosService {
         discount: toAmount(sale?.discountAmount ?? sale?.discount_amount),
         tax: toAmount(sale?.taxAmount ?? sale?.tax_amount),
         grandTotal: toAmount(sale?.grandTotal ?? sale?.grand_total),
+        rounding: toAmount(sale?.roundingAdjustment ?? sale?.rounding_adjustment),
         paid: toAmount(sale?.paidAmount ?? sale?.paid_amount),
         due: toAmount(sale?.dueAmount ?? sale?.due_amount),
       },
