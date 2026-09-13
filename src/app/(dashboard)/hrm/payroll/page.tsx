@@ -14,6 +14,13 @@ import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/s
 import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
 import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
+import {
+  ActionButton,
+  PageToolbar,
+  PlusIcon,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
 
 /**
  * Payroll — Figma 75:5509.
@@ -40,23 +47,6 @@ const STATUS_TONE: Record<PayrollRecord["status"], Tone> = { Paid: "green", "Not
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const FILTERS = ["Payroll", "Paid", "Not Paid"] as const;
 
-function SearchIcon() {
-  return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden className="shrink-0">
-      <circle cx="11" cy="11" r="7.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="m20 20-3.2-3.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function FilterIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden className="shrink-0">
-      <path d="M2.25 4.5h13.5M4.5 9h9m-6.75 4.5h4.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 /** A plain chevron, for stepping a month at a time. */
 function ChevronIcon({ dir }: { dir: "left" | "right" }) {
   return (
@@ -73,21 +63,12 @@ function ChevronIcon({ dir }: { dir: "left" | "right" }) {
 }
 
 
-function AddIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden className="shrink-0">
-      <path d="M10 4.375v11.25M4.375 10h11.25" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 export default function PayrollPage() {
   const [query, setQuery] = useState("");
   /** The debounce settles the term before it reaches the cache key, so typing
       a name is one request rather than one per letter. */
   const [term, setTerm] = useState("");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("Payroll");
-  const [filterOpen, setFilterOpen] = useState(false);
   // Rows per request. Not a page size anyone picks — the table scrolls.
   const pageSize = 25;
   const [note, setNote] = useState<string | null>(null);
@@ -104,7 +85,6 @@ export default function PayrollPage() {
   const [editOf, setEditOf] = useState<PayrollRecord | null>(null);
   const [form, setForm] = useState({ basicSalary: "", allowances: "", deductions: "" });
   const [saving, setSaving] = useState(false);
-  const filterRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (query === term) return;
@@ -161,19 +141,6 @@ export default function PayrollPage() {
     };
   }, [monthOpen]);
 
-  useEffect(() => {
-    if (!filterOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (filterRef.current && !filterRef.current.contains(e.target as Node)) setFilterOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setFilterOpen(false);
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [filterOpen]);
 
   /** Open the edit dialog with the row's own figures. */
   /**
@@ -328,151 +295,128 @@ export default function PayrollPage() {
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 75:5511 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
-          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
-            <SearchIcon />
-            <input
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-              }}
-              placeholder="Search by name, ID, email, phone..."
-              aria-label="Search payroll"
-              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
-            />
-          </div>
-          <button
-            type="button"
-            aria-label="Filter"
-            onClick={() => setFilterOpen((v) => !v)}
-            className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e]"
-          >
-            <FilterIcon />
-          </button>
-        </div>
-
-        <div className="flex flex-col items-stretch gap-[12px] sm:flex-row sm:items-center sm:gap-[16px]">
-          {/* Which month. A step either way for the common case — last month,
-              the month before — and the name itself opens a list of the months
-              that actually have a run, so reaching last March is one click
-              rather than eighteen through screens that are empty for a reason
-              nobody can see. */}
-          <div ref={monthRef} className="relative shrink-0">
-            <div className="flex h-[48px] items-center rounded-[12px] border border-solid border-[#eaeaea] bg-white">
-              <button
-                type="button"
-                aria-label="Previous month"
-                onClick={() => {
-                  setMonth((m) => PayrollService.shiftMonth(m, -1));
-                }}
-                className="flex h-full w-[40px] cursor-pointer items-center justify-center rounded-l-[12px] text-[#525252] transition-colors hover:bg-[#fafafa]"
-              >
-                <ChevronIcon dir="left" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setMonthOpen((v) => !v)}
-                aria-haspopup="listbox"
-                aria-expanded={monthOpen}
-                className="h-full min-w-[150px] cursor-pointer px-[10px] text-[15px] leading-[24px] font-medium whitespace-nowrap text-[#1e1e1e] transition-colors hover:bg-[#fafafa]"
-              >
-                {PayrollService.monthLabel(month)}
-              </button>
-              <button
-                type="button"
-                aria-label="Next month"
-                onClick={() => {
-                  setMonth((m) => PayrollService.shiftMonth(m, 1));
-                }}
-                className="flex h-full w-[40px] cursor-pointer items-center justify-center rounded-r-[12px] text-[#525252] transition-colors hover:bg-[#fafafa]"
-              >
-                <ChevronIcon dir="right" />
-              </button>
-            </div>
-
-            {monthOpen && (
-              <ul
-                role="listbox"
-                aria-label="Months with a payroll run"
-                className="absolute left-0 z-30 mt-[6px] max-h-[280px] w-[220px] overflow-y-auto rounded-[10px] border border-[#eaeaea] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)]"
-              >
-                {/* This month is always offered even with no run yet — it is
-                    where somebody goes to MAKE one. */}
-                {Array.from(
-                  new Set([PayrollService.monthKey(), month, ...(monthsWithRuns ?? [])])
-                )
-                  .sort()
-                  .reverse()
-                  .map((m) => (
-                    <li key={m}>
-                      <button
-                        type="button"
-                        role="option"
-                        aria-selected={m === month}
-                        onClick={() => {
-                          setMonth(m);
-                          setMonthOpen(false);
-                        }}
-                        className={`flex w-full cursor-pointer items-center justify-between gap-[8px] px-[14px] py-[9px] text-left text-[14px] transition-colors hover:bg-[#fdf7e6] ${
-                          m === month ? "bg-[#fdf7e6] font-medium text-[#1e1e1e]" : "text-[#525252]"
-                        }`}
-                      >
-                        {PayrollService.monthLabel(m)}
-                        {!(monthsWithRuns ?? []).includes(m) && (
-                          <span className="shrink-0 text-[11px] text-[#a3a3a3]">no run</span>
-                        )}
-                      </button>
-                    </li>
-                  ))}
-              </ul>
-            )}
-          </div>
-
-          <FilterDropdown
-            label="Status"
-            value={filter === "Payroll" ? "" : filter}
-            onChange={(next) => setFilter((next || "Payroll") as typeof filter)}
-            options={[
-              { value: "Payroll", label: "All payslips" },
-              { value: "Paid", label: "Paid" },
-              { value: "Not Paid", label: "Not paid" },
-            ]}
+      <PageToolbar
+        search={
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder="Search by name, ID, email, phone..."
+            label="Search payroll"
           />
-
-          {/* Settle the whole month in one press. Shown only while something
-              is actually owed, so it is not a button that does nothing. */}
-          {rows.some((r) => r.status === "Not Paid") && (
+        }
+      >
+        {/* Which month. A step either way for the common case — last month,
+            the month before — and the name itself opens a list of the months
+            that actually have a run, so reaching last March is one click
+            rather than eighteen through screens that are empty for a reason
+            nobody can see. */}
+        <div ref={monthRef} className="relative shrink-0">
+          <div className="flex h-[44px] items-center rounded-[10px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
             <button
               type="button"
-              onClick={() => void payAll()}
-              disabled={payingAll}
-              className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center rounded-[12px] bg-white px-[16px] text-[15px] font-semibold whitespace-nowrap text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e] disabled:cursor-not-allowed disabled:opacity-60"
+              aria-label="Previous month"
+              onClick={() => {
+                setMonth((m) => PayrollService.shiftMonth(m, -1));
+              }}
+              className="flex h-full w-[40px] cursor-pointer items-center justify-center rounded-l-[10px] text-[#525252] transition-colors hover:bg-[#fafafa]"
             >
-              {payingAll ? "Paying…" : "Mark all as paid"}
+              <ChevronIcon dir="left" />
             </button>
+            <button
+              type="button"
+              onClick={() => setMonthOpen((v) => !v)}
+              aria-haspopup="listbox"
+              aria-expanded={monthOpen}
+              className="h-full min-w-[150px] cursor-pointer px-[10px] text-[14px] leading-[1.5] font-medium tracking-[-0.28px] whitespace-nowrap text-[#1e1e1e] transition-colors hover:bg-[#fafafa]"
+            >
+              {PayrollService.monthLabel(month)}
+            </button>
+            <button
+              type="button"
+              aria-label="Next month"
+              onClick={() => {
+                setMonth((m) => PayrollService.shiftMonth(m, 1));
+              }}
+              className="flex h-full w-[40px] cursor-pointer items-center justify-center rounded-r-[10px] text-[#525252] transition-colors hover:bg-[#fafafa]"
+            >
+              <ChevronIcon dir="right" />
+            </button>
+          </div>
+
+          {monthOpen && (
+            <ul
+              role="listbox"
+              aria-label="Months with a payroll run"
+              className="absolute left-0 z-30 mt-[6px] max-h-[280px] w-[220px] overflow-y-auto rounded-[10px] border border-[#eaeaea] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)]"
+            >
+              {/* This month is always offered even with no run yet — it is
+                  where somebody goes to MAKE one. */}
+              {Array.from(
+                new Set([PayrollService.monthKey(), month, ...(monthsWithRuns ?? [])])
+              )
+                .sort()
+                .reverse()
+                .map((m) => (
+                  <li key={m}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={m === month}
+                      onClick={() => {
+                        setMonth(m);
+                        setMonthOpen(false);
+                      }}
+                      className={`flex w-full cursor-pointer items-center justify-between gap-[8px] px-[14px] py-[9px] text-left text-[14px] transition-colors hover:bg-[#fdf7e6] ${
+                        m === month ? "bg-[#fdf7e6] font-medium text-[#1e1e1e]" : "text-[#525252]"
+                      }`}
+                    >
+                      {PayrollService.monthLabel(m)}
+                      {!(monthsWithRuns ?? []).includes(m) && (
+                        <span className="shrink-0 text-[11px] text-[#a3a3a3]">no run</span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+            </ul>
           )}
-          <button
-            type="button"
-            onClick={() => {
-              // The month on screen, not today's. With a switcher on the page,
-              // defaulting to the current month means somebody reviewing August
-              // and pressing Add New runs September — and a payroll run posts
-              // to the ledger.
-              setPeriod(PayrollService.boundsOfMonth(month));
-              setRunOpen(true);
-            }}
-            style={{ backgroundImage: GOLD_GRADIENT }}
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-          >
-            <AddIcon />
-            Add New
-          </button>
         </div>
-      </div>
+
+        <FilterDropdown
+          label="Status"
+          value={filter === "Payroll" ? "" : filter}
+          onChange={(next) => setFilter((next || "Payroll") as typeof filter)}
+          options={[
+            { value: "Payroll", label: "All payslips" },
+            { value: "Paid", label: "Paid" },
+            { value: "Not Paid", label: "Not paid" },
+          ]}
+        />
+
+        {/* Settle the whole month in one press. Shown only while something
+            is actually owed, so it is not a button that does nothing. */}
+        {rows.some((r) => r.status === "Not Paid") && (
+          <ActionButton onClick={() => void payAll()} disabled={payingAll}>
+            {payingAll ? "Paying…" : "Mark all as paid"}
+          </ActionButton>
+        )}
+        <ActionButton
+          variant="primary"
+          onClick={() => {
+            // The month on screen, not today's. With a switcher on the page,
+            // defaulting to the current month means somebody reviewing August
+            // and pressing Add New runs September — and a payroll run posts
+            // to the ledger.
+            setPeriod(PayrollService.boundsOfMonth(month));
+            setRunOpen(true);
+          }}
+        >
+          <PlusIcon />
+          Add New
+        </ActionButton>
+      </PageToolbar>
 
       {/* Table card — 75:5543 */}
-      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className={TABLE_CARD}>
         <RefreshBar active={fetching} />
         {note && (
           <p role="status" className="mx-[16px] mt-[16px] rounded-[8px] bg-[#fdf7e6] px-[12px] py-[8px] text-[13px] text-[#6d5b46]">
