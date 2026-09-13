@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import Link from "next/link";
 import { PurchaseRecord } from "@/types/purchases";
 import { PurchaseService, SupplierService, TransferService } from "@/services";
 import PurchaseImport from "@/components/modules/purchases/PurchaseImport";
@@ -24,6 +23,16 @@ import { useShopProfile } from "@/components/shared/useShopProfile";
 import { formatMoney } from "@/lib/format";
 import { clampTypedAmount } from "@/lib/money";
 import { AmountLabel } from "@/components/shared/MaxButton";
+import {
+  ActionButton,
+  ActionLink,
+  ExportIcon,
+  ImportIcon,
+  PageToolbar,
+  PlusIcon,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
 
 /**
  * Figma: SortPi — Purchase History 59:15218.
@@ -47,29 +56,11 @@ const STATUS_TONE: Record<PurchaseRecord["status"], Tone> = {
   Cancelled: "rose",
 };
 
-function SearchIcon() {
-  return (
-    <svg className="block size-[24px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="10.5" cy="10.5" r="7.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M16 16L21 21" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 
 // Purchase ID  Supplier  Purchase Date  Items  Total Amount  Received  Due  Payment Status  Action
 // Two more tracks than the design has: Received and Due sit beside Total, so a
 // buyer can see what is still owed without opening every row. Narrower than
 // Total because they are the same magnitude and read as a group.
-function AddIcon() {
-  return (
-    <svg className="block size-[20px] shrink-0" viewBox="0 0 20 20" fill="none" aria-hidden>
-      <rect x="0.9" y="0.9" width="18.2" height="18.2" rx="5" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M10 6.4v7.2M6.4 10h7.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 /**
  * Pay against one order, from the row.
  *
@@ -176,37 +167,6 @@ function DueCell({
 const GRID =
   "grid-cols-[158fr_210fr_136fr_90fr_130fr_130fr_130fr_140fr_86fr]";
 /** The same glyph the Sales list exports under — one action, one mark. */
-/** The same arrow as Export, pointing the other way. */
-function ImportIcon() {
-  return (
-    <svg className="block size-[18px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path
-        d="M12 4v12m0 0l-4-4m4 4l4-4M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function ExportIcon() {
-  const s = {
-    stroke: "currentColor",
-    strokeWidth: 1.5,
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-  };
-  return (
-    <svg className="block size-[18px] shrink-0" viewBox="0 0 18 18" fill="none" aria-hidden>
-      <path d="M12.33 6.675C15.03 6.9075 16.1325 8.295 16.1325 11.3325V11.43C16.1325 14.7825 14.79 16.125 11.4375 16.125H6.555C3.2025 16.125 1.86 14.7825 1.86 11.43V11.3325C1.86 8.3175 2.9475 6.93 5.6025 6.6825" {...s} />
-      <path d="M9 11.25V2.715" {...s} />
-      <path d="M11.5125 4.3875L9 1.875L6.4875 4.3875" {...s} />
-    </svg>
-  );
-}
-
 const CELL = "flex min-w-0 items-center p-[12px]";
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e]";
 const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
@@ -625,81 +585,58 @@ export default function PurchasesPage() {
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 59:15220 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
-          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
-            <SearchIcon />
-            <input
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-              }}
-              placeholder="Search by Purchase ID or Supplier..."
-              aria-label="Search purchases"
-              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
-            />
-          </div>
-        </div>
-
-        <div className="flex shrink-0 flex-wrap items-center gap-[12px]">
-          <FilterDropdown
-            label="Status"
-            value={status}
-            onChange={setStatus}
-            options={[
-              { value: "", label: "Any status" },
-              { value: "RECEIVED", label: "Received" },
-              { value: "CONFIRMED", label: "Ordered" },
-              { value: "PARTIAL", label: "Partly received" },
-              { value: "DRAFT", label: "Draft" },
-              { value: "CANCELLED", label: "Cancelled" },
-            ]}
+      <PageToolbar
+        search={
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder="Search by Purchase ID or Supplier..."
+            label="Search purchases"
           />
-          <DateFilter value={dates} onChange={setDates} />
-          <button
-            type="button"
-            onClick={exportCsv}
-            disabled={exporting || rows.length === 0}
-            style={{
-              backgroundImage:
-                "linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0) 100%), linear-gradient(90deg, rgb(245,184,0) 0%, rgb(245,184,0) 100%)",
-            }}
-            className="flex h-[48px] cursor-pointer items-center justify-center gap-[8px] overflow-clip rounded-[10px] border border-solid border-[#f5b800] px-[24px] text-[14px] leading-[1.5] font-semibold tracking-[-0.28px] whitespace-nowrap text-white shadow-[inset_0px_0px_0px_1.8px_rgba(255,255,255,0.25)] disabled:cursor-not-allowed disabled:opacity-70"
-          >
-            <ExportIcon />
-            Export
-          </button>
-          {/* Import. Beside Export, because the two are the same job in
-              opposite directions and a shop looking for one looks here for
-              the other. */}
-          <button
-            type="button"
-            onClick={() => {
-              setImportOpen(true);
-              setImportDone(null);
-              setImportError(null);
-            }}
-            className="flex h-[48px] cursor-pointer items-center justify-center gap-[8px] rounded-[10px] border border-solid border-[#eaeaea] bg-white px-[20px] text-[14px] leading-[1.5] font-semibold tracking-[-0.28px] whitespace-nowrap text-[#525252] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e]"
-          >
-            <ImportIcon />
-            Import
-          </button>
-          {/* The same Add New the other list screens carry. This one had no way
-              at all to raise a purchase order — the API has had POST /purchases
-              since the module was built and nothing in the app called it. */}
-          <Link
-            href="/purchases/add"
-            style={{ backgroundImage: GOLD_GRADIENT }}
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-          >
-            <AddIcon />
-            Add New
-          </Link>
-        </div>
-      </div>
+        }
+      >
+        <FilterDropdown
+          label="Status"
+          value={status}
+          onChange={setStatus}
+          options={[
+            { value: "", label: "Any status" },
+            { value: "RECEIVED", label: "Received" },
+            { value: "CONFIRMED", label: "Ordered" },
+            { value: "PARTIAL", label: "Partly received" },
+            { value: "DRAFT", label: "Draft" },
+            { value: "CANCELLED", label: "Cancelled" },
+          ]}
+        />
+        <DateFilter value={dates} onChange={setDates} />
+        <ActionButton onClick={exportCsv} disabled={exporting || rows.length === 0}>
+          <ExportIcon />
+          Export
+        </ActionButton>
+        {/* Import. Beside Export, because the two are the same job in
+            opposite directions and a shop looking for one looks here for
+            the other. */}
+        <ActionButton
+          onClick={() => {
+            setImportOpen(true);
+            setImportDone(null);
+            setImportError(null);
+          }}
+        >
+          <ImportIcon />
+          Import
+        </ActionButton>
+        {/* The same Add New the other list screens carry. This one had no way
+            at all to raise a purchase order — the API has had POST /purchases
+            since the module was built and nothing in the app called it. */}
+        <ActionLink href="/purchases/add" variant="primary">
+          <PlusIcon />
+          Add New
+        </ActionLink>
+      </PageToolbar>
 
       {/* Table card — 59:15252 */}
-      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className={TABLE_CARD}>
         <RefreshBar active={fetching} />
         {/* One scroller for the table, the phone cards and the load trigger.
             The trigger has to sit INSIDE it — below the scroller it never
