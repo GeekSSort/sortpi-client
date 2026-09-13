@@ -15,6 +15,11 @@ import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/componen
 import ProductImage from "@/components/shared/ProductImage";
 import VariantChip from "@/components/shared/VariantChip";
 import { isRowClick } from "@/lib/rowClick";
+import {
+  PageToolbar,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
 
 /**
  * Figma: SortPi — Stock 57:13117.
@@ -40,15 +45,6 @@ const STATUS_TONE: Record<StockItem["status"], Tone> = {
   "Low Stock": "gold",
   "Out of Stock": "rose",
 };
-
-function SearchIcon() {
-  return (
-    <svg className="block size-[24px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="10.5" cy="10.5" r="7.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M16 16L21 21" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 
 // Product Name  SKU  Warehouse  Available  Reserved  Low Stock  Status  Action
@@ -286,41 +282,33 @@ export default function StockPage() {
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 57:13119 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
-          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
-            <SearchIcon />
-            <input
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-              }}
-              placeholder="Search by product name, SKU or barcode..."
-              aria-label="Search stock"
-              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
-            />
-          </div>        </div>
-
+      <PageToolbar
+        search={
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder="Search by product name, SKU or barcode..."
+            label="Search stock"
+          />
+        }
+      >
         {/* The filters, beside the search box: a narrowed list has to
             say on screen that it is narrowed. */}
-        <div className="flex shrink-0 flex-wrap items-center gap-[12px]">
-          <FilterDropdown
-            label="Stock level"
-            value={stockStatus}
-            onChange={setStockStatus}
-            options={[
-              { value: "", label: "Any level" },
-              { value: "in", label: "In stock" },
-              { value: "low", label: "Running low" },
-              { value: "out", label: "Out of stock" },
-            ]}
-          />
-        </div>
-
-      </div>
+        <FilterDropdown
+          label="Stock level"
+          value={stockStatus}
+          onChange={setStockStatus}
+          options={[
+            { value: "", label: "Any level" },
+            { value: "in", label: "In stock" },
+            { value: "low", label: "Running low" },
+            { value: "out", label: "Out of stock" },
+          ]}
+        />
+      </PageToolbar>
 
       {/* Table card — 57:13151 */}
-      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className={TABLE_CARD}>
         <RefreshBar active={fetching} />
         {/* One scroller for the table, the phone cards and the load trigger.
             The trigger has to sit INSIDE it — below the scroller it never
