@@ -1,7 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
+import React, { useEffect, useMemo, useState } from "react";
 import { SystemUserRecord } from "@/types/roles";
 import { RoleRecord } from "@/types/permissions";
 import { RoleService, RoleOption } from "@/services/roleService";
@@ -18,6 +17,14 @@ import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
 import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { ListSkeleton } from "@/components/shared/Skeleton";
 import { CardListState, EmptyState, ErrorState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
+import {
+  ActionButton,
+  ActionLink,
+  PageToolbar,
+  PlusIcon,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
 
 /**
  * User List — Figma 59:18134.
@@ -75,23 +82,6 @@ const FILTERS = ["All Users", "Active", "Inactive"] as const;
 /** Long enough that typing a name is one request, short enough to feel live. */
 const SEARCH_DEBOUNCE_MS = 300;
 
-function SearchIcon() {
-  return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden className="shrink-0">
-      <circle cx="11" cy="11" r="7.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="m20 20-3.2-3.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function FilterIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden className="shrink-0">
-      <path d="M2.25 4.5h13.5M4.5 9h9m-6.75 4.5h4.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 
 function AddIcon() {
   return (
@@ -106,7 +96,6 @@ export default function RolesPermissionsPage() {
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("All Users");
-  const [filterOpen, setFilterOpen] = useState(false);
   // Rows per request. Not a page size anyone picks — the table scrolls.
   const pageSize = 25;
   // Two different things, and merging them ate one of them: `note` is what an
@@ -151,7 +140,6 @@ export default function RolesPermissionsPage() {
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState<"users" | "roles">("users");
   const [editing, setEditing] = useState<RoleRecord | null | undefined>(undefined);
-  const filterRef = useRef<HTMLDivElement>(null);
 
   const can = useMemo(() => {
     const held = new Set(user?.permissions ?? []);
@@ -219,19 +207,6 @@ export default function RolesPermissionsPage() {
   );
   const roleRecords: RoleRecord[] = roleRecordsQuery.data ?? [];
 
-  useEffect(() => {
-    if (!filterOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (filterRef.current && !filterRef.current.contains(e.target as Node)) setFilterOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setFilterOpen(false);
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [filterOpen]);
 
   const act = async (fn: () => Promise<void>, done: string) => {
     setSaving(true);
@@ -343,62 +318,40 @@ export default function RolesPermissionsPage() {
       ) : (
       <>
       {/* Headline — 59:18136 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
-          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
-            <SearchIcon />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search by name, email, phone or role..."
-              aria-label="Search users"
-              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
-            />
-          </div>
-          <button
-            type="button"
-            aria-label="Filter"
-            onClick={() => setFilterOpen((v) => !v)}
-            className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e]"
-          >
-            <FilterIcon />
-          </button>
-        </div>
-
-        <div className="flex flex-col items-stretch gap-[12px] sm:flex-row sm:items-center sm:gap-[16px]">
-          <FilterDropdown
-            label="Status"
-            value={filter === "All Users" ? "" : filter}
-            onChange={(next) => setFilter((next || "All Users") as typeof filter)}
-            options={[
-              { value: "All Users", label: "All users" },
-              { value: "Active", label: "Active" },
-              { value: "Inactive", label: "Inactive" },
-            ]}
+      <PageToolbar
+        search={
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder="Search by name, email, phone or role..."
+            label="Search users"
           />
+        }
+      >
+        <FilterDropdown
+          label="Status"
+          value={filter === "All Users" ? "" : filter}
+          onChange={(next) => setFilter((next || "All Users") as typeof filter)}
+          options={[
+            { value: "All Users", label: "All users" },
+            { value: "Active", label: "Active" },
+            { value: "Inactive", label: "Inactive" },
+          ]}
+        />
 
-          {can.create && (
-            <button
-              type="button"
-              onClick={() => setHandOverOpen(true)}
-              className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] text-[15px] font-medium whitespace-nowrap text-[#525252] transition-colors hover:bg-[#fafafa]"
-            >
-              Hand over ownership
-            </button>
-          )}
+        {can.create && (
+          <ActionButton onClick={() => setHandOverOpen(true)}>
+            Hand over ownership
+          </ActionButton>
+        )}
 
-          {can.create && (
-            <Link
-              href="/roles-permissions/add"
-              style={{ backgroundImage: GOLD_GRADIENT }}
-              className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-            >
-              <AddIcon />
-              Add New
-            </Link>
-          )}
-        </div>
-      </div>
+        {can.create && (
+          <ActionLink href="/roles-permissions/add" variant="primary">
+            <PlusIcon />
+            Add New
+          </ActionLink>
+        )}
+      </PageToolbar>
 
       {/* Which branch these people belong to. Without it, a correctly narrowed
           list looks like data that has gone missing. */}
@@ -418,7 +371,7 @@ export default function RolesPermissionsPage() {
       </p>
 
       {/* Table card — 59:18163 */}
-      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className={TABLE_CARD}>
         <RefreshBar active={usersQuery.fetching} />
         {loadError && (
           <p role="alert" className="mx-[16px] mt-[16px] rounded-[8px] bg-[#ffdfe2] px-[12px] py-[8px] text-[13px] text-[#a02620]">
