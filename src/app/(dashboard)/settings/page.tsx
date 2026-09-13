@@ -55,6 +55,8 @@ type TillSettings = {
   surchargeTaxable: boolean;
   /** May a cashier TYPE a quantity at the till, or only step it? */
   manualQuantity: boolean;
+  /** Is the payable rounded to a whole taka (.40 and up rounds up)? */
+  roundToWhole: boolean;
   /**
    * The customer points scheme. Every rule the till follows lives here —
    * nothing about points is decided in the POS.
@@ -422,6 +424,8 @@ export default function SettingsPage() {
       allowPartial: String(v["pos.allow_partial_payment"] ?? "false") === "true",
       surchargeTaxable: String(v["pos.surcharge_taxable"] ?? "false") === "true",
       manualQuantity: String(v["pos.allow_manual_quantity"] ?? "false") === "true",
+      // Off by default: every sale before this setting kept its paisa.
+      roundToWhole: String(v["pos.round_to_whole"] ?? "false") === "true",
       // A whole number as a person writes one: the API stores "100.0000" and
       // a box reading that invites somebody to "fix" it to 100 and wonder
       // what they changed.
@@ -542,6 +546,11 @@ export default function SettingsPage() {
         SettingsService.setValue(
           "pos.allow_manual_quantity",
           till.manualQuantity ? "true" : "false",
+          "BOOL"
+        ),
+        SettingsService.setValue(
+          "pos.round_to_whole",
+          till.roundToWhole ? "true" : "false",
           "BOOL"
         ),
         // ── Customer points ──────────────────────────────────────────
@@ -903,6 +912,13 @@ export default function SettingsPage() {
             onChange={(next) => setTillEdits((t) => ({ ...t, allowPartial: next }))}
             label="Allow partial payment in POS page"
             hint="On: a cashier can take less than the bill and the rest goes on the customer's account. Needs a named customer with a credit limit — a walk-in cannot carry a debt. Off: the payment dialog pays the full amount, which is what the till did before."
+          />
+
+          <Toggle
+            checked={till.roundToWhole}
+            onChange={(next) => setTillEdits((t) => ({ ...t, roundToWhole: next }))}
+            label="Round the payable to a whole taka"
+            hint="On: the amount the customer pays has no paisa. A fraction of .40 or more rounds up, anything less rounds down — ৳100.39 is ৳100, ৳100.40 is ৳101. The difference shows on its own line in the order summary and on the receipt, and a refund gives back what was actually paid. Off: amounts keep their paisa."
           />
 
           <Toggle
