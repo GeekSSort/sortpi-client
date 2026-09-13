@@ -193,11 +193,12 @@ function NewReturnForm() {
   /**
    * What the goods being sent back are WORTH.
    *
-   * From `lineTotal`, not `unitPrice`. `lineTotal` is what the customer was
-   * actually charged for the line — net of its own offer and of its share of
-   * any invoice discount — and it is what the server refunds. Totalling the
-   * shelf price quoted more than the shop hands over: ten at 100 with a 200
-   * discount took 800 and this screen promised 1,000.
+   * From `chargedTotal`, which is what the customer actually PAID for the line:
+   * net of its own offer and its share of the invoice discount, AND of the
+   * coupon, the points and any whole-taka rounding that happened to the bill
+   * afterwards. It is the server's figure and the one it refunds. Quoting the
+   * shelf price promised 1,000 for goods that took 800; quoting `lineTotal`
+   * still promised 1,000 for a 10%-coupon sale that took 900.
    *
    * Per unit, so a partial return is a share of what was charged, which is
    * exactly how `_refund_for` works it out on the server.
@@ -207,7 +208,7 @@ function NewReturnForm() {
       lines.reduce((sum, line) => {
         const qty = picked[line.id] ?? 0;
         if (qty <= 0 || line.quantity <= 0) return sum;
-        return sum + (line.lineTotal / line.quantity) * qty;
+        return sum + (line.chargedTotal / line.quantity) * qty;
       }, 0),
     [lines, picked]
   );
