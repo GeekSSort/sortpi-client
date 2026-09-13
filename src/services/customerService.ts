@@ -11,6 +11,7 @@ export class CustomerService {
     if (params?.search) searchParams.set("search", params.search);
     if (params?.status) searchParams.set("status", params.status);
     if (params?.customerType) searchParams.set("customer_type", params.customerType);
+    if (params?.hasDue) searchParams.set("has_due", "1");
     if (params?.page) searchParams.set("page", String(params.page));
     // The API caps a page at 200 (StandardPagination.max_page_size); asking
     // for more than that just gets 200 back.

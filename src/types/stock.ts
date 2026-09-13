@@ -5,6 +5,15 @@ export interface StockItem {
   /** The warehouse id, as opposed to `warehouse`, which is its readable code. */
   warehouseId?: string;
   name: string;
+  /**
+   * WHICH variant this balance is for — "500ml".
+   *
+   * A Stock row is keyed on variant + warehouse, so a product sold in three
+   * sizes is three rows all reading "Coca-Cola", told apart by nothing but the
+   * SKU — a code, not a name. Empty for a product with one unnamed variant,
+   * which is the same rule the till's tiles follow.
+   */
+  variantLabel: string;
   image: string;
   sku: string;
   warehouse: string;
@@ -24,6 +33,8 @@ export interface StockItem {
 }
 
 export interface StockQueryFilter {
+  /** in | low | out. Narrows to what the shelf is doing. */
+  stockStatus?: string;
   search?: string;
   warehouse?: string;
   status?: string;

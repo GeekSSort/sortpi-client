@@ -145,7 +145,9 @@ export default function PlatformSidebar({
               does: seven rows plus the logo and the footer outgrow a phone in
               landscape, and the aside's `overflow-hidden` simply cut off
               whatever did not fit. `min-h-0` is what lets it shrink. */}
-          <div className="flex w-full min-h-0 flex-1 flex-col items-center gap-[32px] overflow-y-auto overflow-x-hidden [scrollbar-width:thin]">
+          {/* Hidden bar, same as the tenant sidebar — the two are the same
+              piece of furniture and should not differ. */}
+          <div className="no-scrollbar flex w-full min-h-0 flex-1 flex-col items-center gap-[32px] overflow-y-auto overflow-x-hidden">
             <Link href="/platform" className="block h-[54px] w-[208px] shrink-0">
               <Image
                 src="/sidebar/logo.png"

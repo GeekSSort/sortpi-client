@@ -1,6 +1,7 @@
 import React from "react";
 import Sidebar from "@/components/shared/Sidebar";
 import Header from "@/components/shared/Header";
+import ShellFrame from "@/components/shared/ShellFrame";
 import { SidebarProvider } from "@/components/shared/SidebarContext";
 
 /**
@@ -11,10 +12,15 @@ import { SidebarProvider } from "@/components/shared/SidebarContext";
  * else gets this — and the alternative was a second route for the same screen,
  * which is how /till came to exist and why the address bar disagreed with the
  * menu that had sent you there.
+ *
+ * The markup itself lives in ShellFrame: the till can hide the menu and the
+ * header, and that choice is a per-device one read from localStorage, so the
+ * frame has to be assembled in the browser.
  */
 export default function DashboardShell({
   children,
   fill = false,
+  maximizable = false,
 }: {
   children: React.ReactNode;
   /**
@@ -26,31 +32,23 @@ export default function DashboardShell({
    * the page, the window scrolled, and the bottom row sat under the fold.
    */
   fill?: boolean;
+  /**
+   * Let the page hide the menu and the header (see posMaximized.ts). The till
+   * passes it; nothing else should, because every other screen is REACHED
+   * through the menu it would be removing.
+   */
+  maximizable?: boolean;
 }) {
   return (
     <SidebarProvider>
-      <div className="flex h-screen w-screen bg-[#F8F9FA] overflow-hidden">
-        <Sidebar />
-
-        <div
-          className={`flex flex-1 flex-col min-w-0 bg-[#F8F9FA] transition-all duration-300 ${
-            fill ? "overflow-hidden" : "overflow-y-auto"
-          }`}
-        >
-          {/* Full-bleed: the navbar owns its own 24px gutters (Figma 30:15360). */}
-          <Header />
-          {/* flex-1 so a full-height page (the till) can fill what is left
-              under the header. Content taller than that still grows the main
-              and scrolls the column, exactly as before. */}
-          <main
-            className={`w-full flex flex-1 flex-col p-[16px] gap-[24px] sm:p-[24px] ${
-              fill ? "min-h-0 overflow-hidden" : ""
-            }`}
-          >
-            {children}
-          </main>
-        </div>
-      </div>
+      <ShellFrame
+        sidebar={<Sidebar />}
+        header={<Header />}
+        fill={fill}
+        maximizable={maximizable}
+      >
+        {children}
+      </ShellFrame>
     </SidebarProvider>
   );
 }

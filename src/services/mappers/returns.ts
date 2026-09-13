@@ -63,6 +63,7 @@ export function toReturnRecord(row: any): ReturnRecord {
     invoiceNo: String(row?.invoiceNumber ?? row?.invoice_number ?? "—"),
     dateTime: Number.isNaN(at.getTime()) ? raw || "—" : WHEN.format(at),
     customerName: String(row?.customerName ?? row?.customer_name ?? "Walk-in"),
+    customerPhone: String(row?.customerPhone ?? row?.customer_phone ?? ""),
     totalAmount: total,
     totalAmountFormatted: formatMoney(total),
     refundAmount: refund,

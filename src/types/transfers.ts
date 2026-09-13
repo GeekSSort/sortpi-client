@@ -2,6 +2,8 @@
 export interface TransferLine {
   id: string;
   name: string;
+  /** WHICH variant is moving — "500ml". Empty for a one-variant product. */
+  variantLabel: string;
   sku: string;
   quantity: number;
   /** What actually arrived. 0 until the transfer is received, and less than

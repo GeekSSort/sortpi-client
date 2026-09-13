@@ -1,6 +1,9 @@
 "use client";
 
+import { useQuery, queryKey } from "@/lib/query/useQuery";
+import { SettingsService } from "@/services";
 import React from "react";
+import VariantChip from "@/components/shared/VariantChip";
 import { CartItem } from "@/types/pos";
 import { formatMoney } from "@/lib/format";
 import { useProductDiscounts } from "@/lib/usePosDiscounts";
@@ -47,19 +50,128 @@ function BinIcon() {
  * ran out after it was added, and emptying it under the cashier would be worse
  * than letting the server refuse the sale with a reason.
  */
+/**
+ * The quantity, typed or stepped.
+ *
+ * Held as TEXT while it is being edited: a controlled number round-trips
+ * through Number() on every keystroke, so "2." loses its dot the instant it is
+ * typed and a half-metre cannot be entered at all. It only becomes a number on
+ * blur or Enter — and a cashier who clears the box and walks away gets the
+ * quantity back rather than a line silently set to zero.
+ */
+function QtyBox({
+  item,
+  allowTyping,
+  onSet,
+}: {
+  item: CartItem;
+  allowTyping: boolean;
+  onSet: (next: number) => void;
+}) {
+  const shown = String(item.quantity);
+  const [text, setText] = React.useState(shown);
+  const mine = React.useRef(shown);
+
+  // Followed when the steppers change it under us.
+  React.useEffect(() => {
+    if (shown !== mine.current) {
+      mine.current = shown;
+      setText(shown);
+    }
+  }, [shown]);
+
+  const commit = () => {
+    const n = Number(text);
+    if (!Number.isFinite(n) || n <= 0) {
+      setText(shown);
+      return;
+    }
+    mine.current = String(n);
+    onSet(n);
+  };
+
+  if (!allowTyping) {
+    return (
+      <span className="w-[46px] text-center text-[14px] font-medium text-[#1e1e1e] tabular-nums">
+        {item.quantity}
+        {item.product.unitShort ? (
+          <span className="ml-[2px] text-[11px] text-[#8f8d87]">{item.product.unitShort}</span>
+        ) : null}
+      </span>
+    );
+  }
+
+  return (
+    <span className="flex items-center gap-[2px]">
+      <input
+        type="text"
+        inputMode={item.product.allowDecimal ? "decimal" : "numeric"}
+        aria-label={`Quantity for ${item.product.fullName}`}
+        value={text}
+        onChange={(e) => {
+          let next = e.target.value.replace(/[^\d.]/g, "");
+          // A whole-number unit gets no dot at all — the server refuses 2.5
+          // pieces, and the honest moment to say so is while it is typed.
+          if (!item.product.allowDecimal) next = next.replace(/\./g, "");
+          else {
+            const dot = next.indexOf(".");
+            if (dot !== -1) {
+              next = next.slice(0, dot + 1) + next.slice(dot + 1).replace(/\./g, "");
+              // Quantities are NUMERIC(18,3) — three places, no more.
+              next = next.slice(0, dot + 4);
+            }
+          }
+          setText(next);
+        }}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
+        className="w-[46px] rounded-[6px] border border-solid border-[#eaeaea] py-[2px] text-center text-[14px] font-medium text-[#1e1e1e] tabular-nums outline-none focus:border-[#f5b800]"
+      />
+      {item.product.unitShort ? (
+        <span className="text-[11px] text-[#8f8d87]">{item.product.unitShort}</span>
+      ) : null}
+    </span>
+  );
+}
+
 const atCap = (item: CartItem) => item.product.stock > 0 && item.quantity >= item.product.stock;
 
 export default function SelectedItems({
   cart,
   onUpdateQuantity,
+  onSetQuantity,
+  allowTyping,
   onRemoveItem,
   onClearCart,
 }: {
   cart: CartItem[];
   onUpdateQuantity: (productId: string, delta: number) => void;
+  /** Set a quantity outright, from the typed box. */
+  onSetQuantity?: (productId: string, next: number) => void;
+  /** `pos.allow_manual_quantity`, when the caller already has it. Left out,
+      this reads the setting itself. */
+  allowTyping?: boolean;
   onRemoveItem: (productId: string) => void;
   onClearCart: () => void;
 }) {
+  // The setting, read here rather than threaded from the page: this list is
+  // rendered from two layouts and a prop would have to be passed identically
+  // through both to mean the same thing. Same cache key as the till's other
+  // settings, so it costs no extra request.
+  const { data: shopValues } = useQuery(
+    queryKey("settings", { scope: "values" }),
+    () => SettingsService.getValues(),
+    { staleMs: 300_000 }
+  );
+  const canType =
+    allowTyping ?? String(shopValues?.["pos.allow_manual_quantity"] ?? "false") === "true";
+
   // The same offers the product wall prices its tiles by, and the same ones the
   // invoice subtracts. Three views of one sale have to agree.
   const rates = useProductDiscounts();
@@ -109,7 +221,18 @@ export default function SelectedItems({
                 <span className="truncate text-[14px] font-medium text-[#1e1e1e]">
                   {item.product.name}
                 </span>
-                <span className="truncate text-[12px] text-[#8f8d87]">{item.product.sku}</span>
+                {/* The variant beside the SKU rather than folded into the
+                    name: this column is half the width of the classic view and
+                    "Coca-Cola 500ml" truncates to "Coca-Col…", which is the
+                    half that does NOT tell two lines apart. The chip is the
+                    same one the tile carries, so the line a cashier taps and
+                    the line it becomes are recognisably the same thing. */}
+                <span className="flex min-w-0 items-center gap-[6px]">
+                  <VariantChip label={item.product.variantLabel} size="xs" />
+                  <span className="truncate text-[12px] text-[#8f8d87]">
+                    {item.product.sku}
+                  </span>
+                </span>
                 {atCap(item) && (
                   <span className="truncate text-[12px] leading-[1.4] font-medium text-[#a66a00]">
                     All {item.product.stock} on the shelf are on this sale
@@ -126,9 +249,11 @@ export default function SelectedItems({
                 >
                   <MinusIcon />
                 </button>
-                <span className="w-[22px] text-center text-[14px] font-medium text-[#1e1e1e] tabular-nums">
-                  {item.quantity}
-                </span>
+                <QtyBox
+                  item={item}
+                  allowTyping={canType}
+                  onSet={(next) => onSetQuantity?.(item.product.id, next)}
+                />
                 {/* At the ceiling the button goes dead rather than doing
                     nothing on press. A control that accepts a click and
                     changes nothing reads as a broken till, and the cashier
@@ -175,7 +300,7 @@ export default function SelectedItems({
               </span>
               <button
                 type="button"
-                aria-label={`Remove ${item.product.name}`}
+                aria-label={`Remove ${item.product.fullName}`}
                 onClick={() => onRemoveItem(item.product.id)}
                 className="flex size-[26px] cursor-pointer items-center justify-center rounded-[7px] text-[#a3a3a3] transition-colors hover:bg-[#ffdfe2] hover:text-[#e63946]"
               >

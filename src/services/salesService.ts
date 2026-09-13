@@ -1,6 +1,6 @@
 import { SaleRecord, SalesQueryFilter } from "@/types/sales";
 import { apiFetch, apiList, toAmount } from "./apiClient";
-import { toSaleRecord } from "./mappers/sale";
+import { toSaleRecord, settlementOf } from "./mappers/sale";
 import { invalidate } from "@/lib/query/useQuery";
 
 /**
@@ -45,7 +45,15 @@ export interface SaleDetail {
   id: string;
   invoiceNo: string;
   saleDate: string;
+  /**
+   * Who owes it. Needed to COLLECT against this invoice: a payment is posted
+   * to the customer's ledger with an allocation naming the sale, so without
+   * the id the Sales screen can only report a debt and not take it.
+   */
+  customerId: string;
   customerName: string;
+  /** Blank for a walk-in. Printed under the customer's name on the receipt. */
+  customerPhone: string;
   cashierName: string;
   branchName: string;
   paymentMethod: string;
@@ -57,6 +65,11 @@ export interface SaleDetail {
   discount: number;
   tax: number;
   grandTotal: number;
+  /**
+   * Received to date, and still owed — the LIVE pair, from the ledger. See
+   * `settlementOf`: the `paid_amount`/`due_amount` columns beside them on the
+   * API are frozen at the till and never move again.
+   */
   paid: number;
   due: number;
   /**
@@ -82,6 +95,7 @@ export class SalesService {
     const searchParams = new URLSearchParams();
     if (params?.search) searchParams.set("search", params.search);
     if (params?.status) searchParams.set("status", params.status);
+    if (params?.paymentStatus) searchParams.set("payment_status", params.paymentStatus);
     if (params?.page) searchParams.set("page", String(params.page));
     // The API caps a page at 200 (StandardPagination.max_page_size); asking
     // for more than that just gets 200 back.
@@ -157,7 +171,9 @@ export class SalesService {
       id: String(row?.id ?? id),
       invoiceNo: String(row?.invoiceNumber ?? row?.invoice_number ?? ""),
       saleDate: String(row?.saleDate ?? row?.sale_date ?? ""),
+      customerId: String(row?.customer ?? row?.customerId ?? row?.customer_id ?? ""),
       customerName: String(row?.customerName ?? row?.customer_name ?? "Walk-in Customer"),
+      customerPhone: String(row?.customerPhone ?? row?.customer_phone ?? ""),
       cashierName: String(row?.cashierName ?? row?.cashier_name ?? ""),
       branchName: String(row?.branchName ?? row?.branch_name ?? ""),
       paymentMethod: method || "Cash",
@@ -168,8 +184,7 @@ export class SalesService {
       discount: toAmount(row?.discountAmount ?? row?.discount_amount),
       tax: toAmount(row?.taxAmount ?? row?.tax_amount),
       grandTotal: toAmount(row?.grandTotal ?? row?.grand_total),
-      paid: toAmount(row?.paidAmount ?? row?.paid_amount),
-      due: toAmount(row?.dueAmount ?? row?.due_amount),
+      ...settlementOf(row),
       taxRatePercent: singleTaxRate(row?.items ?? []),
       discountPercent: percentOf(
         toAmount(row?.discountAmount ?? row?.discount_amount),

@@ -6,12 +6,12 @@ import SalesSummaryChart from "@/components/modules/dashboard/SalesSummaryChart"
 import ProfitLossChart from "@/components/modules/dashboard/ProfitLossChart";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
-import TablePagination from "@/components/shared/TablePagination";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Modal, { MODAL_GHOST } from "@/components/shared/Modal";
 import { DashboardService, CustomerService, topSellerTiles } from "@/services";
 import { tokenStore } from "@/services/apiClient";
 import { useQuery, queryKey } from "@/lib/query/useQuery";
+import FilterDropdown from "@/components/shared/FilterDropdown";
 import { resolveRange, previousRange, previousLabel, type RangeOption } from "@/lib/range";
 import { StatCardsSkeleton, ChartSkeleton, CardGridSkeleton } from "@/components/shared/Skeleton";
 import { CardListState, EmptyState, ErrorState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
@@ -137,18 +137,9 @@ function SearchIcon() {
   );
 }
 
-function FilterIcon() {
-  return (
-    <svg className="block size-[18px] shrink-0" viewBox="0 0 18 18" fill="none" aria-hidden>
-      <path d="M2.25 4.5h13.5M4.5 9h9M7.5 13.5h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 export default function PosReportsPage() {
   const [query, setQuery] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
   const [note, setNote] = useState<string | null>(null);
   const [detailOf, setDetailOf] = useState<CustomerRecord | null>(null);
 
@@ -162,6 +153,9 @@ export default function PosReportsPage() {
   const [today] = useState(() => new Date());
   const [salesRange, setSalesRange] = useState<RangeOption>("This Week");
   const [pnlRange, setPnlRange] = useState<RangeOption>("This Week");
+  const [custStatus, setCustStatus] = useState("");
+  const [custDue, setCustDue] = useState("");
+
   const salesWindow = useMemo(() => resolveRange(salesRange, today), [salesRange, today]);
   const pnlWindow = useMemo(() => resolveRange(pnlRange, today), [pnlRange, today]);
   // What the arrows on the four figures are measured against.
@@ -226,8 +220,12 @@ export default function PosReportsPage() {
     fetching: customersFetching,
     error: customersError,
     refetch: refetchCustomers,
-  } = useQuery(queryKey("customers", { search: query }), () =>
-    CustomerService.getCustomers({ search: query })
+  } = useQuery(queryKey("customers", { search: query, custStatus, custDue }), () =>
+    CustomerService.getCustomers({
+      search: query,
+      status: custStatus || undefined,
+      hasDue: custDue === "due" || undefined,
+    })
   );
   const customers = useMemo(() => customerPage?.data ?? [], [customerPage]);
 
@@ -239,12 +237,8 @@ export default function PosReportsPage() {
   // Two rows of five, best seller first.
   const topSelling = useMemo(() => products ?? [], [products]);
 
-  const totalPages = Math.max(1, Math.ceil(customers.length / pageSize));
-  const current = Math.min(page, totalPages);
-  const rows = useMemo(
-    () => customers.slice((current - 1) * pageSize, current * pageSize),
-    [customers, current, pageSize]
-  );
+  // Every customer on the report, in a list that scrolls.
+  const rows = customers;
 
   return (
     <div className="relative flex w-full flex-col gap-[24px] pb-[24px]">
@@ -381,28 +375,44 @@ export default function PosReportsPage() {
                 value={query}
                 onChange={(e) => {
                   setQuery(e.target.value);
-                  setPage(1);
                 }}
                 placeholder="Search by return ID, Invoice No. or Customer..."
                 aria-label="Search customers"
                 className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
               />
             </div>
-            <button
-              type="button"
-              aria-label="Filter"
-              onClick={() => setNote("Filter panel not designed yet")}
-              className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e]"
-            >
-              <FilterIcon />
-            </button>
+            <FilterDropdown
+              label="Status"
+              value={custStatus}
+              onChange={setCustStatus}
+              options={[
+                { value: "", label: "Any status" },
+                { value: "active", label: "Active" },
+                { value: "inactive", label: "Inactive" },
+              ]}
+            />
+            <FilterDropdown
+              label="Balance"
+              value={custDue}
+              onChange={setCustDue}
+              options={[
+                { value: "", label: "Any balance" },
+                { value: "due", label: "Owes money" },
+              ]}
+            />
           </div>
         </div>
 
+        {/* One scroller for the table, the phone cards and its phone cards.
+            The trigger has to sit INSIDE it — below the scroller it never
+            leaves the screen, and every page loads at once the moment the
+            table opens. */}
+        <div className="table-scroll">
+
         <div className="hidden px-[16px] pt-[16px] md:block">
-          <div className="overflow-x-auto">
+          <div>
             <div className="min-w-[1140px]">
-              <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
+              <div className={`table-head grid ${GRID} items-start overflow-clip rounded-[6px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 {["Customer ID", "Customer", "Phone", "Email", "Type", "Total Spent", "Due"].map((h) => (
                   <div key={h} className={`${CELL} h-[40px] bg-white`}>
                     <span className={`${HEAD} whitespace-nowrap`}>{h}</span>
@@ -418,7 +428,7 @@ export default function PosReportsPage() {
                   loading={customersLoading}
                   error={customersError}
                   hasData={customerPage !== undefined}
-                  skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
+                  skeleton={<TableSkeleton columns={GRID} rows={8} />}
                   errorMessage="Could not load the customer list."
                   onRetry={refetchCustomers}
                 >
@@ -522,18 +532,10 @@ export default function PosReportsPage() {
         {note && <p className="px-[16px] pt-[10px] text-[13px] text-[#525252]">{note}</p>}
 
         <div className="mt-[9px]">
-          <TablePagination
-            page={current}
-            pageSize={pageSize}
-            total={customers.length}
-            onPageChange={setPage}
-            onPageSizeChange={(n) => {
-              setPageSize(n);
-              setPage(1);
-            }}
-          />
         </div>
       </div>
+
+        </div>
 
       <Modal
         open={detailOf !== null}

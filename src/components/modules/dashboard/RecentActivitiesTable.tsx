@@ -1,8 +1,7 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useState } from "react";
 import { ActivityStatus, RecentActivityItem } from "@/types/dashboard";
-import TablePagination from "@/components/shared/TablePagination";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
 import Link from "next/link";
@@ -57,16 +56,11 @@ interface RecentActivitiesTableProps {
 }
 
 export default function RecentActivitiesTable({ activities }: RecentActivitiesTableProps) {
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
   const [detailOf, setDetailOf] = useState<RecentActivityItem | null>(null);
 
-  const totalPages = Math.max(1, Math.ceil(activities.length / pageSize));
-  const current = Math.min(page, totalPages);
-  const rows = useMemo(
-    () => activities.slice((current - 1) * pageSize, current * pageSize),
-    [activities, current, pageSize]
-  );
+  // Every activity, in a list that scrolls. They are handed to this component
+  // whole, so the pager was slicing an array already in memory.
+  const rows = activities;
 
   return (
     <div className="w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
@@ -77,12 +71,17 @@ export default function RecentActivitiesTable({ activities }: RecentActivitiesTa
         </p>
       </div>
 
+      {/* Fixed height, rows scrolling inside. Every activity is rendered now
+          that the pager is gone, and an unbounded list would push the rest of
+          the dashboard off the screen. */}
+      <div className="table-scroll">
+
       {/* Table — 30:16898, inset 16px */}
       <div className="mt-[9px] hidden px-[16px] md:block">
-        <div className="overflow-x-auto">
+        <div>
           <div className="min-w-[900px]">
             {/* Column head — its own 6px outline */}
-            <div className="flex items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]">
+            <div className="table-head flex items-start overflow-clip rounded-[6px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
               <div className={`${CELL} h-[40px] min-w-px flex-1 bg-white`}>
                 <span className={HEAD}>Activity</span>
               </div>
@@ -163,19 +162,8 @@ export default function RecentActivitiesTable({ activities }: RecentActivitiesTa
         ))}
       </div>
 
-      {/* Pagination — 30:17020 */}
-      <div className="mt-[9px]">
-        <TablePagination
-          page={current}
-          pageSize={pageSize}
-          total={activities.length}
-          onPageChange={setPage}
-          onPageSizeChange={(n) => {
-            setPageSize(n);
-            setPage(1);
-          }}
-        />
       </div>
+
       {/* What the row already knows, laid out to be read. */}
       <Modal
         open={detailOf !== null}

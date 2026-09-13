@@ -1,18 +1,26 @@
 "use client";
 
 import React, { useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { EmployeeProfile } from "@/types/hrm";
 import { HrmService } from "@/services/hrmService";
 import RowActionMenu from "@/components/shared/RowActionMenu";
-import TablePagination from "@/components/shared/TablePagination";
+import ScrollEnd from "@/components/shared/ScrollEnd";
+import FilterDropdown from "@/components/shared/FilterDropdown";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Avatar from "@/components/shared/Avatar";
 import Modal, { MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
-import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { queryKey, invalidate } from "@/lib/query/useQuery";
+import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardListState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import EmployeeEditDialog from "@/components/modules/dashboard/EmployeeEditDialog";
+import {
+  ActionLink,
+  PageToolbar,
+  PlusIcon,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
 
 /**
  * Employees — the roster. Figma 385:2193.
@@ -57,33 +65,33 @@ function joinDate(iso: string): string {
   return y && m && d ? `${d}-${m}-${y}` : iso;
 }
 
-function SearchIcon() {
-  return (
-    <svg className="block size-[20px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 export default function EmployeesPage() {
   const router = useRouter();
   const [term, setTerm] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
+  // Rows per request. Not a page size anyone picks — the table scrolls.
+  const pageSize = 25;
   const [note, setNote] = useState<string | null>(null);
   const [leaving, setLeaving] = useState<EmployeeProfile | null>(null);
   const [editing, setEditing] = useState<EmployeeProfile | null>(null);
   const [removing, setRemoving] = useState<EmployeeProfile | null>(null);
   const [busy, setBusy] = useState(false);
+  /** "" is everyone; the roster has always had no way to ask for one or the
+      other, so somebody marked as left stayed in the list. */
+  const [active, setActive] = useState("");
 
-  const query = useQuery(
-    queryKey("hrm-roster", { term, page, pageSize }),
-    () => HrmService.getRoster({ search: term, page, limit: pageSize })
+  const query = useInfiniteRows(
+    queryKey("hrm-roster", { term, active }),
+    (p, limit) =>
+      HrmService.getRoster({
+        search: term,
+        active: active === "" ? undefined : active === "active",
+        page: p,
+        limit,
+      }),
+    { pageSize }
   );
 
-  const rows = query.data?.data ?? [];
-  const total = query.data?.total ?? 0;
+  const { rows, total, loadingMore, hasMore, sentinelRef } = query;
 
   const confirmLeave = async () => {
     if (!leaving) return;
@@ -130,55 +138,55 @@ export default function EmployeesPage() {
 
   return (
     <div className="flex w-full flex-col gap-[16px] pb-[24px]">
-      {/* Toolbar — outside the card, search left, actions right. */}
-      <div className="flex w-full flex-col items-stretch gap-[12px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
-        <div className="flex h-[44px] w-full items-center gap-[8px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
-          <span className="text-[#525252]">
-            <SearchIcon />
-          </span>
-          <input
+      {/* Toolbar — outside the card, search left, filters and actions right. */}
+      <PageToolbar
+        search={
+          <SearchInput
             value={term}
-            onChange={(e) => {
-              setTerm(e.target.value);
-              setPage(1);
-            }}
+            onChange={setTerm}
             placeholder="Search by name, ID, email, phone..."
-            aria-label="Search employees"
-            className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
+            label="Search employees"
           />
-        </div>
+        }
+      >
+        {/* The filters, beside the search box: a narrowed list has to
+            say on screen that it is narrowed. */}
+        <FilterDropdown
+          label="Status"
+          value={active}
+          onChange={setActive}
+          options={[
+            { value: "", label: "Everyone" },
+            { value: "active", label: "Active" },
+            { value: "inactive", label: "Left" },
+          ]}
+        />
+        <ActionLink href="/hrm/attendance" variant="secondary">
+          Attendance
+        </ActionLink>
+        <ActionLink href="/hrm/add" variant="primary">
+          <PlusIcon />
+          Add Employee
+        </ActionLink>
+      </PageToolbar>
 
-        <div className="flex shrink-0 items-center gap-[12px]">
-          <Link
-            href="/hrm/attendance"
-            className="flex h-[44px] shrink-0 items-center justify-center rounded-[10px] bg-white px-[16px] text-[14px] font-medium whitespace-nowrap text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e]"
-          >
-            Attendance
-          </Link>
-          <Link
-            href="/hrm/add"
-            className="flex h-[44px] shrink-0 items-center justify-center rounded-[10px] bg-[#f5b800] px-[16px] text-[14px] font-semibold whitespace-nowrap text-white transition-colors hover:bg-[#e5a612]"
-          >
-            Add Employee
-          </Link>
-        </div>
-      </div>
-
-      {/* The card — Figma 385:2193. */}
-      <div className="relative w-full overflow-hidden rounded-[10px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      {/* The card — Figma 385:2193. The same 12px card every list uses; this
+          was the one drawn at 10px, and it carried a second "Employee List"
+          heading inside it that the page header already says. */}
+      <div className={TABLE_CARD}>
         <RefreshBar active={query.fetching} />
-
-        <div className="flex items-center px-[16px] pt-[16px] pb-[8px]">
-          <p className="text-[16px] leading-[1.5] font-medium tracking-[-0.32px] whitespace-nowrap text-[#1e1e1e]">
-            Employee List
-          </p>
-        </div>
 
         {/* Table from md up. Eight columns need room, so it scrolls sideways
             inside the card rather than squeezing the email to nothing. */}
-        <div className="hidden overflow-x-auto px-[16px] md:block">
+        {/* One scroller for the table, the phone cards and the load trigger.
+            The trigger has to sit INSIDE it — below the scroller it never
+            leaves the screen, and every page loads at once the moment the
+            table opens. */}
+        <div className="table-scroll">
+
+        <div className="hidden px-[16px] pt-[16px] md:block">
           <div className="min-w-[1000px]">
-            <div className={`grid ${GRID} border-b border-solid border-[#eaeaea]`}>
+            <div className={`table-head grid ${GRID} border-b border-solid border-[#eaeaea] bg-white`}>
               {COLUMNS.map((label) => (
                 <div key={label} className={`${CELL} h-[40px]`}>
                   <span className={`${HEAD} whitespace-nowrap`}>{label}</span>
@@ -192,10 +200,10 @@ export default function EmployeesPage() {
             <QueryBoundary
               loading={query.loading}
               error={query.error}
-              hasData={query.data !== undefined}
+              hasData={!query.loading && !query.error}
               errorMessage="The employee list could not be loaded."
               onRetry={query.refetch}
-              skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
+              skeleton={<TableSkeleton columns={GRID} rows={8} />}
             >
               {rows.length === 0 && (
                 <p className="px-[12px] py-[24px] text-[14px] text-[#8f8d87]">
@@ -248,11 +256,11 @@ export default function EmployeesPage() {
         </div>
 
         {/* Cards below md — eight columns do not fit a phone. */}
-        <div className="flex flex-col gap-[10px] px-[16px] pt-[8px] md:hidden">
+        <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
           <CardListState
             loading={query.loading}
             error={query.error}
-            hasData={query.data !== undefined}
+            hasData={!query.loading && !query.error}
             isEmpty={rows.length === 0}
             errorMessage="The employee list could not be loaded."
             emptyMessage={term ? "No employees match that search." : "Nobody on the roster yet."}
@@ -293,16 +301,15 @@ export default function EmployeesPage() {
         {note && <p className="px-[16px] pt-[10px] text-[13px] text-[#525252]">{note}</p>}
 
         <div className="mt-[9px]">
-          <TablePagination
-            page={page}
-            pageSize={pageSize}
+          <ScrollEnd
+            sentinelRef={sentinelRef}
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            shown={rows.length}
             total={total}
-            onPageChange={setPage}
-            onPageSizeChange={(n) => {
-              setPageSize(n);
-              setPage(1);
-            }}
+            noun="employees"
           />
+        </div>
         </div>
       </div>
 

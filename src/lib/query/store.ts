@@ -179,9 +179,87 @@ const DERIVED: Record<string, string[]> = {
   notifications: ["notifications-unread"],
   // A price or a product edit reaches the till's wall and its lookup.
   products: ["inventory", "pos-products"],
+  // Money in or out that is not a sale. The Income & Expense screen, the
+  // voucher screen and a regular payment falling due all write the SAME two
+  // tables, so all three move the same figures — the other screen's list, its
+  // cards, and the dashboard's P&L.
+  //
+  // Listed out rather than chained: `withDerived` is one pass, not a walk, so
+  // a derived key's own derivations are not followed.
+  // `report-pnl` is on every one of these because a voucher IS an income or an
+  // expense row, and `ProfitService.calculate` reads both. Writing one — or
+  // VOIDING one, which reverses its ledger rows and removes it — moved the
+  // Reports P&L and left the open report showing the figure from before.
+  vouchers: [
+    "vouchers-summary",
+    "finance-summary",
+    "finance-transactions",
+    "report-pnl",
+    "dashboard",
+  ],
+  "regular-payments": [
+    "regular-summary",
+    "vouchers",
+    "vouchers-summary",
+    "finance-summary",
+    "finance-transactions",
+    "report-pnl",
+    "dashboard",
+  ],
+  // And the same in the other direction: an expense typed into the Income &
+  // Expense screen is a voucher without a number, and it moves the P&L card on
+  // the dashboard exactly as one written here does.
+  "finance-summary": [
+    "finance-transactions",
+    "vouchers",
+    "vouchers-summary",
+    "report-pnl",
+    "dashboard",
+  ],
+  "finance-transactions": [
+    "finance-summary",
+    "vouchers",
+    "vouchers-summary",
+    "report-pnl",
+    "dashboard",
+  ],
 };
 
 /** The prefixes to clear for a write, the named ones plus what they feed. */
+/**
+ * Caches that live OUTSIDE this store and must be dropped with it.
+ *
+ * A service is free to memoise something of its own —
+ * `SettingsService.getValues` holds one resolved map per branch, so ten
+ * components asking at once make one request. The catch is that this store's
+ * entries going stale only makes them REFETCH, and a refetch calls straight
+ * back into that memo and is handed the same stale answer.
+ *
+ * It bit hardest across tabs. A shop keeps the back office open beside the
+ * till; saving a setting in one tab broadcasts an invalidation to the other,
+ * whose queries dutifully refetch — and whose service memo was never cleared,
+ * because the write happened in a different JavaScript world. The till went on
+ * using yesterday's VAT rate, discount ceiling and POS switches until somebody
+ * reloaded the page by hand, and nothing on screen suggested why.
+ *
+ * Hooks run for BOTH paths, local and broadcast, because both go through
+ * `invalidateLocal`.
+ */
+type InvalidationHook = (prefixes: string[]) => void;
+const invalidationHooks = new Set<InvalidationHook>();
+
+/**
+ * Run `fn` whenever anything under these prefixes is invalidated, in this tab.
+ *
+ * Registered at module scope by the service that owns the outside cache, so it
+ * is wired as soon as that service is imported. Returns an unsubscribe for
+ * tests.
+ */
+export function onInvalidate(fn: InvalidationHook): () => void {
+  invalidationHooks.add(fn);
+  return () => invalidationHooks.delete(fn);
+}
+
 function withDerived(prefixes: string[]): string[] {
   const out = new Set(prefixes);
   for (const prefix of prefixes) {
@@ -217,6 +295,16 @@ export function invalidate(...prefixes: string[]): void {
 function invalidateLocal(prefixes: string[]): void {
   const all = withDerived(prefixes);
   const hit = (key: string) => all.some((p) => key === p || key.startsWith(`${p}:`));
+
+  // Before the refetches, not after: a hook that clears a service memo has to
+  // have run by the time a woken subscriber calls back into it.
+  for (const hook of invalidationHooks) {
+    try {
+      hook(all);
+    } catch {
+      // A misbehaving hook must not stop the invalidation it was told about.
+    }
+  }
 
   for (const key of Array.from(entries.keys())) {
     if (!hit(key)) continue;
@@ -275,8 +363,21 @@ getChannel();
 export function clearCache(): void {
   const keys = Array.from(entries.keys());
   entries.clear();
+  // Every hook, whatever it watches: this is sign-out, and leaving one
+  // account's resolved settings memoised for the next one is the same leak
+  // this function exists to prevent.
+  for (const hook of invalidationHooks) {
+    try {
+      hook(ALL_PREFIXES);
+    } catch {
+      // As above.
+    }
+  }
   keys.forEach(emit);
 }
+
+/** What a hook is handed when EVERYTHING is being dropped. */
+export const ALL_PREFIXES: string[] = ["*"];
 
 /** Write a value straight into the cache, e.g. after a mutation returns the row. */
 export function setQueryData<T>(key: string, data: T): void {

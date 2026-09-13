@@ -72,10 +72,17 @@ test("Sidebar — submenu expanded", async ({ page }) => {
   await settle(page);
   // A section header is a button that expands its own submenu, not a link —
   // it navigates nowhere, it reveals the routes underneath it. Its name is the
-  // SECTION's ("Sales & Return"); "Sales" is one of the links it reveals, and
-  // asking for a button by that name found nothing.
-  await page.getByRole("button", { name: "Sales & Return", exact: true }).click();
-  await expect(page.getByRole("link", { name: "Return", exact: true })).toBeVisible();
+  // SECTION's, and a child's name finds no button.
+  //
+  // FINANCE, not "Sales & Return". That group no longer exists: selling and
+  // refunding are read at different times by different people, so they became
+  // two top-level entries — and a test naming a section the product dropped
+  // fails on a locator rather than on the thing it was written to check,
+  // which is that a submenu opens at all.
+  await page.getByRole("button", { name: "Finance", exact: true }).click();
+  await expect(
+    page.getByRole("link", { name: "Income & Expense", exact: true })
+  ).toBeVisible();
 });
 
 test("Sidebar — drawer below lg", async ({ page }) => {

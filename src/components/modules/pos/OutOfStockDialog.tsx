@@ -89,7 +89,7 @@ export default function OutOfStockDialog({
         expectedQuantity: 0,
         referenceNo: `TILL-${Date.now().toString().slice(-8)}`,
         reason: "CORRECTION",
-        note: note.trim() || `Counted in at the till: ${product.name}`,
+        note: note.trim() || `Counted in at the till: ${product.fullName}`,
       });
       // The shelf, the product wall, the transfers screen and the dashboard all
       // count this line.
@@ -163,7 +163,7 @@ export default function OutOfStockDialog({
             </span>
             <div className="flex min-w-0 flex-col gap-[3px]">
               <p className="truncate text-[16px] leading-[1.35] font-semibold tracking-[-0.32px] text-[#1e1e1e]">
-                {product.name}
+                {product.fullName}
               </p>
               <p className="truncate font-mono text-[12px] leading-[1.4] text-[#a3a3a3]">
                 {product.barcode || product.sku}

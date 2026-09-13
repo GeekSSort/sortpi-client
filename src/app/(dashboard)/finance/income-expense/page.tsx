@@ -4,8 +4,16 @@ import React, { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FinanceService } from "@/services";
 import { invalidate, queryKey, useQuery } from "@/lib/query/useQuery";
+import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardListState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
-import TablePagination from "@/components/shared/TablePagination";
+import ScrollEnd from "@/components/shared/ScrollEnd";
+import {
+  ActionButton,
+  PageToolbar,
+  PlusIcon,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import Modal, { MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
@@ -84,15 +92,6 @@ function CaretIcon() {
   );
 }
 
-function SearchIcon() {
-  return (
-    <svg className="block size-[20px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 export default function IncomeExpensePage() {
   // Read ONCE, not on every render: `new Date()` in the body makes a fresh
   // object each pass, so every `useMemo` that depends on it recomputes forever.
@@ -107,8 +106,8 @@ export default function IncomeExpensePage() {
   const [month, setMonth] = useState<number | null>(now.getMonth() + 1);
   const [term, setTerm] = useState("");
   const [type, setType] = useState<LedgerType | "">("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
+  // Rows per request. Not a page size anyone picks — the table scrolls.
+  const pageSize = 25;
   const [note, setNote] = useState<string | null>(null);
   const [viewMenu, setViewMenu] = useState(false);
   const [typeMenu, setTypeMenu] = useState(false);
@@ -133,16 +132,18 @@ export default function IncomeExpensePage() {
     () => FinanceService.summary({ year, month: cardMonth })
   );
 
-  const listQuery = useQuery(
-    queryKey("finance-transactions", { year, month, type, term, page, pageSize }),
-    () => FinanceService.transactions({ year, month, type, search: term, page, limit: pageSize }),
+  const listQuery = useInfiniteRows(
+    queryKey("finance-transactions", { year, month, type, term }),
+    (p, limit) =>
+      FinanceService.transactions({ year, month, type, search: term, page: p, limit }),
     // The list is not read in the yearly view, so it is not fetched there.
-    { enabled: view === "monthly" }
+    { pageSize, enabled: view === "monthly" }
   );
 
   const summary = summaryQuery.data;
-  const rows = listQuery.data?.data ?? [];
-  const total = listQuery.data?.total ?? 0;
+  const rows = listQuery.rows;
+  const total = listQuery.total;
+  const { loadingMore, hasMore, sentinelRef } = listQuery;
 
   const years = useMemo(() => {
     const current = now.getFullYear();
@@ -184,6 +185,9 @@ export default function IncomeExpensePage() {
     ];
   }, [summary, cardMonth, year]);
 
+  // The two keys this screen owns; the voucher list and the dashboard's P&L
+  // card follow through `DERIVED`. They did not before — an expense typed in
+  // here left the dashboard showing the figure from before it.
   const refreshAll = () => invalidate("finance-summary", "finance-transactions");
 
   const runExport = async () => {
@@ -257,8 +261,14 @@ export default function IncomeExpensePage() {
           },
         ];
 
+  // The same shape `FilterDropdown` draws — 44px, inset hairline, 14px text —
+  // so these hand-rolled menus and the shared ones are one control system.
+  // This used a `border`, which puts the hairline outside the box and made
+  // these a pixel taller than every dropdown beside them.
   const CONTROL =
-    "flex h-[44px] cursor-pointer items-center gap-[8px] rounded-[10px] border border-solid border-[#eaeaea] bg-white px-[12px] text-[14px] font-medium tracking-[-0.28px] text-[#525252] transition-colors hover:bg-[#fafafa]";
+    "flex h-[44px] cursor-pointer items-center gap-[8px] rounded-[10px] bg-white px-[12px] " +
+    "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252] " +
+    "shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] hover:text-[#1e1e1e]";
 
   return (
     <div className="flex w-full flex-col gap-[16px] pb-[24px]">
@@ -270,36 +280,43 @@ export default function IncomeExpensePage() {
         years={years}
         onYearChange={(next) => {
           setYear(next);
-          setPage(1);
         }}
         onExport={runExport}
         exporting={exporting}
         busy={summaryQuery.loading}
       />
 
-      {/* The table card — head, body, pagination. */}
-      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
-        <RefreshBar active={summaryQuery.fetching || listQuery.fetching} />
-
-        {/* Head — the view toggle on the left, the filters on the right. */}
-        <div className="flex flex-col gap-[12px] p-[16px] xl:flex-row xl:items-center xl:justify-between">
-          <div className="flex shrink-0 items-center gap-[12px]">
-            <span className="text-[16px] leading-[1.5] font-medium tracking-[-0.32px] whitespace-nowrap text-[#1e1e1e]">
-              Transactions
-            </span>
+      {/* Page-level controls, ABOVE the card — the pattern every other listing
+          screen uses. These sat inside it, under a second "Transactions"
+          heading, so Export and Add read as though they belonged to the rows
+          on screen rather than to the page. */}
+      <PageToolbar
+        search={
+          <SearchInput
+            value={term}
+            onChange={setTerm}
+            placeholder="Search by name, ID, email, phone…"
+            label="Search transactions"
+          />
+        }
+      >
+          <div className="flex flex-wrap items-center gap-[12px]">
             <div className="relative">
               <button
                 type="button"
                 onClick={() => setViewMenu((v) => !v)}
                 onBlur={() => window.setTimeout(() => setViewMenu(false), 120)}
                 aria-expanded={viewMenu}
-                className="flex h-[34px] cursor-pointer items-center gap-[10px] rounded-[8px] bg-[#f5b800] px-[9px] text-[16px] font-medium tracking-[-0.32px] whitespace-nowrap text-white transition-colors hover:bg-[#e5a612]"
+                // The same 44px control as the Type and month menus beside it.
+                // It was a 34px gold pill with 16px text — a title-row toggle
+                // from when it sat inside the card, out of place in a toolbar.
+                className={`${CONTROL} justify-between`}
               >
                 {view === "monthly" ? "Monthly Summary" : "Yearly Summary"}
                 <CaretIcon />
               </button>
               {viewMenu && (
-                <div className="absolute top-[40px] left-0 z-30 w-[190px] overflow-hidden rounded-[10px] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)] ring-1 ring-[#eaeaea]">
+                <div className="absolute top-[50px] left-0 z-30 w-[190px] overflow-hidden rounded-[10px] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)] ring-1 ring-[#eaeaea]">
                   {(
                     [
                       { key: "monthly" as const, label: "Monthly Summary" },
@@ -313,7 +330,6 @@ export default function IncomeExpensePage() {
                       onClick={() => {
                         setView(option.key);
                         setViewMenu(false);
-                        setPage(1);
                       }}
                       className="block w-full cursor-pointer px-[14px] py-[8px] text-left text-[14px] font-medium text-[#525252] transition-colors hover:bg-[#fafafa]"
                     >
@@ -326,22 +342,6 @@ export default function IncomeExpensePage() {
           </div>
 
           <div className="flex flex-col gap-[10px] sm:flex-row sm:flex-wrap sm:items-center">
-            <label className="flex h-[44px] min-w-0 flex-1 items-center gap-[10px] rounded-[10px] border border-solid border-[#eaeaea] bg-white px-[12px] sm:min-w-[260px]">
-              <span className="text-[#8f8d87]">
-                <SearchIcon />
-              </span>
-              <input
-                type="text"
-                value={term}
-                onChange={(e) => {
-                  setTerm(e.target.value);
-                  setPage(1);
-                }}
-                placeholder="Search by name, ID, email, phone…"
-                aria-label="Search transactions"
-                className="min-w-0 flex-1 bg-transparent text-[14px] tracking-[-0.28px] text-[#1e1e1e] outline-none placeholder:text-[#8f8d87]"
-              />
-            </label>
 
             {/* Type */}
             <div className="relative shrink-0">
@@ -373,7 +373,6 @@ export default function IncomeExpensePage() {
                       onClick={() => {
                         setType(option.key);
                         setTypeMenu(false);
-                        setPage(1);
                       }}
                       className="block w-full cursor-pointer px-[14px] py-[8px] text-left text-[14px] font-medium text-[#525252] transition-colors hover:bg-[#fafafa]"
                     >
@@ -414,7 +413,6 @@ export default function IncomeExpensePage() {
                     onClick={() => {
                       setMonth(null);
                       setMonthMenu(false);
-                      setPage(1);
                     }}
                     className="block w-full cursor-pointer px-[14px] py-[8px] text-left text-[14px] font-medium text-[#525252] transition-colors hover:bg-[#fafafa]"
                   >
@@ -428,7 +426,6 @@ export default function IncomeExpensePage() {
                       onClick={() => {
                         setMonth(i + 1);
                         setMonthMenu(false);
-                        setPage(1);
                       }}
                       className="block w-full cursor-pointer px-[14px] py-[8px] text-left text-[14px] font-medium text-[#525252] transition-colors hover:bg-[#fafafa]"
                     >
@@ -439,22 +436,29 @@ export default function IncomeExpensePage() {
               )}
             </div>
 
-            <button
-              type="button"
-              onClick={() => setAdding(true)}
-              className="flex h-[44px] shrink-0 cursor-pointer items-center justify-center rounded-[10px] bg-[#f5b800] px-[16px] text-[14px] font-semibold whitespace-nowrap text-white transition-colors hover:bg-[#e5a612]"
-            >
+            <ActionButton variant="primary" onClick={() => setAdding(true)}>
+              <PlusIcon />
               Add entry
-            </button>
+            </ActionButton>
           </div>
-        </div>
+      </PageToolbar>
+
+      {/* The table card — head, body, pagination. */}
+      <div className={TABLE_CARD}>
+        <RefreshBar active={summaryQuery.fetching || listQuery.fetching} />
 
         {view === "monthly" ? (
           <>
             {/* Table from md up — the design's seven columns. */}
-            <div className="hidden overflow-x-auto px-[16px] md:block">
+            {/* One scroller for the table, the phone cards and the load trigger.
+                The trigger has to sit INSIDE it — below the scroller it never
+                leaves the screen, and every page loads at once the moment the
+                table opens. */}
+            <div className="table-scroll">
+
+            <div className="hidden px-[16px] pt-[16px] md:block">
               <div className="min-w-[1000px]">
-                <div className={`grid ${GRID} border-b border-solid border-[#eaeaea]`}>
+                <div className={`table-head grid ${GRID} border-b border-solid border-[#eaeaea] bg-white`}>
                   {["#", "Date", "Category", "Description", "Type", "Amount"].map((label) => (
                     <div key={label} className={`${CELL} h-[40px]`}>
                       <span className={`${HEAD} whitespace-nowrap`}>{label}</span>
@@ -468,10 +472,10 @@ export default function IncomeExpensePage() {
                 <QueryBoundary
                   loading={listQuery.loading}
                   error={listQuery.error}
-                  hasData={listQuery.data !== undefined}
+                  hasData={!listQuery.loading && !listQuery.error}
                   errorMessage="The entries could not be loaded."
                   onRetry={listQuery.refetch}
-                  skeleton={<TableSkeleton rows={pageSize} columns={GRID} />}
+                  skeleton={<TableSkeleton rows={8} columns={GRID} />}
                 >
                   {/* The empty state lives inside the boundary, so it is shown
                       only once the request has actually come back empty rather
@@ -490,7 +494,7 @@ export default function IncomeExpensePage() {
                     >
                       <div className={CELL}>
                         <span className={`${TEXT} truncate`}>
-                          {String((page - 1) * pageSize + i + 1).padStart(2, "0")}
+                          {String(i + 1).padStart(2, "0")}
                         </span>
                       </div>
                       <div className={CELL}>
@@ -530,11 +534,11 @@ export default function IncomeExpensePage() {
             </div>
 
             {/* Stacked cards below md. */}
-            <div className="flex flex-col gap-[10px] px-[16px] pt-[8px] md:hidden">
+            <div className="flex flex-col gap-[10px] px-[16px] pt-[16px] md:hidden">
               <CardListState
                 loading={listQuery.loading}
                 error={listQuery.error}
-                hasData={listQuery.data !== undefined}
+                hasData={!listQuery.loading && !listQuery.error}
                 isEmpty={rows.length === 0}
                 errorMessage="The entries could not be loaded."
                 emptyMessage={
@@ -580,16 +584,15 @@ export default function IncomeExpensePage() {
             {note && <p className="px-[16px] pt-[10px] text-[13px] text-[#525252]">{note}</p>}
 
             <div className="mt-[9px]">
-              <TablePagination
-                page={page}
-                pageSize={pageSize}
+              <ScrollEnd
+                sentinelRef={sentinelRef}
+                hasMore={hasMore}
+                loadingMore={loadingMore}
+                shown={rows.length}
                 total={total}
-                onPageChange={setPage}
-                onPageSizeChange={(n) => {
-                  setPageSize(n);
-                  setPage(1);
-                }}
+                noun="transactions"
               />
+            </div>
             </div>
           </>
         ) : (

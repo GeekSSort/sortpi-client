@@ -79,13 +79,71 @@ function whenOf(value: unknown): string {
   return `${day} - ${(time || "").toUpperCase()}`;
 }
 
+/**
+ * Paid, Partial or Unpaid, from the two figures that decide it.
+ *
+ * Exported because the POS prints a receipt from its OWN checkout response,
+ * before any sale row is mapped, and it used to print a hardcoded "Paid" on
+ * every slip — including a part payment, where the customer walked out with a
+ * receipt that denied the debt it had just created. One rule, both callers.
+ */
+export function paymentStateOf(paid: number, due: number): "Paid" | "Partial" | "Unpaid" {
+  if (due <= 0) return "Paid";
+  // Something was handed over and something is still owed. Its own state
+  // because it is the one worth chasing — "Unpaid" is a sale nobody has paid
+  // for, and showing both as Unpaid hid which customers walked out
+  // mid-settlement. The server splits them the same way.
+  return paid > 0 ? "Partial" : "Unpaid";
+}
+
 function statusOf(row: any): SaleRecord["status"] {
   if (String(row?.status).toUpperCase() === "CANCELLED") return "Refunded";
-  return toAmount(row?.dueAmount ?? row?.due_amount) > 0 ? "Unpaid" : "Paid";
+  // GOODS BACK, which is a different question from money owed and outranks it.
+  //
+  // A fully returned sale owes nothing, so the settlement below called it
+  // Paid — the money had gone out, the items were on the shelf again, and the
+  // row said the customer had paid for them. `refund_state` is the server's
+  // own reading of the lines; there is no arithmetic here to disagree with it.
+  const refunded = String(row?.refundState ?? row?.refund_state ?? "NONE").toUpperCase();
+  if (refunded === "FULL") return "Refunded";
+  if (refunded === "PARTIAL") return "Partially Refunded";
+  // The SAME figures the columns show. Read from the frozen pair, this pill
+  // said "Partial" forever on an invoice the customer had since settled.
+  const { paid, due } = settlementOf(row);
+  return paymentStateOf(paid, due);
+}
+
+/**
+ * What this invoice has taken in and what it still owes, TODAY.
+ *
+ * `settled_amount` and `outstanding_amount` are the server's ledger-derived
+ * figures: the tender at the till PLUS every payment collected against the
+ * invoice since, less anything a return credited back. `paid_amount` and
+ * `due_amount` beside them are frozen at the moment the sale was rung up and
+ * never move again — a list built on those showed a customer as owing money
+ * they had already paid, and went on showing it forever.
+ *
+ * The frozen pair is the fallback, for a response from before the live fields
+ * existed. It is right for a sale nobody has paid against since, which is most
+ * of them, and no worse than what this did before where it is not.
+ */
+export function settlementOf(row: any): { paid: number; due: number } {
+  const live = row?.outstandingAmount ?? row?.outstanding_amount;
+  if (live === undefined || live === null) {
+    return {
+      paid: toAmount(row?.paidAmount ?? row?.paid_amount),
+      due: toAmount(row?.dueAmount ?? row?.due_amount),
+    };
+  }
+  return {
+    paid: toAmount(row?.settledAmount ?? row?.settled_amount),
+    due: toAmount(live),
+  };
 }
 
 export function toSaleRecord(row: any): SaleRecord {
   const total = toAmount(row?.grandTotal ?? row?.grand_total);
+  const { paid, due } = settlementOf(row);
   const refNo = referenceNoOf(row);
   return {
     id: String(row?.id ?? ""),
@@ -94,6 +152,10 @@ export function toSaleRecord(row: any): SaleRecord {
     customerName: String(row?.customerName ?? row?.customer_name ?? "Walk-in Customer"),
     totalAmount: total,
     totalAmountFormatted: formatAmount(total),
+    paidAmount: paid,
+    paidAmountFormatted: formatAmount(paid),
+    dueAmount: due,
+    dueAmountFormatted: formatAmount(due),
     paymentMethod: paymentMethodOf(row),
     status: statusOf(row),
     referenceNo: refNo,

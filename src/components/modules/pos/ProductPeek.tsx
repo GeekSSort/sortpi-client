@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { ProductItem } from "@/types/pos";
 import { formatMoney } from "@/lib/format";
 import ProductImage from "@/components/shared/ProductImage";
+import VariantChip from "@/components/shared/VariantChip";
 
 /**
  * What a product is, without leaving the grid.
@@ -68,7 +69,12 @@ export default function ProductPeek({ anchor }: { anchor: PeekAnchor | null }) {
       </div>
 
       <p className="text-[15px] leading-[1.35] font-medium text-[#1e1e1e]">{product.name}</p>
-      <p className="mt-[2px] text-[12px] text-[#8f8d87]">{product.sku}</p>
+      {/* The same chip the tile this popped out of carries, so the card and
+          the tile are recognisably one thing. */}
+      <p className="mt-[4px] flex min-w-0 items-center gap-[6px]">
+        <VariantChip label={product.variantLabel} size="xs" />
+        <span className="truncate text-[12px] text-[#8f8d87]">{product.sku}</span>
+      </p>
 
       <dl className="mt-[12px] flex flex-col gap-[8px] text-[13px]">
         {(

@@ -3,7 +3,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import { ErrorState } from "@/components/shared/QueryBoundary";
-import TablePagination from "@/components/shared/TablePagination";
 
 /**
  * The panel that opens when you click a dashboard card.
@@ -101,9 +100,18 @@ function PanelBody<T extends { id: string }>({
 }: OverviewPanelProps<T>) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState(filters?.[0] ?? "All");
+  /**
+   * The filter actually in force.
+   *
+   * A panel's filter LIST can change under it — the Sales Overview drops
+   * "Partial" when the shop stops taking part payments — and a selection that
+   * is no longer on the menu left the table narrowed by an option the reader
+   * could not see, or clear. Derived rather than reset from an effect: that
+   * is a cascading render, and it would also forget the selection if the list
+   * came back.
+   */
+  const activeFilter = filters && !filters.includes(filter) ? filters[0] : filter;
   const [filterOpen, setFilterOpen] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
   const filterRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -139,13 +147,15 @@ function PanelBody<T extends { id: string }>({
     return rows.filter(
       (r) =>
         (!q || searchable(r).toLowerCase().includes(q)) &&
-        (!filters || filter === filters[0] || !matchesFilter || matchesFilter(r, filter))
+        (!filters ||
+          activeFilter === filters[0] ||
+          !matchesFilter ||
+          matchesFilter(r, activeFilter))
     );
-  }, [rows, query, filter, filters, matchesFilter, searchable]);
+  }, [rows, query, activeFilter, filters, matchesFilter, searchable]);
 
-  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
-  const current = Math.min(page, totalPages);
-  const paged = visible.slice((current - 1) * pageSize, current * pageSize);
+  // Everything the filters left, in a list that scrolls.
+  const paged = visible;
 
   return (
     <div className="pointer-events-auto absolute inset-y-0 right-0 left-0 z-20 flex lg:left-auto lg:w-[68%] lg:min-w-[680px]">
@@ -190,7 +200,6 @@ function PanelBody<T extends { id: string }>({
                 value={query}
                 onChange={(e) => {
                   setQuery(e.target.value);
-                  setPage(1);
                 }}
                 placeholder={searchPlaceholder}
                 aria-label={`Search ${title}`}
@@ -206,7 +215,7 @@ function PanelBody<T extends { id: string }>({
                   aria-expanded={filterOpen}
                   onClick={() => setFilterOpen((v) => !v)}
                   className={`flex size-[40px] cursor-pointer items-center justify-center rounded-[10px] bg-white shadow-[inset_0_0_0_1px_#eaeaea] transition-colors hover:bg-[#fafafa] ${
-                    filter === filters[0] ? "text-[#525252]" : "text-[#f5b800]"
+                    activeFilter === filters[0] ? "text-[#525252]" : "text-[#f5b800]"
                   }`}
                 >
                   <FilterIcon />
@@ -219,11 +228,10 @@ function PanelBody<T extends { id: string }>({
                         type="button"
                         onClick={() => {
                           setFilter(f);
-                          setPage(1);
                           setFilterOpen(false);
                         }}
                         className={`block w-full cursor-pointer px-[12px] py-[9px] text-left text-[13px] transition-colors hover:bg-[#fafafa] ${
-                          filter === f ? "font-medium text-[#f5b800]" : "text-[#525252]"
+                          activeFilter === f ? "font-medium text-[#f5b800]" : "text-[#525252]"
                         }`}
                       >
                         {f}
@@ -263,13 +271,13 @@ function PanelBody<T extends { id: string }>({
         )}
 
         {/* Table */}
-        <div className="min-h-0 flex-1 overflow-auto px-[16px] pt-[12px]">
+        <div className="table-scroll min-h-0 flex-1 px-[16px] pt-[12px]">
           <div style={{ minWidth }}>
-            <div className={`grid ${grid} items-start overflow-clip rounded-[6px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]`}>
+            <div className={`table-head grid ${grid} items-start overflow-clip rounded-[6px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]`}>
               {head}
             </div>
             <div className="sp-stagger mt-[6px]">
-              {loading && rows.length === 0 && <TableSkeleton rows={pageSize} columns={grid} />}
+              {loading && rows.length === 0 && <TableSkeleton rows={8} columns={grid} />}
               {!loading && Boolean(error) && rows.length === 0 && (
                 <ErrorState message="Could not load this list." onRetry={onRetry} compact />
               )}
@@ -291,16 +299,6 @@ function PanelBody<T extends { id: string }>({
         </div>
 
         <div className="shrink-0 border-t border-solid border-[#eaeaea]">
-          <TablePagination
-            page={current}
-            pageSize={pageSize}
-            total={visible.length}
-            onPageChange={setPage}
-            onPageSizeChange={(n) => {
-              setPageSize(n);
-              setPage(1);
-            }}
-          />
         </div>
       </div>
     </div>

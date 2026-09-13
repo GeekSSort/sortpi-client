@@ -45,6 +45,8 @@ function describe(e: unknown): string {
 export default function PlatformCompaniesPage() {
   const [detailOf, setDetailOf] = useState<TenantRow | null>(null);
   const [closeOf, setCloseOf] = useState<TenantRow | null>(null);
+  /** Why this company is being closed. Goes onto the audit row, not the tenant. */
+  const [closeReason, setCloseReason] = useState("");
   const [filter, setFilter] = useState<string>("All companies");
   const [note, setNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -138,9 +140,10 @@ export default function PlatformCompaniesPage() {
   const setActive = async (row: TenantRow, isActive: boolean) => {
     setSaving(true);
     try {
-      await PlatformService.setCompanyActive(row.id, isActive);
+      await PlatformService.setCompanyActive(row.id, isActive, closeReason.trim());
       setNote(`${row.name} is now ${isActive ? "open" : "closed"}.`);
       setCloseOf(null);
+      setCloseReason("");
       // Closing a company stops its billing too, so the subscriptions list and
       // the console figures are both stale the moment this returns.
       invalidate("platform-companies", "platform-subscriptions", "platform-overview");
@@ -230,12 +233,22 @@ export default function PlatformCompaniesPage() {
       {/* Closing a company stops every sign-in for it, so it asks first. */}
       <Modal
         open={closeOf !== null}
-        onClose={() => setCloseOf(null)}
+        onClose={() => {
+          setCloseOf(null);
+          setCloseReason("");
+        }}
         title="Close this company"
         width={420}
         footer={
           <>
-            <button type="button" className={MODAL_GHOST} onClick={() => setCloseOf(null)}>
+            <button
+              type="button"
+              className={MODAL_GHOST}
+              onClick={() => {
+                setCloseOf(null);
+                setCloseReason("");
+              }}
+            >
               Cancel
             </button>
             <button
@@ -250,10 +263,27 @@ export default function PlatformCompaniesPage() {
           </>
         }
       >
-        <p className="text-[14px] leading-[1.6] text-[#525252]">
-          Nobody at <span className="font-medium text-[#1e1e1e]">{closeOf?.name}</span> will be
-          able to sign in. Their data is kept, and you can reopen them from this list.
-        </p>
+        <div className="flex flex-col gap-[14px]">
+          <p className="text-[14px] leading-[1.6] text-[#525252]">
+            Nobody at <span className="font-medium text-[#1e1e1e]">{closeOf?.name}</span> will be
+            able to sign in. Anyone already signed in keeps working for up to fifteen minutes,
+            until their access token expires. Their data is kept, and you can reopen them from
+            this list.
+          </p>
+          <label className="flex flex-col gap-[6px]">
+            <span className="text-[13px] font-medium text-[#525252]">Reason (optional)</span>
+            <input
+              type="text"
+              value={closeReason}
+              onChange={(e) => setCloseReason(e.target.value)}
+              placeholder="Unpaid since March"
+              aria-label="Reason for closing"
+              className="h-[40px] w-full rounded-[10px] border border-solid border-[#eaeaea] bg-white px-[12px] text-[14px] text-[#1e1e1e] outline-none transition-colors focus:border-[#f5b800]"
+            />
+            {/* Recorded on the audit row. Somebody will ask why a shop was
+                closed, and "a platform admin did it in April" is not an answer. */}
+          </label>
+        </div>
       </Modal>
     </>
   );

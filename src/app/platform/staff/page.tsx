@@ -10,6 +10,10 @@ import Avatar from "@/components/shared/Avatar";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
 import RowActionMenu from "@/components/shared/RowActionMenu";
 import { statGood, statRisk, statTotal, statWait } from "@/components/platform/stats";
+import {
+  ActionButton,
+  PlusIcon,
+} from "@/components/shared/Toolbar";
 
 /**
  * The SortPi people who can sign in to this console.
@@ -23,14 +27,6 @@ const FIELD =
   "h-[44px] w-full rounded-[10px] bg-white px-[12px] text-[14px] text-[#1e1e1e] shadow-[inset_0_0_0_1px_#eaeaea] outline-none focus:shadow-[inset_0_0_0_1.5px_#f5b800]";
 /** The same tracks as `columns` below, as a literal so Tailwind emits the class. */
 const GRID = "grid-cols-[1.4fr_1.6fr_1fr_1fr_1.2fr_150px_83px]";
-
-function AddIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden className="shrink-0">
-      <path d="M10 4.375v11.25M4.375 10h11.25" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 export default function PlatformStaffPage() {
   const [search, setSearch] = useState("");
@@ -272,22 +268,13 @@ export default function PlatformStaffPage() {
         emptyLine="No console staff yet."
         actions={
           <>
-          <button
-            type="button"
-            onClick={() => setHandOverOpen(true)}
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] text-[15px] font-medium whitespace-nowrap text-[#525252] transition-colors hover:bg-[#fafafa]"
-          >
+          <ActionButton onClick={() => setHandOverOpen(true)}>
             Hand over ownership
-          </button>
-          <button
-            type="button"
-            onClick={() => setAddOpen(true)}
-            style={{ backgroundImage: GOLD_GRADIENT }}
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-          >
-            <AddIcon />
+          </ActionButton>
+          <ActionButton variant="primary" onClick={() => setAddOpen(true)}>
+            <PlusIcon />
             Add staff
-          </button>
+          </ActionButton>
           </>
         }
       />

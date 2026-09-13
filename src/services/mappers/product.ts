@@ -13,12 +13,80 @@ import { safeImageUrl } from "./imageUrl";
  * SKU and passes in what it found.
  */
 
+/**
+ * A variant's own name, when it is worth showing.
+ *
+ * The API calls a product's only variant "Default", and a shop that sells one
+ * size of one thing has nothing but those. Printing "Default" under every tile
+ * in the shop is noise, so it comes back empty and the UI shows nothing.
+ */
+export function labelFor(variant: any): string {
+  const name = String(variant?.name ?? "").trim();
+  return !name || name.toLowerCase() === "default" ? "" : name;
+}
+
+/**
+ * The same rule, for a payload that carries the variant's name as a plain
+ * field rather than a nested object — a stock row, a transfer line, a purchase
+ * line. They are each keyed on a variant and say so with `variant_name`.
+ */
+export function variantLabelOf(row: any): string {
+  return labelFor({ name: row?.variantName ?? row?.variant_name });
+}
+
+/**
+ * EVERY sellable variant of a product, one item each.
+ *
+ * This is the fix for a product that had more than one. The mapper used to
+ * take `variants.find(isDefault) || variants[0]` and return a single item, so
+ * a Coca-Cola with 250ml, 500ml and 1L reached the till as one tile at one
+ * price — and the stock, prices and barcodes sitting against the other two
+ * were unreachable from any screen. The server has been variant-keyed
+ * throughout since it was built; it was this line that hid them.
+ *
+ * Inactive variants are dropped: `is_active` is how a shop retires a size it
+ * no longer stocks, and a retired one must not be sellable. A product whose
+ * variants are all inactive yields nothing, which is correct — there is
+ * nothing to sell.
+ */
+export function toProductItems(
+  row: any,
+  opts?: { stockBySku?: Map<string, number>; categoryNames?: Map<string, string> }
+): ProductItem[] {
+  const variants: any[] = Array.isArray(row?.variants) ? row.variants : [];
+  const sellable = variants.filter((v) => v?.isActive !== false);
+  if (sellable.length === 0) return [];
+  // The default first, then by name, so a wall of tiles is in a stable and
+  // guessable order rather than in whatever order the API listed them.
+  const ordered = [...sellable].sort((a, b) => {
+    if (Boolean(a?.isDefault) !== Boolean(b?.isDefault)) return a?.isDefault ? -1 : 1;
+    return String(a?.name ?? "").localeCompare(String(b?.name ?? ""));
+  });
+  return ordered.map((variant) => fromVariant(row, variant, opts));
+}
+
+/**
+ * One product, its DEFAULT variant only.
+ *
+ * Kept for the callers that genuinely have a single variant in hand — the
+ * barcode lookup builds its row from the one variant the scan resolved to, and
+ * asking it to pick is meaningless. Anything LISTING a catalogue wants
+ * `toProductItems`.
+ */
 export function toProductItem(
   row: any,
   opts?: { stockBySku?: Map<string, number>; categoryNames?: Map<string, string> }
 ): ProductItem {
   const variants: any[] = Array.isArray(row?.variants) ? row.variants : [];
   const variant = variants.find((v) => v?.isDefault) || variants[0] || {};
+  return fromVariant(row, variant, opts);
+}
+
+function fromVariant(
+  row: any,
+  variant: any,
+  opts?: { stockBySku?: Map<string, number>; categoryNames?: Map<string, string> }
+): ProductItem {
   const sku = String(variant?.sku ?? "");
 
   // The scanner's key. A variant may carry several codes — the manufacturer's
@@ -72,10 +140,15 @@ export function toProductItem(
       ? undefined
       : Boolean(row.taxInclusive);
 
+  const name = String(row?.name ?? "");
+  const variantLabel = labelFor(variant);
+
   return {
     id: String(variant?.id ?? row?.id ?? ""),
     productId: String(row?.id ?? ""),
-    name: String(row?.name ?? ""),
+    name,
+    variantLabel,
+    fullName: variantLabel ? `${name} ${variantLabel}` : name,
     sku,
     barcode,
     // The UI type names four categories; the catalogue has twenty. The real
@@ -85,6 +158,8 @@ export function toProductItem(
     priceFormatted: price > 0 ? formatMoney(price, { decimals: 2 }) : "No price",
     stock: toAmount(opts?.stockBySku?.get(sku) ?? 0),
     image,
+    unitShort: String(row?.unitShortName ?? row?.unit_short_name ?? ""),
+    allowDecimal: (row?.unitAllowDecimal ?? row?.unit_allow_decimal ?? false) === true,
     taxRate,
     taxInclusive,
   };

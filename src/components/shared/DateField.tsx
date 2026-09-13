@@ -141,17 +141,39 @@ export default function DateField({ value, onChange, variant = "outline", ariaLa
               }
             : undefined
         }
-        className={`relative flex max-w-full cursor-pointer items-center gap-[12px] rounded-[12px] px-[16px] ${
-          fullWidth ? "h-[56px] w-full justify-between py-[8px]" : "h-[48px] justify-center py-[12px]"
+        className={`relative flex max-w-full cursor-pointer items-center ${
+          fullWidth
+            ? "h-[56px] w-full justify-between gap-[12px] rounded-[12px] px-[16px] py-[8px]"
+            : gold
+              ? "h-[48px] justify-center gap-[12px] rounded-[12px] px-[16px] py-[12px]"
+              : // In a TOOLBAR: the 44px, 10px-radius shape of `FilterDropdown`
+                // and the search box beside it. It was 48px with 16px text and a
+                // `border`, a size bigger than every filter in the same row.
+                "h-[44px] justify-center gap-[8px] rounded-[10px] px-[12px]"
         } ${
           gold
             ? "text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-            : `border border-solid bg-white transition-colors hover:bg-[#fafafa] ${
-                value ? "border-[#f5b800] text-[#f5b800]" : "border-[#eaeaea] text-[#525252]"
-              }`
+            : fullWidth
+              ? `border border-solid bg-white transition-colors hover:bg-[#fafafa] ${
+                  value ? "border-[#f5b800] text-[#f5b800]" : "border-[#eaeaea] text-[#525252]"
+                }`
+              : `bg-white transition-colors ${
+                  value
+                    ? "text-[#1e1e1e] shadow-[inset_0_0_0_1.5px_#f5b800]"
+                    : "text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] hover:text-[#1e1e1e]"
+                }`
         }`}
       >
-        <span className={`truncate text-[16px] leading-[24px] whitespace-nowrap ${fullWidth ? "font-normal" : "font-medium"}`} suppressHydrationWarning>
+        <span
+          className={`truncate whitespace-nowrap ${
+            fullWidth
+              ? "text-[16px] leading-[24px] font-normal"
+              : gold
+                ? "text-[16px] leading-[24px] font-medium"
+                : "text-[14px] leading-[1.5] tracking-[-0.28px]"
+          }`}
+          suppressHydrationWarning
+        >
           {value ? LABEL.format(value) : fullWidth ? "Select date" : emptyLabel}
         </span>
         <CalendarIcon />

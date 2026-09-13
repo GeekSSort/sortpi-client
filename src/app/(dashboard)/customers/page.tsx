@@ -1,20 +1,30 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { CustomerRecord } from "@/types/customer";
 import { CustomerService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
-import TablePagination from "@/components/shared/TablePagination";
+import ScrollEnd from "@/components/shared/ScrollEnd";
+import FilterDropdown from "@/components/shared/FilterDropdown";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
-import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { queryKey, invalidate } from "@/lib/query/useQuery";
+import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import { clampTypedAmount } from "@/lib/money";
 import { AmountLabel } from "@/components/shared/MaxButton";
 import { isRowClick, isRowKey } from "@/lib/rowClick";
+import {
+  ActionButton,
+  ActionLink,
+  ExportIcon,
+  PageToolbar,
+  PlusIcon,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
 
 /**
  * Customers — Figma 51:9099.
@@ -31,31 +41,6 @@ const STATUS_TONE: Record<CustomerRecord["status"], Tone> = {
   Inactive: "slate",
 };
 
-function AddIcon() {
-  return (
-    <svg className="block size-[20px] shrink-0" viewBox="0 0 20 20" fill="none" aria-hidden>
-      <rect x="0.9" y="0.9" width="18.2" height="18.2" rx="5" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M10 6.4v7.2M6.4 10h7.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function SearchIcon() {
-  return (
-    <svg className="block size-[24px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="10.5" cy="10.5" r="7.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M16 16L21 21" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function FilterIcon() {
-  return (
-    <svg className="block size-[18px] shrink-0" viewBox="0 0 18 18" fill="none" aria-hidden>
-      <path d="M2.25 4.5h13.5M4.5 9h9M7.5 13.5h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 const GRID = "grid-cols-[140fr_165fr_180fr_115fr_115fr_115fr_115fr_100fr_83fr]";
 const CELL = "flex min-w-0 items-center p-[12px]";
@@ -69,10 +54,14 @@ export default function CustomersPage() {
       a slow answer for "ra" landing after "rahman" — the key it belongs to is
       no longer the key on screen. */
   const [term, setTerm] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
+  // Rows per request. Not a page size anyone picks — the table scrolls.
+  const pageSize = 25;
+  const [status, setStatus] = useState("");
+  const [kind, setKind] = useState("");
+  const [due, setDue] = useState("");
   const router = useRouter();
   const [note, setNote] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [profileOf, setProfileOf] = useState<CustomerRecord | null>(null);
   const [payFor, setPayFor] = useState<CustomerRecord | null>(null);
   const [payAmount, setPayAmount] = useState("");
@@ -88,69 +77,144 @@ export default function CustomersPage() {
   // One page at a time. The whole list used to be requested and sliced in the
   // browser, but the API caps a page at 200 — so a directory past 200
   // customers was silently truncated and the pager called 200 the total.
-  const { data, loading, fetching, error, refetch } = useQuery(
-    queryKey("customers", { page, limit: pageSize, search: term }),
-    () => CustomerService.getCustomers({ search: term, page, limit: pageSize })
+  const {
+    rows,
+    total,
+    loading,
+    loadingMore,
+    fetching,
+    error,
+    hasMore,
+    sentinelRef,
+    refetch,
+  } = useInfiniteRows(
+    queryKey("customers", { search: term, status, kind, due }),
+    (p, limit) =>
+      CustomerService.getCustomers({
+        search: term,
+        status: status || undefined,
+        customerType: (kind || undefined) as "RETAIL" | "WHOLESALE" | undefined,
+        hasDue: due === "due" || undefined,
+        page: p,
+        limit,
+      }),
+    { pageSize }
   );
 
-  const total = data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const current = Math.min(page, totalPages);
-  // The server already sliced. `rows` is the page.
-  const rows = data?.data ?? [];
+  /** A field is safe in a CSV only once quotes are doubled and it is wrapped:
+      a customer called "Rahman, Md." split one row into two columns. */
+  const csvCell = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+
+  /**
+   * The customers on screen, as a spreadsheet.
+   *
+   * What the FILTERS left, so the file matches the list that was being looked
+   * at. Money goes out as numbers rather than the formatted strings, so the
+   * Due column can be totalled instead of arriving as text — chasing debt is
+   * the reason to export this list at all.
+   */
+  const exportCsv = async () => {
+    setExporting(true);
+    setNote(null);
+    try {
+      const head = ["Customer ID", "Name", "Phone", "Type", "Orders", "Total Spent", "Due", "Status"];
+      const csv = [
+        head,
+        ...rows.map((c) => [
+          c.customerId,
+          c.name,
+          c.phone,
+          c.type,
+          c.orderCount,
+          c.totalSpent,
+          c.dueAmount,
+          c.status,
+        ]),
+      ]
+        .map((line) => line.map(csvCell).join(","))
+        .join("\n");
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "customers.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+      setNote(`Exported ${rows.length} customer${rows.length === 1 ? "" : "s"} on this page`);
+    } catch {
+      setNote("Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 51:9100 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
-          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
-            <SearchIcon />
-            <input
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setPage(1);
-              }}
-              placeholder="Search by name, customer ID or exact phone..."
-              aria-label="Search customers"
-              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
-            />
-          </div>
-          <button
-            type="button"
-            aria-label="Filter"
-            onClick={() => setNote("Filter panel not designed yet")}
-            className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e]"
-          >
-            <FilterIcon />
-          </button>
-        </div>
+      <PageToolbar
+        search={
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder="Search by name, customer ID or exact phone..."
+            label="Search customers"
+          />
+        }
+      >
+        <FilterDropdown
+          label="Status"
+          value={status}
+          onChange={setStatus}
+          options={[
+            { value: "", label: "Any status" },
+            { value: "active", label: "Active" },
+            { value: "inactive", label: "Inactive" },
+          ]}
+        />
+        <FilterDropdown
+          label="Type"
+          value={kind}
+          onChange={setKind}
+          options={[
+            { value: "", label: "Any type" },
+            { value: "RETAIL", label: "Retail" },
+            { value: "WHOLESALE", label: "Wholesale" },
+          ]}
+        />
+        <FilterDropdown
+          label="Balance"
+          value={due}
+          onChange={setDue}
+          options={[
+            { value: "", label: "Any balance" },
+            { value: "due", label: "Owes money" },
+          ]}
+        />
 
-        <div className="flex shrink-0 items-center gap-[16px]">
+        <ActionButton onClick={exportCsv} disabled={exporting || rows.length === 0}>
+          <ExportIcon />
+          Export
+        </ActionButton>
 
-          <Link
-            href="/customers/add"
-            style={{
-              backgroundImage:
-                "linear-gradient(180deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0) 100%), linear-gradient(90deg, rgb(245,184,0) 0%, rgb(245,184,0) 100%)",
-            }}
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-          >
-            <AddIcon />
-            Add New
-          </Link>
-        </div>
-      </div>
+        <ActionLink href="/customers/add" variant="primary">
+          <PlusIcon />
+          Add New
+        </ActionLink>
+      </PageToolbar>
 
       {/* Table card — 51:9132 */}
-      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className={TABLE_CARD}>
         <RefreshBar active={fetching} />
         {/* Table — 51:9149 */}
+        {/* One scroller for the table, the phone cards and the load trigger.
+            The trigger has to sit INSIDE it — below the scroller it never
+            leaves the screen, and every page loads at once the moment the
+            table opens. */}
+        <div className="table-scroll">
+
         <div className="hidden px-[16px] pt-[16px] md:block">
-          <div className="overflow-x-auto">
+          <div>
             <div className="min-w-[1128px]">
-              <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
+              <div className={`table-head grid ${GRID} items-start overflow-clip rounded-[6px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Customer ID</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Customer</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Phone</span></div>
@@ -166,8 +230,8 @@ export default function CustomersPage() {
                 <QueryBoundary
                   loading={loading}
                   error={error}
-                  hasData={data !== undefined}
-                  skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
+                  hasData={!loading && !error}
+                  skeleton={<TableSkeleton columns={GRID} rows={8} />}
                   errorMessage="Customers could not be loaded."
                   onRetry={refetch}
                 >
@@ -247,7 +311,7 @@ export default function CustomersPage() {
           <CardListState
             loading={loading}
             error={error}
-            hasData={data !== undefined}
+            hasData={!loading && !error}
             isEmpty={rows.length === 0}
             errorMessage="Customers could not be loaded."
             emptyMessage={term ? "No customers match that search." : "No customers yet."}
@@ -280,16 +344,15 @@ export default function CustomersPage() {
 
         {/* Pagination — 51:9558 */}
         <div className="mt-[9px]">
-          <TablePagination
-            page={current}
-            pageSize={pageSize}
+          <ScrollEnd
+            sentinelRef={sentinelRef}
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            shown={rows.length}
             total={total}
-            onPageChange={setPage}
-            onPageSizeChange={(n) => {
-              setPageSize(n);
-              setPage(1);
-            }}
+            noun="customers"
           />
+        </div>
         </div>
       </div>
 

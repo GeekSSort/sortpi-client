@@ -1,6 +1,7 @@
 import { CompanyProfile } from "@/types/settings";
 import { toCompanyProfile, toOrganizationPayload, organizationId } from "./mappers/settings";
 import { apiFetch, apiList, tokenStore } from "./apiClient";
+import { onInvalidate } from "@/lib/query/store";
 
 export class SettingsService {
   /**
@@ -74,7 +75,15 @@ export class SettingsService {
     return cached;
   }
 
-  /** Drop every branch's cached values. Called on sign-out and on a write. */
+  /**
+   * Drop every branch's cached values.
+   *
+   * Called on a write, on sign-out, and on ANY invalidation of `settings` —
+   * including one broadcast from another tab. See the registration at the foot
+   * of this file: without it the memo below outlived the invalidation that was
+   * supposed to clear it, and the till kept serving settings the back office
+   * had already changed.
+   */
   static clearValueCache(): void {
     valueCache.clear();
   }
@@ -116,3 +125,23 @@ export class SettingsService {
 
 /** Resolved values per branch id ("org" when standing in none). */
 const valueCache = new Map<string, Promise<Record<string, string>>>();
+
+/**
+ * Clear the memo above whenever the settings cache is invalidated.
+ *
+ * `setValue` clears it directly, which covers the tab that made the write. It
+ * does NOT cover the other tabs: a shop runs the back office beside the till,
+ * and an invalidation crossing between them is a message, not a function call
+ * — the till's copy of this module never heard about the save. Its queries
+ * refetched and this memo handed them the values from before.
+ *
+ * Registered at module scope so it is wired by the time anything reads a
+ * setting, and matched on the prefix rather than the exact key so
+ * `invalidate("settings")`, a derived expansion of it, and the sign-out
+ * wildcard all reach it.
+ */
+onInvalidate((prefixes) => {
+  if (prefixes.some((p) => p === "*" || p === "settings" || p.startsWith("settings:"))) {
+    SettingsService.clearValueCache();
+  }
+});

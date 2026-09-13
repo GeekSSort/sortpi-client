@@ -346,3 +346,36 @@
     animation: none;
   }
 }
+
+/**
+ * The scrolling body of a data table.
+ *
+ * The pager is gone, so without a cap the page itself grew as rows loaded and
+ * the filters, the headline and the table head all scrolled off the top — on a
+ * long list the reader ended up looking at columns with no headings.
+ *
+ * So the table keeps its place on screen and the ROWS scroll inside it. The
+ * height is what is left of the window under the page's chrome; the floor
+ * stops it collapsing to nothing on a short window, where the page scrolls
+ * instead.
+ */
+.table-scroll {
+  max-height: calc(100vh - 300px);
+  min-height: 240px;
+  /* BOTH axes here, and nowhere inside.
+   *
+   * A nested `overflow-x: auto` is not only horizontal: per spec, `visible` on
+   * the other axis computes to `auto`, so that wrapper becomes a scroll
+   * container too — and a `sticky` head inside it then resolves against a box
+   * that never scrolls vertically, which is why the column headings slid away
+   * with the rows. One container owns both directions. */
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+/* The column headings, pinned while their rows move under them. */
+.table-scroll .table-head {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}

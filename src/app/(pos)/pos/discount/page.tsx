@@ -6,7 +6,6 @@ import ChipScroller from "@/components/shared/ChipScroller";
 import { ProductItem } from "@/types/pos";
 import { DiscountService, PosService, SettingsService } from "@/services";
 import { useSession } from "@/services/useSession";
-import TablePagination from "@/components/shared/TablePagination";
 import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
 import { RefreshBar } from "@/components/shared/QueryBoundary";
 import TableSkeleton from "@/components/shared/TableSkeleton";
@@ -206,8 +205,6 @@ export default function PosDiscountPage() {
   const [category, setCategory] = useState("All Categories");
   const [offersOnly, setOffersOnly] = useState(false);
   const [sort, setSort] = useState<SortKey>("name");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(16);
 
   const [rates, setRates] = useState<DiscountMap>({});
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -405,9 +402,8 @@ export default function PosDiscountPage() {
     return [...out].sort(by[sort]);
   }, [products, query, category, offersOnly, rates, sort]);
 
-  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
-  const current = Math.min(page, totalPages);
-  const shown = visible.slice((current - 1) * pageSize, current * pageSize);
+  // Everything the filters left, in a list that scrolls.
+  const shown = visible;
 
   /** What the offers add up to, across the whole catalogue. */
   const summary = useMemo(() => {
@@ -437,23 +433,28 @@ export default function PosDiscountPage() {
       return next;
     });
 
-  const pageIds = shown.map((p) => p.id);
-  const allOnPagePicked = pageIds.length > 0 && pageIds.every((id) => picked.has(id));
-  /** Everything the current filters match, across every page. */
+  /**
+   * Everything the current filters match — which is now the same list the
+   * table renders, and that is why the "page" language is gone.
+   *
+   * The head tick used to take a PAGE of sixteen while looking like it had
+   * taken the shop, and the fix at the time was a second control beside it:
+   * "All 16 on this page. Select all 30." Then the pager went and the table
+   * became one scrolling list, so `shown` and `visible` are the same rows —
+   * `visible.length > shown.length` could never be true again, and that escape
+   * hatch was unreachable code sitting under a comment explaining a defect
+   * that no longer exists. The tick now means what everybody always read it to
+   * mean.
+   */
   const visibleIds = useMemo(() => visible.map((p) => p.id), [visible]);
   const allMatchingPicked =
     visibleIds.length > 0 && visibleIds.every((id) => picked.has(id));
-  /** The page is full but there is more behind it — the case that misled. */
-  const moreBeyondThisPage =
-    allOnPagePicked && !allMatchingPicked && visible.length > shown.length;
 
-  const pickEveryMatch = () => setPicked(new Set(visibleIds));
-
-  const togglePage = () =>
+  const toggleAllMatching = () =>
     setPicked((prev) => {
       const next = new Set(prev);
-      if (allOnPagePicked) pageIds.forEach((id) => next.delete(id));
-      else pageIds.forEach((id) => next.add(id));
+      if (allMatchingPicked) visibleIds.forEach((id) => next.delete(id));
+      else visibleIds.forEach((id) => next.add(id));
       return next;
     });
 
@@ -530,7 +531,6 @@ export default function PosDiscountPage() {
     setQuery("");
     setCategory("All Categories");
     setOffersOnly(false);
-    setPage(1);
   };
 
   const CHIP =
@@ -562,7 +562,6 @@ export default function PosDiscountPage() {
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
-                setPage(1);
               }}
               onKeyDown={(e) => e.key === "Escape" && setQuery("")}
               placeholder="Search product by name or SKU…"
@@ -608,7 +607,6 @@ export default function PosDiscountPage() {
               type="button"
               onClick={() => {
                 setOffersOnly((v) => !v);
-                setPage(1);
               }}
               aria-pressed={offersOnly}
               className={`${CHIP} h-[44px] ${
@@ -634,7 +632,6 @@ export default function PosDiscountPage() {
                 value={sort}
                 onChange={(e) => {
                   setSort(e.target.value as SortKey);
-                  setPage(1);
                 }}
                 aria-label="Sort products"
                 className="cursor-pointer bg-transparent text-[13px] font-medium text-[#1e1e1e] outline-none"
@@ -676,7 +673,6 @@ export default function PosDiscountPage() {
                 type="button"
                 onClick={() => {
                   setCategory(c);
-                  setPage(1);
                 }}
                 aria-pressed={on}
                 className={`${CHIP} ${
@@ -734,23 +730,6 @@ export default function PosDiscountPage() {
                 >
                   Clear selection
                 </button>
-                {/* Every row on screen is ticked and there are more behind it.
-                    Said plainly, because "select all" meaning "this page" is
-                    exactly the assumption that priced sixteen products and
-                    looked like it had priced the shop. */}
-                {moreBeyondThisPage && (
-                  <span className="flex items-center gap-[6px] text-[12px] text-[#8f8d87]">
-                    All {shown.length} on this page.
-                    <button
-                      type="button"
-                      onClick={pickEveryMatch}
-                      className="cursor-pointer font-semibold text-[#f5b800] underline underline-offset-2"
-                    >
-                      Select all {visible.length}
-                      {category !== "All Categories" ? ` in ${category}` : ""}
-                    </button>
-                  </span>
-                )}
               </>
             )}
 
@@ -779,27 +758,27 @@ export default function PosDiscountPage() {
         )}
 
         {/* One scroller for head and rows together, so the columns stay in
-            step when the table is wider than the window.
+            step when the table is wider than the window — and for both
+            directions, so the head can be pinned while the rows move under it.
 
-            `overflow-x-auto`, like the other list screens: the card no longer
-            fills the window, so the PAGE scrolls vertically and this only has
-            to carry the horizontal overflow. It was `flex-1 overflow-auto`,
-            which gave this one table its own vertical scrollbar while every
-            other screen in the app scrolled the page. */}
-        <div className="overflow-x-auto">
+            It carries the vertical overflow again now that the pager is gone:
+            every discount renders, and the table holds its place on screen
+            instead of growing the page. Which is what every other list screen
+            does since the same change. */}
+        <div className="table-scroll">
           <div className="min-w-[880px]">
             <div
-              className={`${ROW} border-b border-solid border-[#eaeaea] bg-[#fafafa] px-[12px] py-[10px]`}
+              className={`table-head ${ROW} border-b border-solid border-[#eaeaea] bg-[#fafafa] px-[12px] py-[10px]`}
             >
               <button
                 type="button"
-                onClick={togglePage}
+                onClick={toggleAllMatching}
                 disabled={readOnly || shown.length === 0}
-                aria-label="Select every product on this page"
-                title="Select page"
+                aria-label="Select every product the filters match"
+                title="Select every product shown"
                 className="not-disabled:cursor-pointer disabled:opacity-0"
               >
-                <Tick on={allOnPagePicked} />
+                <Tick on={allMatchingPicked} />
               </button>
               <span className={HEAD}>Product</span>
               <span className={HEAD}>Category</span>
@@ -814,7 +793,7 @@ export default function PosDiscountPage() {
                 catalogue lands. */}
             {loading && (
               <div className="px-[12px]">
-                <TableSkeleton columns={ROW} rows={Math.min(pageSize, 8)} />
+                <TableSkeleton columns={ROW} rows={8} />
               </div>
             )}
 
@@ -971,18 +950,6 @@ export default function PosDiscountPage() {
 
       {visible.length > 0 && (
         <div className="shrink-0">
-          <TablePagination
-            dense
-            sizes={[16, 32, 64]}
-            page={current}
-            pageSize={pageSize}
-            total={visible.length}
-            onPageChange={setPage}
-            onPageSizeChange={(n) => {
-              setPageSize(n);
-              setPage(1);
-            }}
-          />
         </div>
       )}
 

@@ -18,9 +18,21 @@ export function toSalesOverviewItem(row: any): SalesOverviewItem {
     customer: sale.customerName,
     totalAmount: sale.totalAmount,
     totalAmountFormatted: sale.totalAmountFormatted,
+    paidAmount: sale.paidAmount,
+    paidAmountFormatted: sale.paidAmountFormatted,
+    dueAmount: sale.dueAmount,
+    dueAmountFormatted: sale.dueAmountFormatted,
     paymentMethod: sale.paymentMethod,
-    // This panel only distinguishes settled from not.
-    status: sale.status === "Paid" ? "Paid" : "Unpaid",
+    /**
+     * The sales list's own three states, minus the document ones.
+     *
+     * This used to be `status === "Paid" ? "Paid" : "Unpaid"`, which filed a
+     * part-settled invoice under Unpaid — so the panel could not tell a
+     * customer who had paid nine-tenths from one who had paid nothing, and
+     * its "Unpaid" figure counted money that was already in the drawer.
+     * A refunded sale is settled as far as this panel is concerned.
+     */
+    status: sale.status === "Partial" ? "Partial" : sale.status === "Unpaid" ? "Unpaid" : "Paid",
   };
 }
 

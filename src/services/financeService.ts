@@ -172,47 +172,53 @@ export class FinanceService {
     return { id: String(row?.id ?? ""), name: String(row?.name ?? name.trim()) };
   }
 
-  /**
-   * The default ledger account for one side.
-   *
-   * An entry needs one, and the screen does not ask for it — a shopkeeper
-   * recording "Rent, 60,000" is not choosing a chart-of-accounts line. The
-   * seeded defaults are the right answer: 4100 Sales Revenue for income and
-   * 5200 for expenses, which is where `default_accounts` puts them anyway.
-   */
-  private static accountCache = new Map<LedgerType, Promise<string>>();
-
-  static async defaultAccountId(type: LedgerType): Promise<string> {
-    const cached = FinanceService.accountCache.get(type);
-    if (cached) return cached;
-
-    const wanted = type === "INCOME" ? "REVENUE" : "EXPENSE";
-    const promise = apiList<any>("/accounts/?limit=200", { method: "GET" }, (r) => r)
-      .then((rows) => {
-        const list = rows.data || [];
-        const match =
-          list.find(
-            (a: any) => String(pick(a, "accountType", "account_type")).toUpperCase() === wanted
-          ) ?? list[0];
-        return String(match?.id ?? "");
-      })
-      .catch((error) => {
-        // Not cached on failure: the next attempt should ask again rather than
-        // hand back an empty id for the rest of the session.
-        FinanceService.accountCache.delete(type);
-        throw error;
-      });
-    FinanceService.accountCache.set(type, promise);
-    return promise;
+  /** Rename a category. The entries filed under it follow the name. */
+  static async renameCategory(
+    type: LedgerType,
+    id: string,
+    name: string
+  ): Promise<LedgerCategory> {
+    const path = type === "INCOME" ? "/income-categories/" : "/expense-categories/";
+    const row = await apiFetch<any>(`${path}${id}/`, {
+      method: "PATCH",
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    return { id: String(row?.id ?? id), name: String(row?.name ?? name.trim()) };
   }
 
+  /**
+   * Delete a category.
+   *
+   * The server refuses one that still has entries filed under it — the FK is
+   * `on_delete=RESTRICT` — and that refusal is the right answer rather than a
+   * gap: deleting the category would either orphan a year of rent payments or
+   * take them with it, and both lose money the shop actually spent.
+   */
+  static async removeCategory(type: LedgerType, id: string): Promise<void> {
+    const path = type === "INCOME" ? "/income-categories/" : "/expense-categories/";
+    await apiFetch(`${path}${id}/`, { method: "DELETE" });
+  }
+
+  /**
+   * The ledger account an entry is earned or spent on is the SERVER's to pick.
+   *
+   * This used to be decided here: list the accounts, take the first one whose
+   * type matched. `GET /accounts/` has no ordering, so the answer depended on
+   * row order — and the first EXPENSE account on a real tenant is 5100 COST OF
+   * GOODS SOLD, which the ledger P&L deliberately excludes because a sale has
+   * already subtracted it. Every hand-keyed expense therefore reached one P&L
+   * and not the other, and the two disagreed by the month's rent.
+   *
+   * `account` is now optional on both endpoints and `ExpenseService` /
+   * `IncomeService` resolve 5400 Operating Expenses and 4200 Other Income. One
+   * answer, for this screen, the voucher screen and anything built next.
+   */
   static async create(input: LedgerEntryInput): Promise<void> {
     const path = input.type === "INCOME" ? "/incomes/" : "/expenses/";
     await apiFetch(path, {
       method: "POST",
       body: JSON.stringify({
         category: input.categoryId,
-        account: await FinanceService.defaultAccountId(input.type),
         amount: input.amount.toFixed(4),
         date: input.date,
         description: input.description,

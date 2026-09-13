@@ -152,6 +152,39 @@ export function ProductsIcon() {
 }
 
 /** Node 247:15555 — exported from the POS environment frame 247:13582. */
+/**
+ * Returns and Refunds — an arrow curving back to the shelf, over a box.
+ *
+ * Drawn rather than exported: the Figma set has no icon for Returns as a
+ * top-level entry, because it used to be a child of Sales & Return. Stroked at
+ * 1.5 on a 20x20 box so it sits with the exported ones.
+ */
+export function ReturnsIcon() {
+  return (
+    <svg
+      className="block size-[20px]"
+      viewBox="0 0 20 20"
+      fill="none"
+      aria-hidden
+    >
+      <path
+        d="M3.75 7.5H12.5a4.167 4.167 0 0 1 0 8.333H8.333"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M6.667 4.167 3.333 7.5l3.334 3.333"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function ReportsIcon() {
   return (
     <Glyph w={20} h={20} inset="11.39% 8.33%" viewBox="0 0 16.667 15.4444">

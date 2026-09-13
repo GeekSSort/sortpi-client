@@ -1,5 +1,6 @@
 import { TransferLine, TransferRecord } from "@/types/transfers";
 import { toAmount } from "../apiClient";
+import { variantLabelOf } from "./product";
 
 /**
  * A stock transfer -> a row in the transfers table.
@@ -38,7 +39,11 @@ function whenOf(value: unknown): string {
 /** "Sony WH-1000XM5 +2 more", or the one name when that is all there is. */
 function summarise(items: any[]): string {
   const names = items
-    .map((i) => String(i?.productName ?? i?.product_name ?? i?.sku ?? "").trim())
+    .map((i) => {
+      const name = String(i?.productName ?? i?.product_name ?? i?.sku ?? "").trim();
+      const variant = variantLabelOf(i);
+      return variant ? `${name} ${variant}` : name;
+    })
     .filter(Boolean);
   if (names.length === 0) return "—";
   if (names.length === 1) return names[0];
@@ -59,6 +64,9 @@ export function toTransferRecord(row: any): TransferRecord {
       (i): TransferLine => ({
         id: String(i?.id ?? ""),
         name: String(i?.productName ?? i?.product_name ?? "—"),
+        // A transfer line names a VARIANT, so "Coca-Cola" twice on one
+        // transfer is two different sizes moving between branches.
+        variantLabel: variantLabelOf(i),
         sku: String(i?.sku ?? "—"),
         quantity: toAmount(i?.quantity),
         receivedQuantity: toAmount(i?.receivedQuantity ?? i?.received_quantity),

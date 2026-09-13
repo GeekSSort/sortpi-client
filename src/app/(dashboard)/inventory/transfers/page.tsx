@@ -1,18 +1,26 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import Link from "next/link";
+import VariantChip from "@/components/shared/VariantChip";
 import { TransferRecord } from "@/types/transfers";
 import { TransferService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
-import TablePagination from "@/components/shared/TablePagination";
+import ScrollEnd from "@/components/shared/ScrollEnd";
+import FilterDropdown from "@/components/shared/FilterDropdown";
+import DateFilter, { ALL_DATES, DateValue, resolveDates } from "@/components/shared/DateFilter";
 import TableSkeleton from "@/components/shared/TableSkeleton";
-import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { queryKey, invalidate } from "@/lib/query/useQuery";
+import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import { isRowClick, isRowKey } from "@/lib/rowClick";
-import DateField from "@/components/shared/DateField";
-import Modal, { GOLD_GRADIENT, MODAL_GHOST } from "@/components/shared/Modal";
-import { toApiDay } from "@/lib/dateFilter";
+import Modal, { MODAL_GHOST } from "@/components/shared/Modal";
+import {
+  ActionLink,
+  PageToolbar,
+  PlusIcon,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
 
 /**
  * Figma: SortPi — Transfers 57:14237.
@@ -31,31 +39,6 @@ const STATUS_TONE: Record<TransferRecord["status"], Tone> = {
   Cancelled: "red",
 };
 
-function AddIcon() {
-  return (
-    <svg className="block size-[20px] shrink-0" viewBox="0 0 20 20" fill="none" aria-hidden>
-      <rect x="0.9" y="0.9" width="18.2" height="18.2" rx="5" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M10 6.4v7.2M6.4 10h7.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function SearchIcon() {
-  return (
-    <svg className="block size-[24px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="10.5" cy="10.5" r="7.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M16 16L21 21" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function FilterIcon() {
-  return (
-    <svg className="block size-[18px] shrink-0" viewBox="0 0 18 18" fill="none" aria-hidden>
-      <path d="M2.25 4.5h13.5M4.5 9h9M7.5 13.5h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 /** The arrow between the two locations in the detail modal. */
 function ArrowRight() {
@@ -84,9 +67,10 @@ export default function TransfersPage() {
       makes one request rather than one per letter — and a slow answer for "TR"
       can no longer land on top of the rows for "TRF-2". */
   const [term, setTerm] = useState("");
-  const [date, setDate] = useState<Date | null>(null);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
+  // Rows per request. Not a page size anyone picks — the table scrolls.
+  const pageSize = 25;
+  const [status, setStatus] = useState("");
+  const [dates, setDates] = useState<DateValue>(ALL_DATES);
   const [note, setNote] = useState<string | null>(null);
   const [detailOf, setDetailOf] = useState<TransferRecord | null>(null);
   /** Which transfer is mid-dispatch or mid-receive. */
@@ -98,17 +82,29 @@ export default function TransfersPage() {
     return () => clearTimeout(id);
   }, [query, term]);
 
-  const day = date ? toApiDay(date) : undefined;
-  const { data, loading, fetching, error, refetch } = useQuery(
-    queryKey("transfers", { page, limit: pageSize, search: term, day }),
-    () =>
+  const span = resolveDates(dates);
+  const {
+    rows,
+    total,
+    loading,
+    loadingMore,
+    fetching,
+    error,
+    hasMore,
+    sentinelRef,
+    refetch,
+  } = useInfiniteRows(
+    queryKey("transfers", { search: term, from: span.from, to: span.to, status }),
+    (p, limit) =>
       TransferService.getTransfers({
         search: term,
-        startDate: day,
-        endDate: day,
-        page,
-        limit: pageSize,
-      })
+        startDate: span.from,
+        endDate: span.to,
+        status: status || undefined,
+        page: p,
+        limit,
+      }),
+    { pageSize }
   );
 
   // The two ends of a transfer. Shared with Add Stock, which offers the same
@@ -124,12 +120,6 @@ export default function TransfersPage() {
    */
 
 
-
-  const total = data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const current = Math.min(page, totalPages);
-  // The server already filtered and sliced. `rows` is the page.
-  const rows = data?.data ?? [];
 
   /** What the product box offers: on the source shelf, not already on the
       note, and matching what has been typed. */
@@ -177,59 +167,48 @@ export default function TransfersPage() {
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 57:14239 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
-          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
-            <SearchIcon />
-            <input
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setPage(1);
-              }}
-              placeholder="Search by product name, SKU or barcode..."
-              aria-label="Search transfers"
-              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
-            />
-          </div>
-          <button
-            type="button"
-            aria-label="Filter"
-            onClick={() => setNote("Filter panel not designed yet")}
-            className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e]"
-          >
-            <FilterIcon />
-          </button>
-        </div>
-
-        <div className="flex shrink-0 items-center gap-[16px]">
-          <DateField
-            value={date}
-            onChange={(d) => {
-              setDate(d);
-              // Page 1 of the new filter, not page 5 of the old one.
-              setPage(1);
-            }}
-            ariaLabel="Filter transfers by date"
+      <PageToolbar
+        search={
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder="Search by product name, SKU or barcode..."
+            label="Search transfers"
           />
-          <Link
-            href="/inventory/transfers/add"
-            style={{ backgroundImage: GOLD_GRADIENT }}
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-          >
-            <AddIcon />
-            Add New
-          </Link>
-        </div>
-      </div>
+        }
+      >
+        <FilterDropdown
+          label="Status"
+          value={status}
+          onChange={setStatus}
+          options={[
+            { value: "", label: "Any status" },
+            { value: "DRAFT", label: "Draft" },
+            { value: "DISPATCHED", label: "Dispatched" },
+            { value: "RECEIVED", label: "Received" },
+            { value: "CANCELLED", label: "Cancelled" },
+          ]}
+        />
+        <DateFilter value={dates} onChange={setDates} />
+        <ActionLink href="/inventory/transfers/add" variant="primary">
+          <PlusIcon />
+          Add New
+        </ActionLink>
+      </PageToolbar>
 
       {/* Table card — 57:14271 */}
-      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className={TABLE_CARD}>
         <RefreshBar active={fetching} />
+        {/* One scroller for the table, the phone cards and the load trigger.
+            The trigger has to sit INSIDE it — below the scroller it never
+            leaves the screen, and every page loads at once the moment the
+            table opens. */}
+        <div className="table-scroll">
+
         <div className="hidden px-[16px] pt-[16px] md:block">
-          <div className="overflow-x-auto">
+          <div>
             <div className="min-w-[1127px]">
-              <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
+              <div className={`table-head grid ${GRID} items-start overflow-clip rounded-[6px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Transfer ID</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>From</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>To</span></div>
@@ -244,17 +223,17 @@ export default function TransfersPage() {
                 <QueryBoundary
                   loading={loading}
                   error={error}
-                  hasData={data !== undefined}
-                  skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
+                  hasData={!loading && !error}
+                  skeleton={<TableSkeleton columns={GRID} rows={8} />}
                   errorMessage="Transfers could not be loaded."
                   onRetry={refetch}
                 >
                 {rows.length === 0 && (
                   <EmptyState
                     message={
-                      term || date ? "No transfers match that search." : "No transfers yet."
+                      term || dates.mode !== "all" ? "No transfers match that search." : "No transfers yet."
                     }
-                    hint={term || date ? undefined : "Create one to move stock between warehouses."}
+                    hint={term || dates.mode !== "all" ? undefined : "Create one to move stock between warehouses."}
                   />
                 )}
                 {rows.map((t, i) => (
@@ -346,10 +325,10 @@ export default function TransfersPage() {
           <CardListState
             loading={loading}
             error={error}
-            hasData={data !== undefined}
+            hasData={!loading && !error}
             isEmpty={rows.length === 0}
             errorMessage="Transfers could not be loaded."
-            emptyMessage={term || date ? "No transfers match that search." : "No transfers yet."}
+            emptyMessage={term || dates.mode !== "all" ? "No transfers match that search." : "No transfers yet."}
             onRetry={refetch}
             rows={4}
           />
@@ -384,16 +363,15 @@ export default function TransfersPage() {
 
         {/* Pagination — 57:14680 */}
         <div className="mt-[9px]">
-          <TablePagination
-            page={current}
-            pageSize={pageSize}
+          <ScrollEnd
+            sentinelRef={sentinelRef}
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            shown={rows.length}
             total={total}
-            onPageChange={setPage}
-            onPageSizeChange={(n) => {
-              setPageSize(n);
-              setPage(1);
-            }}
+            noun="transfers"
           />
+        </div>
         </div>
       </div>
 
@@ -481,6 +459,7 @@ export default function TransfersPage() {
                     >
                       <span className="flex min-w-0 flex-1 flex-col">
                         <span className="truncate text-[13px] text-[#1e1e1e]">{l.name}</span>
+                        <VariantChip label={l.variantLabel} size="xs" />
                         <span className="truncate text-[11px] text-[#8f8d87]">{l.sku}</span>
                       </span>
                       <span className="w-[64px] shrink-0 text-right text-[13px] tabular-nums text-[#525252]">

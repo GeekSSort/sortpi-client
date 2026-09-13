@@ -1,18 +1,21 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import Link from "next/link";
 import { PurchaseRecord } from "@/types/purchases";
-import { PurchaseService, SupplierService } from "@/services";
+import { PurchaseService, SupplierService, TransferService } from "@/services";
+import PurchaseImport from "@/components/modules/purchases/PurchaseImport";
+import { useSession } from "@/services/useSession";
+import type { PurchaseImportReport } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
 import RowActionMenu from "@/components/shared/RowActionMenu";
-import TablePagination from "@/components/shared/TablePagination";
+import ScrollEnd from "@/components/shared/ScrollEnd";
+import FilterDropdown from "@/components/shared/FilterDropdown";
+import DateFilter, { ALL_DATES, DateValue, resolveDates } from "@/components/shared/DateFilter";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Avatar from "@/components/shared/Avatar";
-import DateField from "@/components/shared/DateField";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
-import { toApiDay } from "@/lib/dateFilter";
 import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardListState, EmptyState, ErrorState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import { DetailSkeleton } from "@/components/shared/Skeleton";
 import Receipt from "@/components/shared/Receipt";
@@ -20,6 +23,16 @@ import { useShopProfile } from "@/components/shared/useShopProfile";
 import { formatMoney } from "@/lib/format";
 import { clampTypedAmount } from "@/lib/money";
 import { AmountLabel } from "@/components/shared/MaxButton";
+import {
+  ActionButton,
+  ActionLink,
+  ExportIcon,
+  ImportIcon,
+  PageToolbar,
+  PlusIcon,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
 
 /**
  * Figma: SortPi — Purchase History 59:15218.
@@ -43,36 +56,11 @@ const STATUS_TONE: Record<PurchaseRecord["status"], Tone> = {
   Cancelled: "rose",
 };
 
-function SearchIcon() {
-  return (
-    <svg className="block size-[24px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="10.5" cy="10.5" r="7.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M16 16L21 21" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
 
-function FilterIcon() {
-  return (
-    <svg className="block size-[18px] shrink-0" viewBox="0 0 18 18" fill="none" aria-hidden>
-      <path d="M2.25 4.5h13.5M4.5 9h9M7.5 13.5h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-// Purchase ID  Supplier  Purchase Date  Items  Total Amount  Payment Status  Status  Action
+// Purchase ID  Supplier  Purchase Date  Items  Total Amount  Received  Due  Payment Status  Action
 // Two more tracks than the design has: Received and Due sit beside Total, so a
 // buyer can see what is still owed without opening every row. Narrower than
 // Total because they are the same magnitude and read as a group.
-function AddIcon() {
-  return (
-    <svg className="block size-[20px] shrink-0" viewBox="0 0 20 20" fill="none" aria-hidden>
-      <rect x="0.9" y="0.9" width="18.2" height="18.2" rx="5" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M10 6.4v7.2M6.4 10h7.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 /**
  * Pay against one order, from the row.
  *
@@ -166,8 +154,19 @@ function DueCell({
   );
 }
 
+/**
+ * Nine tracks, not ten.
+ *
+ * The ORDER state — Received, Ordered, Pending, Cancelled — no longer has a
+ * column of its own: two pill columns side by side read as one confusing
+ * thing, and the question a buyer scans this table for is what is still owed.
+ * It has not gone anywhere — the Status filter above the table still narrows
+ * by it, the row's own menu still acts on it, and the detail modal states it
+ * in full.
+ */
 const GRID =
-  "grid-cols-[150fr_200fr_130fr_86fr_124fr_124fr_124fr_128fr_128fr_83fr]";
+  "grid-cols-[158fr_210fr_136fr_90fr_130fr_130fr_130fr_140fr_86fr]";
+/** The same glyph the Sales list exports under — one action, one mark. */
 const CELL = "flex min-w-0 items-center p-[12px]";
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e]";
 const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
@@ -181,10 +180,12 @@ export default function PurchasesPage() {
       makes one request rather than one per letter — and a slow answer for "PO"
       can no longer land on top of the rows for "PO-12". */
   const [term, setTerm] = useState("");
-  const [date, setDate] = useState<Date | null>(null);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
+  // Rows per request. Not a page size anyone picks — the table scrolls.
+  const pageSize = 25;
+  const [status, setStatus] = useState("");
+  const [dates, setDates] = useState<DateValue>(ALL_DATES);
   const [note, setNote] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [detailOf, setDetailOf] = useState<PurchaseRecord | null>(null);
   const [receiptOf, setReceiptOf] = useState<PurchaseRecord | null>(null);
 
@@ -219,13 +220,96 @@ export default function PurchasesPage() {
     { enabled: detailOf !== null }
   );
 
+  /**
+   * The CSV import, and the header a file of items has to hang off.
+   *
+   * The file is item lines ONLY — no supplier, no date — which is what lets
+   * the same file be used from the Add Purchase screen, where those come from
+   * the form. So this dialog collects them itself and then posts the resolved
+   * lines to the SAME `POST /purchases/` the Add screen uses.
+   */
+  const [importOpen, setImportOpen] = useState(false);
+  const [importSupplier, setImportSupplier] = useState("");
+  const [importWarehouse, setImportWarehouse] = useState("");
+  const [importDate, setImportDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [importInvoice, setImportInvoice] = useState("");
+  const [importSaving, setImportSaving] = useState(false);
+  const [importDone, setImportDone] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+
   // Suppliers, only once a draft is being edited — the list screen has no other
   // use for them.
   const suppliers = useQuery(
     queryKey("suppliers", { limit: 200 }),
     () => SupplierService.getSuppliers({ limit: 200 }),
-    { enabled: edit !== null }
+    { enabled: edit !== null || importOpen }
   );
+
+  // Where the goods will land. Only while the import dialog is open — the list
+  // has no other use for them.
+  const session = useSession();
+  const warehouseQuery = useQuery(queryKey("warehouses"), () => TransferService.getWarehouses(), {
+    enabled: importOpen,
+  });
+  const importWarehouses = React.useMemo(() => {
+    const all = warehouseQuery.data ?? [];
+    const branchId = session.user?.activeBranch?.id ?? "";
+    // The branch being worked in, when there is one. A buyer who has switched
+    // branch is ordering FOR that branch, and offering every warehouse in the
+    // company is offering a mistake.
+    const here = branchId ? all.filter((w) => w.branchId === branchId) : all;
+    return here.length > 0 ? here : all;
+  }, [warehouseQuery.data, session.user?.activeBranch?.id]);
+
+  /** One warehouse and no choice to make: pick it rather than ask. */
+  const chosenWarehouse =
+    importWarehouse || (importWarehouses.length === 1 ? importWarehouses[0].id : "");
+  const importReady = Boolean(importSupplier && chosenWarehouse && importDate);
+
+  /**
+   * Turn the resolved lines into a purchase.
+   *
+   * `PurchaseService.createPurchase` — the SAME call the Add Purchase screen
+   * makes. The import resolved the file into lines and created whatever the
+   * shop was missing; raising the order is the path that was already there,
+   * so the draft, its totals and everything downstream behave identically to
+   * one typed in by hand.
+   */
+  const savePurchase = async (report: PurchaseImportReport) => {
+    setImportSaving(true);
+    setImportError(null);
+    try {
+      const saved = await PurchaseService.createPurchase({
+        referenceNo: `PO-${Date.now()}`,
+        supplierId: importSupplier,
+        branchId: session.user?.activeBranch?.id ?? "",
+        warehouseId: chosenWarehouse,
+        purchaseDate: importDate,
+        ...(importInvoice.trim() ? { supplierInvoiceNo: importInvoice.trim() } : {}),
+        items: report.lines.map((line) => ({
+          variantId: line.variantId,
+          quantity: line.quantity,
+          unitCost: line.unitCost,
+          ...(line.taxRate > 0 ? { taxRate: line.taxRate } : {}),
+        })),
+      });
+      const made = report.newProducts + report.newVariants;
+      setImportDone(
+        `${saved.purchaseId} saved as a draft with ${report.valid} item${
+          report.valid === 1 ? "" : "s"
+        }` + (made ? `, and ${made} new to your shop` : "") + "."
+      );
+      invalidate("purchases", "products", "inventory");
+    } catch (error) {
+      setImportError(
+        error instanceof Error && error.message
+          ? error.message
+          : "The order could not be saved. Check the details above and try again."
+      );
+    } finally {
+      setImportSaving(false);
+    }
+  };
 
   const [markOf, setMarkOf] = useState<{ row: PurchaseRecord; kind: "received" | "paid" } | null>(null);
   const [payAmount, setPayAmount] = useState("");
@@ -244,24 +328,32 @@ export default function PurchasesPage() {
   // used to be applied in the browser over one capped page, so an older day
   // found nothing that had not already been fetched and the pager called 200
   // the total.
-  const day = date ? toApiDay(date) : undefined;
-  const { data, loading, fetching, error, refetch } = useQuery(
-    queryKey("purchases", { page, limit: pageSize, search: term, day }),
-    () =>
+  const span = resolveDates(dates);
+  const {
+    rows,
+    total,
+    loading,
+    loadingMore,
+    fetching,
+    error,
+    hasMore,
+    sentinelRef,
+    refetch,
+  } = useInfiniteRows(
+    // Primitives only: queryKey stringifies with String(), so an object key
+    // stops changing when its contents do.
+    queryKey("purchases", { search: term, from: span.from, to: span.to, status }),
+    (p, limit) =>
       PurchaseService.getPurchases({
         search: term,
-        startDate: day,
-        endDate: day,
-        page,
-        limit: pageSize,
-      })
+        startDate: span.from,
+        endDate: span.to,
+        status: status || undefined,
+        page: p,
+        limit,
+      }),
+    { pageSize }
   );
-
-  const total = data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const current = Math.min(page, totalPages);
-  // The server already filtered and sliced. `rows` is the page.
-  const rows = data?.data ?? [];
 
   /**
    * Pay against one order, from its Due cell.
@@ -270,6 +362,65 @@ export default function PurchasesPage() {
    * patched: the supplier ledger owns the balance, and the figure this row
    * shows next has to be the one the server now holds.
    */
+  /** A field is safe in a CSV only once quotes are doubled and it is wrapped:
+      a supplier called "Rahman, Md." split one row into two columns. */
+  const csvCell = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+
+  /**
+   * The rows on screen, as a spreadsheet — the same action the Sales list has.
+   *
+   * What the FILTERS left, not the whole ledger: an export that ignored the
+   * status and the dates would hand back something other than the list the
+   * person was looking at when they pressed it.
+   *
+   * The money columns go out as numbers rather than the formatted strings, so
+   * a spreadsheet can total the Due column instead of receiving text.
+   */
+  const exportCsv = async () => {
+    setExporting(true);
+    setNote(null);
+    try {
+      const head = [
+        "Purchase ID",
+        "Date",
+        "Supplier",
+        "Items",
+        "Total Amount",
+        "Paid",
+        "Due",
+        "Payment Status",
+        "Status",
+      ];
+      const csv = [
+        head,
+        ...rows.map((r) => [
+          r.purchaseId,
+          r.purchaseDate,
+          r.supplier.name,
+          r.itemsCount,
+          r.totalAmount,
+          r.paidAmount,
+          r.dueAmount,
+          r.paymentStatus,
+          r.status,
+        ]),
+      ]
+        .map((line) => line.map(csvCell).join(","))
+        .join("\n");
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "purchases.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+      setNote(`Exported ${rows.length} purchase${rows.length === 1 ? "" : "s"} on this page`);
+    } catch {
+      setNote("Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const payInline = async (row: PurchaseRecord, amount: number) => {
     if (payingId) return;
     setPayingId(row.id);
@@ -305,7 +456,7 @@ export default function PurchasesPage() {
       invoiceNo: loaded.supplierInvoiceNo,
       lines: loaded.items.map((l) => ({
         variantId: l.variantId,
-        name: l.name,
+        name: l.variantLabel ? `${l.name} ${l.variantLabel}` : l.name,
         sku: l.sku,
         quantity: l.quantity,
         unitCost: String(l.unitCost),
@@ -434,57 +585,73 @@ export default function PurchasesPage() {
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 59:15220 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
-          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
-            <SearchIcon />
-            <input
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setPage(1);
-              }}
-              placeholder="Search by Purchase ID or Supplier..."
-              aria-label="Search purchases"
-              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
-            />
-          </div>
-          <button
-            type="button"
-            aria-label="Filter"
-            onClick={() => setNote("Filter panel not designed yet")}
-            className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e]"
-          >
-            <FilterIcon />
-          </button>
-        </div>
-
-        <div className="flex shrink-0 flex-wrap items-center gap-[12px]">
-          <DateField value={date} onChange={setDate} ariaLabel="Filter purchases by date" />
-          {/* The same Add New the other list screens carry. This one had no way
-              at all to raise a purchase order — the API has had POST /purchases
-              since the module was built and nothing in the app called it. */}
-          <Link
-            href="/purchases/add"
-            style={{ backgroundImage: GOLD_GRADIENT }}
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-          >
-            <AddIcon />
-            Add New
-          </Link>
-        </div>
-      </div>
+      <PageToolbar
+        search={
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder="Search by Purchase ID or Supplier..."
+            label="Search purchases"
+          />
+        }
+      >
+        <FilterDropdown
+          label="Status"
+          value={status}
+          onChange={setStatus}
+          options={[
+            { value: "", label: "Any status" },
+            { value: "RECEIVED", label: "Received" },
+            { value: "CONFIRMED", label: "Ordered" },
+            { value: "PARTIAL", label: "Partly received" },
+            { value: "DRAFT", label: "Draft" },
+            { value: "CANCELLED", label: "Cancelled" },
+          ]}
+        />
+        <DateFilter value={dates} onChange={setDates} />
+        <ActionButton onClick={exportCsv} disabled={exporting || rows.length === 0}>
+          <ExportIcon />
+          Export
+        </ActionButton>
+        {/* Import. Beside Export, because the two are the same job in
+            opposite directions and a shop looking for one looks here for
+            the other. */}
+        <ActionButton
+          onClick={() => {
+            setImportOpen(true);
+            setImportDone(null);
+            setImportError(null);
+          }}
+        >
+          <ImportIcon />
+          Import
+        </ActionButton>
+        {/* The same Add New the other list screens carry. This one had no way
+            at all to raise a purchase order — the API has had POST /purchases
+            since the module was built and nothing in the app called it. */}
+        <ActionLink href="/purchases/add" variant="primary">
+          <PlusIcon />
+          Add New
+        </ActionLink>
+      </PageToolbar>
 
       {/* Table card — 59:15252 */}
-      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className={TABLE_CARD}>
         <RefreshBar active={fetching} />
+        {/* One scroller for the table, the phone cards and the load trigger.
+            The trigger has to sit INSIDE it — below the scroller it never
+            leaves the screen, and every page loads at once the moment the
+            table opens. */}
+        <div className="table-scroll">
+
         <div className="hidden px-[16px] pt-[16px] md:block">
-          <div className="overflow-x-auto">
-            {/* Two more columns than the design, so the table needs the room —
-                it scrolls sideways inside its card rather than squeezing ten
-                tracks into 1128px and truncating every one of them. */}
-            <div className="min-w-[1320px]">
-              <div className={`grid ${GRID} items-start overflow-clip rounded-[6px] shadow-[inset_0_0_0_1px_#eaeaea]`}>
+          <div>
+            {/* One more column than the design — Received and Due sit beside
+                Total, and the order-state pill has gone — so the table still
+                needs the room. It scrolls sideways inside its card rather than
+                squeezing nine tracks into 1128px and truncating every one. */}
+            <div className="min-w-[1210px]">
+              <div className={`table-head grid ${GRID} items-start overflow-clip rounded-[6px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]`}>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Purchase ID</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Supplier</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Purchase Date</span></div>
@@ -493,7 +660,6 @@ export default function PurchasesPage() {
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Received</span></div>
                 <div className={`${CELL} h-[40px] bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Due</span></div>
                 <div className={`${CELL} h-[40px] justify-center bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Payment Status</span></div>
-                <div className={`${CELL} h-[40px] justify-center bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Status</span></div>
                 <div className={`${CELL} h-[40px] justify-center bg-white`}><span className={`${HEAD} whitespace-nowrap`}>Action</span></div>
               </div>
 
@@ -501,19 +667,19 @@ export default function PurchasesPage() {
                 <QueryBoundary
                   loading={loading}
                   error={error}
-                  hasData={data !== undefined}
-                  skeleton={<TableSkeleton columns={GRID} rows={pageSize} />}
+                  hasData={!loading && !error}
+                  skeleton={<TableSkeleton columns={GRID} rows={8} />}
                   errorMessage="Purchases could not be loaded."
                   onRetry={refetch}
                 >
                 {rows.length === 0 && (
                   <EmptyState
                     message={
-                      term || date
+                      term || dates.mode !== "all"
                         ? "No purchases match that search or date."
                         : "No purchases yet."
                     }
-                    hint={term || date ? undefined : "Orders raised with a supplier show up here."}
+                    hint={term || dates.mode !== "all" ? undefined : "Orders raised with a supplier show up here."}
                   />
                 )}
                 {rows.map((r, i) => (
@@ -557,9 +723,6 @@ export default function PurchasesPage() {
                     </div>
                     <div className={`${CELL} justify-center`}>
                       <StatusPill label={r.paymentStatus} tone={PAYMENT_TONE[r.paymentStatus] ?? "slate"} />
-                    </div>
-                    <div className={`${CELL} justify-center`}>
-                      <StatusPill label={r.status} tone={STATUS_TONE[r.status] ?? "slate"} />
                     </div>
                     {/* The menu lives inside the row hit area — keep its clicks to itself. */}
                     <div
@@ -614,10 +777,10 @@ export default function PurchasesPage() {
           <CardListState
             loading={loading}
             error={error}
-            hasData={data !== undefined}
+            hasData={!loading && !error}
             isEmpty={rows.length === 0}
             errorMessage="Purchases could not be loaded."
-            emptyMessage={term || date ? "No purchases match that search or date." : "No purchases yet."}
+            emptyMessage={term || dates.mode !== "all" ? "No purchases match that search or date." : "No purchases yet."}
             onRetry={refetch}
             rows={4}
           />
@@ -639,7 +802,7 @@ export default function PurchasesPage() {
                     </p>
                   </div>
                 </div>
-                <StatusPill label={r.status} tone={STATUS_TONE[r.status] ?? "slate"} />
+                <StatusPill label={r.paymentStatus} tone={PAYMENT_TONE[r.paymentStatus] ?? "slate"} />
               </div>
               <div className="mt-[10px] flex items-center justify-between gap-[10px]">
                 <span className="truncate text-[12px] tracking-[-0.24px] text-[#525252]">
@@ -655,9 +818,6 @@ export default function PurchasesPage() {
                   <span className="font-medium text-[#e63946]"> · {r.dueAmountFormatted} due</span>
                 )}
               </p>
-              <div className="mt-[8px]">
-                <StatusPill label={r.paymentStatus} tone={PAYMENT_TONE[r.paymentStatus] ?? "slate"} />
-              </div>
             </button>
           ))}
         </div>
@@ -666,16 +826,15 @@ export default function PurchasesPage() {
 
         {/* Pagination — 59:15704 */}
         <div className="mt-[9px]">
-          <TablePagination
-            page={current}
-            pageSize={pageSize}
+          <ScrollEnd
+            sentinelRef={sentinelRef}
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            shown={rows.length}
             total={total}
-            onPageChange={setPage}
-            onPageSizeChange={(n) => {
-              setPageSize(n);
-              setPage(1);
-            }}
+            noun="purchases"
           />
+        </div>
         </div>
       </div>
 
@@ -1015,7 +1174,10 @@ export default function PurchasesPage() {
                   { label: "Payment", value: receiptOf.paymentStatus },
                 ]}
                 items={purchaseDetail.items.map((it) => ({
-                  name: it.name,
+                  // The size belongs on the printed order: "20 × Coca-Cola"
+                  // is not something a supplier can pick against when the
+                  // product comes in three.
+                  name: it.variantLabel ? `${it.name} ${it.variantLabel}` : it.name,
                   price: formatMoney(it.unitCost, MONEY),
                   qty: it.quantity,
                   total: formatMoney(it.lineTotal, MONEY),
@@ -1126,6 +1288,136 @@ export default function PurchasesPage() {
             )}
 
             {markError && <p className="text-[13px] text-[#ef4444]">{markError}</p>}
+          </div>
+        )}
+      </Modal>
+      {/* Import — a CSV of items, plus the header they hang off.
+          The same component the Add Purchase screen uses, so the two cannot
+          disagree about what a valid file is. */}
+      <Modal
+        open={importOpen}
+        onClose={() => {
+          if (importSaving) return;
+          setImportOpen(false);
+          setImportDone(null);
+          setImportError(null);
+        }}
+        title="Import Purchases"
+        width={640}
+        footer={
+          <button
+            type="button"
+            className={MODAL_GHOST}
+            disabled={importSaving}
+            onClick={() => {
+              setImportOpen(false);
+              setImportDone(null);
+              setImportError(null);
+            }}
+          >
+            {importDone ? "Done" : "Cancel"}
+          </button>
+        }
+      >
+        {importDone ? (
+          <div className="flex flex-col gap-[12px]">
+            <p className="rounded-[10px] bg-[#eaf7ef] px-[14px] py-[12px] text-[14px] leading-[1.7] text-[#1f6f43]">
+              {importDone}
+            </p>
+            <p className="text-[13px] leading-[1.7] text-[#525252]">
+              It is a DRAFT: nothing has been ordered and no stock has moved yet. Open it from
+              the list to check it, then confirm and receive it as you would any other order.
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-[16px]">
+            {/* Who it is from and where it lands. The file carries neither —
+                item lines only — which is what lets the same file be used on
+                the Add Purchase screen. */}
+            <div className="grid grid-cols-1 gap-[12px] sm:grid-cols-2">
+              <label className="flex flex-col gap-[6px]">
+                <span className="text-[13px] font-medium text-[#525252]">
+                  Supplier <span className="text-[#c80000]">*</span>
+                </span>
+                <select
+                  value={importSupplier}
+                  onChange={(e) => setImportSupplier(e.target.value)}
+                  aria-label="Supplier"
+                  className="h-[44px] w-full cursor-pointer rounded-[10px] bg-white px-[12px] text-[14px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] outline-none"
+                >
+                  <option value="">Choose a supplier…</option>
+                  {(suppliers.data?.data ?? []).map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {row.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-[6px]">
+                <span className="text-[13px] font-medium text-[#525252]">
+                  Deliver to <span className="text-[#c80000]">*</span>
+                </span>
+                <select
+                  value={chosenWarehouse}
+                  onChange={(e) => setImportWarehouse(e.target.value)}
+                  aria-label="Warehouse"
+                  className="h-[44px] w-full cursor-pointer rounded-[10px] bg-white px-[12px] text-[14px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] outline-none"
+                >
+                  <option value="">Choose a warehouse…</option>
+                  {importWarehouses.map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {row.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-[6px]">
+                <span className="text-[13px] font-medium text-[#525252]">
+                  Purchase date <span className="text-[#c80000]">*</span>
+                </span>
+                <input
+                  type="date"
+                  value={importDate}
+                  onChange={(e) => setImportDate(e.target.value)}
+                  aria-label="Purchase date"
+                  className="h-[44px] w-full cursor-pointer rounded-[10px] bg-white px-[12px] text-[14px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] outline-none"
+                />
+              </label>
+              <label className="flex flex-col gap-[6px]">
+                <span className="text-[13px] font-medium text-[#525252]">
+                  Supplier invoice <span className="text-[#8f8d87]">(optional)</span>
+                </span>
+                <input
+                  value={importInvoice}
+                  onChange={(e) => setImportInvoice(e.target.value)}
+                  placeholder="Their reference, not ours"
+                  aria-label="Supplier invoice number"
+                  className="h-[44px] w-full rounded-[10px] bg-white px-[12px] text-[14px] text-[#525252] shadow-[inset_0_0_0_1px_#eaeaea] outline-none placeholder:text-[rgba(82,82,82,0.6)]"
+                />
+              </label>
+            </div>
+
+            {!importReady && (
+              <p className="text-[13px] text-[#8a6d00]">
+                Choose a supplier, a warehouse and a date before importing the file.
+              </p>
+            )}
+
+            <PurchaseImport
+              intro="Upload the supplier's invoice as a CSV. It will be saved as a draft purchase order you can check before confirming."
+              confirmLabel="Import and save as draft"
+              busy={!importReady || importSaving}
+              onImported={savePurchase}
+            />
+
+            {importError && (
+              <p
+                role="alert"
+                className="rounded-[10px] bg-[#fdeceb] px-[12px] py-[10px] text-[13px] font-medium text-[#a02620]"
+              >
+                {importError}
+              </p>
+            )}
           </div>
         )}
       </Modal>

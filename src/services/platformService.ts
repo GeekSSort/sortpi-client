@@ -308,11 +308,28 @@ export class PlatformService {
 
   // ── Writes the console API already supports ─────────────────────────────
 
-  /** Close a company down, or open it again. */
-  static async setCompanyActive(id: string, isActive: boolean): Promise<void> {
-    await apiFetch(`/platform/organizations/${id}/`, {
-      method: "PATCH",
-      body: JSON.stringify({ is_active: isActive }),
+  /**
+   * Close a company down, or open it again.
+   *
+   * `POST .../active/`, NOT a PATCH of `is_active`. That is what this sent,
+   * and `is_active` is READ-ONLY on the profile serializer — deliberately, so
+   * a business cannot be locked out by the request that fixes a phone number.
+   * So the PATCH answered 200, changed nothing, and the console reported
+   * "Acme is now closed" over a company that was still trading. A write that
+   * succeeds and does nothing is the worst shape a bug can take.
+   *
+   * `reason` is recorded on the audit row the endpoint writes. Somebody will
+   * ask why a shop was closed, and "a platform admin did it in April" is not
+   * an answer.
+   */
+  static async setCompanyActive(
+    id: string,
+    isActive: boolean,
+    reason = ""
+  ): Promise<void> {
+    await apiFetch(`/platform/organizations/${id}/active/`, {
+      method: "POST",
+      body: JSON.stringify({ is_active: isActive, ...(reason ? { reason } : {}) }),
     });
   }
 

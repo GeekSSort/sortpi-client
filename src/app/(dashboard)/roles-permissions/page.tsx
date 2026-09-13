@@ -1,21 +1,30 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
+import React, { useEffect, useMemo, useState } from "react";
 import { SystemUserRecord } from "@/types/roles";
 import { RoleRecord } from "@/types/permissions";
 import { RoleService, RoleOption } from "@/services/roleService";
 import { useSession } from "@/services/useSession";
 import RoleEditor from "@/components/modules/dashboard/RoleEditor";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
+import FilterDropdown from "@/components/shared/FilterDropdown";
 import RowActionMenu from "@/components/shared/RowActionMenu";
-import TablePagination from "@/components/shared/TablePagination";
+import ScrollEnd from "@/components/shared/ScrollEnd";
 import TableSkeleton from "@/components/shared/TableSkeleton";
 import Avatar from "@/components/shared/Avatar";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY, RED_GRADIENT } from "@/components/shared/Modal";
 import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
+import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { ListSkeleton } from "@/components/shared/Skeleton";
 import { CardListState, EmptyState, ErrorState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
+import {
+  ActionButton,
+  ActionLink,
+  PageToolbar,
+  PlusIcon,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
 
 /**
  * User List — Figma 59:18134.
@@ -65,42 +74,14 @@ const STATUS_TONE: Record<SystemUserRecord["status"], Tone> = {
   Inactive: "rose",
 };
 
+// Still the source of the state's type, though the options now live on
+// the dropdown itself.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const FILTERS = ["All Users", "Active", "Inactive"] as const;
 
 /** Long enough that typing a name is one request, short enough to feel live. */
 const SEARCH_DEBOUNCE_MS = 300;
 
-function SearchIcon() {
-  return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden className="shrink-0">
-      <circle cx="11" cy="11" r="7.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="m20 20-3.2-3.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function FilterIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden className="shrink-0">
-      <path d="M2.25 4.5h13.5M4.5 9h9m-6.75 4.5h4.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function CaretIcon({ open }: { open: boolean }) {
-  return (
-    <svg
-      width="20"
-      height="20"
-      viewBox="0 0 20 20"
-      fill="none"
-      aria-hidden
-      className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
-    >
-      <path d="m5.5 7.75 4.5 4.5 4.5-4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
 
 function AddIcon() {
   return (
@@ -115,9 +96,8 @@ export default function RolesPermissionsPage() {
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("All Users");
-  const [filterOpen, setFilterOpen] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(8);
+  // Rows per request. Not a page size anyone picks — the table scrolls.
+  const pageSize = 25;
   // Two different things, and merging them ate one of them: `note` is what an
   // action just did ("Rahim deactivated."), the query's `error` is why the
   // list on screen is empty. Sharing one state meant the refetch an action
@@ -160,7 +140,6 @@ export default function RolesPermissionsPage() {
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState<"users" | "roles">("users");
   const [editing, setEditing] = useState<RoleRecord | null | undefined>(undefined);
-  const filterRef = useRef<HTMLDivElement>(null);
 
   const can = useMemo(() => {
     const held = new Set(user?.permissions ?? []);
@@ -182,7 +161,6 @@ export default function RolesPermissionsPage() {
   useEffect(() => {
     const timer = setTimeout(() => {
       setSearch(query);
-      setPage(1);
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [query]);
@@ -190,25 +168,24 @@ export default function RolesPermissionsPage() {
   // `enabled` is what stops a request going out before the session says
   // whether this person may read the directory at all — the old effect had to
   // return early and then remember to clear its own loading flag.
-  const usersQuery = useQuery(
+  const usersQuery = useInfiniteRows(
     queryKey("roles", {
       part: "users",
-      page,
-      limit: pageSize,
       search,
       status: filter === "All Users" ? undefined : filter,
     }),
-    () =>
+    (p, limit) =>
       RoleService.getUsers({
         search: search || undefined,
         status: filter === "All Users" ? undefined : filter,
-        page,
-        limit: pageSize,
+        page: p,
+        limit,
       }),
-    { enabled: !sessionLoading && can.view }
+    { pageSize, enabled: !sessionLoading && can.view }
   );
-  const rows: SystemUserRecord[] = usersQuery.data?.data ?? [];
-  const total = usersQuery.data?.total ?? 0;
+  const rows: SystemUserRecord[] = usersQuery.rows;
+  const total = usersQuery.total;
+  const { loadingMore, hasMore, sentinelRef } = usersQuery;
   const loading = usersQuery.loading;
   // A failed read must not leave the previous branch's rows on screen, which
   // is why the banner is rendered from the query's own error rather than a
@@ -230,19 +207,6 @@ export default function RolesPermissionsPage() {
   );
   const roleRecords: RoleRecord[] = roleRecordsQuery.data ?? [];
 
-  useEffect(() => {
-    if (!filterOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (filterRef.current && !filterRef.current.contains(e.target as Node)) setFilterOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setFilterOpen(false);
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [filterOpen]);
 
   const act = async (fn: () => Promise<void>, done: string) => {
     setSaving(true);
@@ -354,91 +318,40 @@ export default function RolesPermissionsPage() {
       ) : (
       <>
       {/* Headline — 59:18136 */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
-          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
-            <SearchIcon />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search by name, email, phone or role..."
-              aria-label="Search users"
-              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
-            />
-          </div>
-          <button
-            type="button"
-            aria-label="Filter"
-            onClick={() => setFilterOpen((v) => !v)}
-            className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e]"
-          >
-            <FilterIcon />
-          </button>
-        </div>
+      <PageToolbar
+        search={
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder="Search by name, email, phone or role..."
+            label="Search users"
+          />
+        }
+      >
+        <FilterDropdown
+          label="Status"
+          value={filter === "All Users" ? "" : filter}
+          onChange={(next) => setFilter((next || "All Users") as typeof filter)}
+          options={[
+            { value: "All Users", label: "All users" },
+            { value: "Active", label: "Active" },
+            { value: "Inactive", label: "Inactive" },
+          ]}
+        />
 
-        <div className="flex flex-col items-stretch gap-[12px] sm:flex-row sm:items-center sm:gap-[16px]">
-          <div ref={filterRef} className="relative shrink-0">
-            <button
-              type="button"
-              onClick={() => setFilterOpen((v) => !v)}
-              aria-haspopup="listbox"
-              aria-expanded={filterOpen}
-              className="flex h-[48px] w-full cursor-pointer items-center justify-between gap-[12px] rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] py-[12px] text-[16px] leading-[24px] font-medium whitespace-nowrap text-[#525252] transition-colors hover:bg-[#fafafa] sm:w-auto"
-            >
-              {filter}
-              <CaretIcon open={filterOpen} />
-            </button>
+        {can.create && (
+          <ActionButton onClick={() => setHandOverOpen(true)}>
+            Hand over ownership
+          </ActionButton>
+        )}
 
-            {filterOpen && (
-              <ul
-                role="listbox"
-                className="absolute right-0 z-30 mt-[6px] w-[168px] overflow-hidden rounded-[10px] border border-[#eaeaea] bg-white py-[4px] shadow-[0_8px_30px_rgba(0,0,0,0.10)]"
-              >
-                {FILTERS.map((f) => (
-                  <li key={f}>
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={f === filter}
-                      onClick={() => {
-                        setFilter(f);
-                        setPage(1);
-                        setFilterOpen(false);
-                      }}
-                      className={`w-full cursor-pointer px-[14px] py-[9px] text-left text-[14px] transition-colors hover:bg-[#fdf7e6] ${
-                        f === filter ? "bg-[#fdf7e6] font-medium text-[#1e1e1e]" : "text-[#525252]"
-                      }`}
-                    >
-                      {f}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          {can.create && (
-            <button
-              type="button"
-              onClick={() => setHandOverOpen(true)}
-              className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] text-[15px] font-medium whitespace-nowrap text-[#525252] transition-colors hover:bg-[#fafafa]"
-            >
-              Hand over ownership
-            </button>
-          )}
-
-          {can.create && (
-            <Link
-              href="/roles-permissions/add"
-              style={{ backgroundImage: GOLD_GRADIENT }}
-              className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-            >
-              <AddIcon />
-              Add New
-            </Link>
-          )}
-        </div>
-      </div>
+        {can.create && (
+          <ActionLink href="/roles-permissions/add" variant="primary">
+            <PlusIcon />
+            Add New
+          </ActionLink>
+        )}
+      </PageToolbar>
 
       {/* Which branch these people belong to. Without it, a correctly narrowed
           list looks like data that has gone missing. */}
@@ -458,7 +371,7 @@ export default function RolesPermissionsPage() {
       </p>
 
       {/* Table card — 59:18163 */}
-      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className={TABLE_CARD}>
         <RefreshBar active={usersQuery.fetching} />
         {loadError && (
           <p role="alert" className="mx-[16px] mt-[16px] rounded-[8px] bg-[#ffdfe2] px-[12px] py-[8px] text-[13px] text-[#a02620]">
@@ -471,10 +384,16 @@ export default function RolesPermissionsPage() {
           </p>
         )}
 
+        {/* One scroller for the table, the phone cards and the load trigger.
+            The trigger has to sit INSIDE it — below the scroller it never
+            leaves the screen, and every page loads at once the moment the
+            table opens. */}
+        <div className="table-scroll">
+
         <div className="hidden px-[16px] pt-[16px] md:block">
-          <div className="overflow-x-auto">
+          <div>
             <div className="min-w-[1120px]">
-              <div className={`grid ${GRID} items-start overflow-clip`}>
+              <div className={`table-head grid ${GRID} items-start overflow-clip bg-white`}>
                 <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>#</span></div>
                 <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>User Name</span></div>
                 <div className={`${CELL} h-[40px] border-b border-solid border-[#eaeaea]`}><span className={HEAD}>Phone</span></div>
@@ -490,10 +409,10 @@ export default function RolesPermissionsPage() {
                 <QueryBoundary
                   loading={loading}
                   error={usersQuery.error}
-                  hasData={usersQuery.data !== undefined}
+                  hasData={!usersQuery.loading && !usersQuery.error}
                   skeleton={
                     <div className="col-span-9">
-                      <TableSkeleton columns={GRID} rows={pageSize} />
+                      <TableSkeleton columns={GRID} rows={8} />
                     </div>
                   }
                   errorMessage={loadError ?? "Users could not be loaded."}
@@ -570,7 +489,7 @@ export default function RolesPermissionsPage() {
           <CardListState
             loading={loading}
             error={usersQuery.error}
-            hasData={usersQuery.data !== undefined}
+            hasData={!usersQuery.loading && !usersQuery.error}
             isEmpty={rows.length === 0}
             errorMessage={loadError ?? "Users could not be loaded."}
             emptyMessage={scope ? "Nobody matches this view in this branch." : "No users match this view."}
@@ -607,16 +526,15 @@ export default function RolesPermissionsPage() {
             ))}
         </div>
 
-        <TablePagination
-          page={page}
-          pageSize={pageSize}
+        <ScrollEnd
+          sentinelRef={sentinelRef}
+          hasMore={hasMore}
+          loadingMore={loadingMore}
+          shown={rows.length}
           total={total}
-          onPageChange={setPage}
-          onPageSizeChange={(n) => {
-            setPageSize(n);
-            setPage(1);
-          }}
+          noun="users"
         />
+        </div>
       </div>
       </>
       )}

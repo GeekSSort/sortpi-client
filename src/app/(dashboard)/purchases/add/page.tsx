@@ -5,10 +5,14 @@ import { useRouter } from "next/navigation";
 import { InventoryService, PurchaseService, SupplierService, TransferService } from "@/services";
 import type { InventoryProduct } from "@/types/inventory";
 import Modal, { GOLD_GRADIENT, MODAL_GHOST, MODAL_PRIMARY } from "@/components/shared/Modal";
+import VariantChip from "@/components/shared/VariantChip";
+import { useActiveStockType } from "@/components/shared/useActiveStockType";
 import { useQuery, queryKey, invalidate } from "@/lib/query/useQuery";
 import { FormSkeleton } from "@/components/shared/Skeleton";
 import { QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import { useSession } from "@/services/useSession";
+import PurchaseImport from "@/components/modules/purchases/PurchaseImport";
+import type { PurchaseImportReport } from "@/services";
 import { formatMoney } from "@/lib/format";
 
 /**
@@ -74,6 +78,8 @@ function todayIso(): string {
 interface Line {
   variantId: string;
   name: string;
+  /** WHICH variant is on order — "500ml". Empty for a one-variant product. */
+  variantLabel: string;
   sku: string;
   quantity: number;
   /** Kept as typed, not as a number: "12." is a state a person passes through
@@ -127,6 +133,17 @@ export default function AddPurchasePage() {
   const [newError, setNewError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [lines, setLines] = useState<Line[]>([]);
+  /**
+   * How the items are being added: one at a time, or from a spreadsheet.
+   *
+   * A view switch and nothing more — both modes fill the SAME `lines`, so an
+   * imported item is edited, removed and saved by exactly the code a typed one
+   * is. The alternative, a separate import screen that creates its own
+   * purchase, would be a second way to raise an order with its own ideas about
+   * totals and stock.
+   */
+  const [entryMode, setEntryMode] = useState<"manual" | "import">("manual");
+  const [importNote, setImportNote] = useState<string | null>(null);
   const [pickQuery, setPickQuery] = useState("");
   const [pickOpen, setPickOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -148,6 +165,15 @@ export default function AddPurchasePage() {
     { enabled: newProduct !== null }
   );
   const options = catalog.data ?? { categories: [], brands: [], units: [], taxes: [] };
+  /**
+   * The shop's active stock type, for the new-product form below.
+   *
+   * A buyer raising an order for something not yet in the catalogue is
+   * creating a real product, so it starts in the same stock type the Products
+   * screen would start it in — otherwise the same shop gets Kilogram on one
+   * route and an empty picker on the other.
+   */
+  const { unit: activeStockType } = useActiveStockType();
 
   // Goods are delivered onto a shelf in THIS branch. `/warehouses/` lists every
   // branch the caller can reach — that is what the transfer screen needs — so
@@ -175,7 +201,15 @@ export default function AddPurchasePage() {
 
   const catalogue = useQuery(
     queryKey("inventory", { part: "purchase-picker", search: term }),
-    () => InventoryService.getProducts({ search: term, page: 1, limit: 20 }),
+    /**
+     * VARIANTS, not products.
+     *
+     * A purchase line names a variant. Built on `getProducts` this picker
+     * offered one row per product carrying the DEFAULT variant, so a shop
+     * selling Coca-Cola in three sizes could raise an order for exactly one of
+     * them — and the other two could not be bought through the app at all.
+     */
+    () => InventoryService.getVariants({ search: term, page: 1, limit: 20 }),
     { enabled: pickOpen }
   );
 
@@ -190,6 +224,7 @@ export default function AddPurchasePage() {
       {
         variantId: product.variantId,
         name: product.name,
+        variantLabel: product.variantLabel,
         sku: product.sku,
         quantity: 1,
         // The selling price is a starting point a buyer will overtype. It is
@@ -204,6 +239,53 @@ export default function AddPurchasePage() {
     setError(null);
   };
 
+  /**
+   * Put the imported rows into the table the manual picker fills.
+   *
+   * MERGED, not replaced: somebody who typed three lines and then uploaded the
+   * rest of the invoice has not asked for their three to be thrown away. A
+   * variant that is already on the order has its quantity added to, which is
+   * the same rule the importer applies within one file — a purchase cannot
+   * carry the same variant on two lines.
+   */
+  const applyImported = (report: PurchaseImportReport) => {
+    setLines((current) => {
+      const next = [...current];
+      for (const imported of report.lines) {
+        const existing = next.findIndex((l) => l.variantId === imported.variantId);
+        if (existing >= 0) {
+          next[existing] = {
+            ...next[existing],
+            quantity: next[existing].quantity + imported.quantity,
+            unitCost: String(imported.unitCost),
+          };
+          continue;
+        }
+        next.push({
+          variantId: imported.variantId,
+          name: imported.productName,
+          variantLabel: imported.variantName === "Default" ? "" : imported.variantName,
+          sku: imported.sku,
+          quantity: imported.quantity,
+          unitCost: String(imported.unitCost),
+          // A FRACTION on the wire and a PERCENTAGE in this box, which is what
+          // the manual rows hold too.
+          taxPercent: imported.taxRate ? String(imported.taxRate * 100) : "",
+        });
+      }
+      return next;
+    });
+    setError(null);
+    const made = report.newProducts + report.newVariants;
+    setImportNote(
+      `${report.valid} item${report.valid === 1 ? "" : "s"} added to this order` +
+        (made ? `, including ${made} new to your shop` : "") +
+        ". Check the quantities and costs, then save the order."
+    );
+    // Back to the table, which is the thing to look at now.
+    setEntryMode("manual");
+  };
+
   /** Open the new-product form, carrying whatever was already typed as its
       name — the search that found nothing is the name nine times in ten. */
   const startNewProduct = () => {
@@ -211,7 +293,13 @@ export default function AddPurchasePage() {
       name: pickQuery.trim(),
       categoryId: "",
       brandId: "",
-      unitId: "",
+      // The shop's active stock type, when it has one and the catalogue still
+      // carries it. Still a required field — this fills it in, it does not
+      // decide it.
+      unitId:
+        activeStockType && options.units.some((u) => u.id === activeStockType.id)
+          ? activeStockType.id
+          : "",
       sku: "",
       barcode: "",
       sellingPrice: "",
@@ -257,6 +345,10 @@ export default function AddPurchasePage() {
         {
           variantId: created.variantId,
           name: created.name,
+          // A product raised from this dialog is a SIMPLE one — the form here
+          // has no variant rows — so its single variant is the unnamed
+          // "Default" and there is nothing to label.
+          variantLabel: created.variantLabel,
           sku: created.sku,
           quantity: 1,
           unitCost: "",
@@ -527,12 +619,54 @@ export default function AddPurchasePage() {
                 </label>
               </div>
 
-              {/* Type a name, pick it, set how many and what each one costs. */}
+              {/* Type a name, pick it, set how many and what each one costs —
+                  or upload the supplier's invoice as a spreadsheet. Both fill
+                  the same table below. */}
               <div className="flex flex-col gap-[8px]">
-                <span className={LABEL}>
-                  Products
-                  <Required />
-                </span>
+                <div className="flex flex-wrap items-center justify-between gap-[10px]">
+                  <span className={LABEL}>
+                    Products
+                    <Required />
+                  </span>
+                  <div
+                    role="tablist"
+                    aria-label="How to add products"
+                    className="flex items-center gap-[2px] rounded-[10px] bg-[#f5f5f5] p-[3px]"
+                  >
+                    {(
+                      [
+                        { key: "manual" as const, label: "Manual" },
+                        { key: "import" as const, label: "Bulk Import" },
+                      ]
+                    ).map((option) => (
+                      <button
+                        key={option.key}
+                        type="button"
+                        role="tab"
+                        aria-selected={entryMode === option.key}
+                        onClick={() => {
+                          setEntryMode(option.key);
+                          setImportNote(null);
+                        }}
+                        className={`h-[32px] cursor-pointer rounded-[8px] px-[14px] text-[13px] font-semibold transition-colors ${
+                          entryMode === option.key
+                            ? "bg-white text-[#1e1e1e] shadow-[0_1px_2px_rgba(0,0,0,0.08)]"
+                            : "text-[#8f8d87] hover:text-[#525252]"
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {entryMode === "import" ? (
+                  <PurchaseImport
+                    intro="Upload the supplier's invoice as a CSV. The items go into the table below, where you can check them before saving the order."
+                    confirmLabel="Add to this order"
+                    onImported={applyImported}
+                  />
+                ) : (
                 <div className="relative">
                   <div className={FIELD}>
                     <input
@@ -571,14 +705,19 @@ export default function AddPurchasePage() {
                       )}
                       {pickable.map((p) => (
                         <button
-                          key={p.id}
+                          // The VARIANT id: three sizes of one product share a
+                          // product id, and React would treat them as one row.
+                          key={p.variantId}
                           type="button"
                           onClick={() => addLine(p)}
                           className="flex w-full cursor-pointer items-center justify-between gap-[10px] px-[14px] py-[9px] text-left transition-colors hover:bg-[#fafafa]"
                         >
-                          <span className="min-w-0 truncate text-[13px] text-[#525252]">
-                            {p.name}
-                            <span className="text-[#a3a3a3]"> · {p.sku}</span>
+                          <span className="flex min-w-0 items-center gap-[6px]">
+                            <span className="min-w-0 truncate text-[13px] text-[#525252]">
+                              {p.name}
+                              <span className="text-[#a3a3a3]"> · {p.sku}</span>
+                            </span>
+                            <VariantChip label={p.variantLabel} size="xs" />
                           </span>
                           <span className="shrink-0 truncate text-[12px] text-[#8f8d87]">
                             {p.brand}
@@ -601,6 +740,12 @@ export default function AddPurchasePage() {
                     </div>
                   )}
                 </div>
+                )}
+                {importNote && (
+                  <p className="rounded-[10px] bg-[#eaf7ef] px-[12px] py-[10px] text-[13px] leading-[1.6] text-[#1f6f43]">
+                    {importNote}
+                  </p>
+                )}
               </div>
 
               {lines.length > 0 && (
@@ -634,7 +779,10 @@ export default function AddPurchasePage() {
                         className="flex items-center gap-[8px] border-b border-solid border-[#eaeaea] px-[12px] py-[8px] last:border-b-0"
                       >
                         <span className="flex min-w-0 flex-1 flex-col">
-                          <span className="truncate text-[13px] text-[#1e1e1e]">{l.name}</span>
+                          <span className="flex min-w-0 items-center gap-[6px]">
+                            <span className="truncate text-[13px] text-[#1e1e1e]">{l.name}</span>
+                            <VariantChip label={l.variantLabel} size="xs" />
+                          </span>
                           <span className="truncate text-[11px] text-[#8f8d87]">{l.sku}</span>
                         </span>
                         <input
