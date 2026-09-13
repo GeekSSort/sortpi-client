@@ -63,6 +63,16 @@ export interface ReturnableLine {
    * 200 discount took 800 and would have been quoted a 1,000 refund.
    */
   lineTotal: number;
+  /**
+   * What the customer actually PAID for the line, once the coupon, the points
+   * and any whole-taka rounding had come off the bill — the server's figure,
+   * and the one a refund is priced on.
+   *
+   * `lineTotal` never hears about those three, because they happen to the bill
+   * after the lines are priced: a ৳1,000 sale with a 10% coupon took ৳900, and
+   * a screen quoting `lineTotal` promised ৳1,000 back.
+   */
+  chargedTotal: number;
 }
 
 /** The sale a return is being written against. */
