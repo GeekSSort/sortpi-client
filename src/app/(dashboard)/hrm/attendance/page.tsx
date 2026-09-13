@@ -1,8 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import React, { useEffect, useRef, useState } from "react";
-import Link from "next/link";
+import React, { useEffect, useState } from "react";
 import { EmployeeRecord } from "@/types/hrm";
 import { HrmService } from "@/services/hrmService";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
@@ -18,6 +17,13 @@ import { toApiDay } from "@/lib/dateFilter";
 import { queryKey, invalidate } from "@/lib/query/useQuery";
 import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
+import {
+  ActionLink,
+  PageToolbar,
+  PlusIcon,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
 
 /**
  * Attendance — who turned up, and when.
@@ -60,28 +66,6 @@ function nowTime(): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-function SearchIcon() {
-  return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden className="shrink-0">
-      <circle cx="11" cy="11" r="7.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="m20 20-3.2-3.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function FilterIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden className="shrink-0">
-      <path
-        d="M2.25 4.5h13.5M4.5 9h9m-6.75 4.5h4.5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
 
 function PayrollIcon() {
   return (
@@ -93,14 +77,6 @@ function PayrollIcon() {
   );
 }
 
-function AddIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden className="shrink-0">
-      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 /** No employee photos exist server-side, so the avatar cell shows initials. */
 export default function AttendancePage() {
   const [query, setQuery] = useState("");
@@ -108,7 +84,6 @@ export default function AttendancePage() {
       name is one request instead of five. */
   const [term, setTerm] = useState("");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("All Employees");
-  const [filterOpen, setFilterOpen] = useState(false);
   // Rows per request. Not a page size anyone picks — the table scrolls.
   const pageSize = 25;
   const router = useRouter();
@@ -117,7 +92,6 @@ export default function AttendancePage() {
   const openSheet = (id: string) => id && router.push(`/hrm/attendance/${id}`);
   const [day, setDay] = useState<Date | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const filterRef = useRef<HTMLDivElement>(null);
 
   // Row actions open a dialog rather than firing straight at the API, so the
   // time can be corrected before it is saved.
@@ -163,19 +137,6 @@ export default function AttendancePage() {
     { pageSize }
   );
 
-  useEffect(() => {
-    if (!filterOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (filterRef.current && !filterRef.current.contains(e.target as Node)) setFilterOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setFilterOpen(false);
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [filterOpen]);
 
   const act = async (fn: () => Promise<void>, done: string) => {
     setSaving(true);
@@ -204,76 +165,50 @@ export default function AttendancePage() {
     <div className="flex w-full flex-col gap-[14px]">
       {/* Headline — 59:17407. Same shape as the other list pages: search on the
           left, the controls that narrow the list on the right. */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] overflow-clip rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
-          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
-            <SearchIcon />
-            <input
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-              }}
-              placeholder="Search by name, department or designation..."
-              aria-label="Search employees"
-              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
-            />
-          </div>
-          <button
-            type="button"
-            aria-label="Filter"
-            onClick={() => setFilterOpen((v) => !v)}
-            className="shrink-0 cursor-pointer text-[#525252] transition-colors hover:text-[#1e1e1e]"
-          >
-            <FilterIcon />
-          </button>
-        </div>
-
-        <div className="flex flex-col items-stretch gap-[12px] sm:flex-row sm:items-center sm:gap-[16px]">
-          <FilterDropdown
-            label="Attendance"
-            value={filter === "All Employees" ? "" : filter}
-            onChange={(next) => setFilter((next || "All Employees") as typeof filter)}
-            options={[
-              { value: "All Employees", label: "All employees" },
-              { value: "Present", label: "Present" },
-              { value: "On Leave", label: "On leave" },
-              { value: "Absent", label: "Absent" },
-            ]}
+      <PageToolbar
+        search={
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder="Search by name, department or designation..."
+            label="Search employees"
           />
+        }
+      >
+        <FilterDropdown
+          label="Attendance"
+          value={filter === "All Employees" ? "" : filter}
+          onChange={(next) => setFilter((next || "All Employees") as typeof filter)}
+          options={[
+            { value: "All Employees", label: "All employees" },
+            { value: "Present", label: "Present" },
+            { value: "On Leave", label: "On leave" },
+            { value: "Absent", label: "Absent" },
+          ]}
+        />
 
-          <DateField
-            value={day}
-            onChange={(d) => {
-              setDay(d);
-              // Page 1 of the new day, not page 5 of the old one.
-            }}
-            ariaLabel="Filter attendance by date"
-          />
+        <DateField
+          value={day}
+          onChange={(d) => {
+            setDay(d);
+            // Page 1 of the new day, not page 5 of the old one.
+          }}
+          ariaLabel="Filter attendance by date"
+        />
 
-          <Link
-            href="/hrm/payroll"
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] border border-solid border-[#eaeaea] bg-white px-[16px] py-[12px] text-[16px] leading-[24px] font-medium whitespace-nowrap text-[#525252] transition-colors hover:bg-[#fafafa]"
-          >
-            <PayrollIcon />
-            Payroll
-          </Link>
+        <ActionLink href="/hrm/payroll" variant="secondary">
+          <PayrollIcon />
+          Payroll
+        </ActionLink>
 
-          <Link
-            href="/hrm/add"
-            style={{
-              backgroundImage:
-                "linear-gradient(180deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0) 100%), linear-gradient(90deg, rgb(245,184,0) 0%, rgb(245,184,0) 100%)",
-            }}
-            className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-          >
-            <AddIcon />
-            Add New
-          </Link>
-        </div>
-      </div>
+        <ActionLink href="/hrm/add" variant="primary">
+          <PlusIcon />
+          Add New
+        </ActionLink>
+      </PageToolbar>
 
       {/* Table card — 59:17439 */}
-      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className={TABLE_CARD}>
         <RefreshBar active={fetching} />
         {note && (
           <p role="status" className="mx-[16px] mt-[16px] rounded-[8px] bg-[#fdf7e6] px-[12px] py-[8px] text-[13px] text-[#6d5b46]">
