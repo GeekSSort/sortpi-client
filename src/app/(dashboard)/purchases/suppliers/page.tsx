@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { SupplierRecord } from "@/types/suppliers";
 import { SupplierService } from "@/services";
 import StatusPill, { Tone } from "@/components/shared/StatusPill";
@@ -16,6 +15,15 @@ import { useInfiniteRows } from "@/lib/query/useInfiniteRows";
 import { CardListState, EmptyState, QueryBoundary, RefreshBar } from "@/components/shared/QueryBoundary";
 import { clampTypedAmount } from "@/lib/money";
 import { AmountLabel } from "@/components/shared/MaxButton";
+import {
+  ActionButton,
+  ActionLink,
+  ExportIcon,
+  PageToolbar,
+  PlusIcon,
+  SearchInput,
+  TABLE_CARD,
+} from "@/components/shared/Toolbar";
 
 /**
  * Suppliers. There is no Figma frame for this screen, so it borrows the
@@ -34,43 +42,9 @@ const STATUS_TONE: Record<SupplierRecord["status"], Tone> = {
 const TAKA = new Intl.NumberFormat("en-US");
 const money = (n: number) => `৳ ${TAKA.format(Math.max(0, Math.round(n)))}`;
 
-function SearchIcon() {
-  return (
-    <svg className="block size-[24px] shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="10.5" cy="10.5" r="7.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M16 16L21 21" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-
-function PlusIcon() {
-  return (
-    <svg className="block size-[20px] shrink-0" viewBox="0 0 20 20" fill="none" aria-hidden>
-      <path d="M10 4.167v11.666M4.167 10h11.666" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 // #  Supplier Name  Phone  Mail  Total Purchases  Balance  Last Purchase  Status  Action
 const GRID = "grid-cols-[52fr_176fr_156fr_196fr_132fr_118fr_128fr_104fr_83fr]";
-/** The same glyph the Sales, Purchases and Customers lists export under. */
-function ExportIcon() {
-  const s = {
-    stroke: "currentColor",
-    strokeWidth: 1.5,
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-  };
-  return (
-    <svg className="block size-[18px] shrink-0" viewBox="0 0 18 18" fill="none" aria-hidden>
-      <path d="M12.33 6.675C15.03 6.9075 16.1325 8.295 16.1325 11.3325V11.43C16.1325 14.7825 14.79 16.125 11.4375 16.125H6.555C3.2025 16.125 1.86 14.7825 1.86 11.43V11.3325C1.86 8.3175 2.9475 6.93 5.6025 6.6825" {...s} />
-      <path d="M9 11.25V2.715" {...s} />
-      <path d="M11.5125 4.3875L9 1.875L6.4875 4.3875" {...s} />
-    </svg>
-  );
-}
-
 const CELL = "flex min-w-0 items-center p-[12px]";
 const HEAD = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#1e1e1e]";
 const TEXT = "text-[14px] leading-[1.5] font-medium tracking-[-0.28px] text-[#525252]";
@@ -263,61 +237,40 @@ export default function SuppliersPage() {
   return (
     <div className="flex w-full flex-col gap-[14px]">
       {/* Search left, Add New right — the Purchase History header row */}
-      <div className="flex w-full flex-col items-stretch gap-[16px] lg:h-[48px] lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-[16px]">
-        <div className="flex h-[44px] w-full items-center justify-between gap-[12px] rounded-[10px] bg-white px-[12px] py-[10px] shadow-[inset_0_0_0_1px_#eaeaea] lg:min-w-[220px] lg:max-w-[370px] lg:flex-1">
-          <div className="flex min-w-0 flex-1 items-center gap-[6px] text-[#525252]">
-            <SearchIcon />
-            <input
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-              }}
-              placeholder="Search by name, phone or mail..."
-              aria-label="Search suppliers"
-              className="min-w-0 flex-1 bg-transparent text-[14px] leading-[1.5] tracking-[-0.28px] text-[#525252] outline-none placeholder:text-[#525252]"
-            />
-          </div>
-
-          {/* Status filter — the funnel was dead in the scaffold */}
-          <FilterDropdown
-            label="Status"
-            value={status === "All" ? "" : status}
-            onChange={(next) => setStatus((next || "All") as StatusFilter)}
-            options={[
-              { value: "", label: "All suppliers" },
-              { value: "Active", label: "Active" },
-              { value: "Inactive", label: "Inactive" },
-            ]}
+      <PageToolbar
+        search={
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder="Search by name, phone or mail..."
+            label="Search suppliers"
           />
-        </div>
-
-        <div className="flex shrink-0 flex-wrap items-center gap-[12px]">
-        <button
-          type="button"
-          onClick={exportCsv}
-          disabled={exporting || rows.length === 0}
-          style={{
-            backgroundImage:
-              "linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0) 100%), linear-gradient(90deg, rgb(245,184,0) 0%, rgb(245,184,0) 100%)",
-          }}
-          className="flex h-[48px] cursor-pointer items-center justify-center gap-[8px] overflow-clip rounded-[10px] border border-solid border-[#f5b800] px-[24px] text-[14px] leading-[1.5] font-semibold tracking-[-0.28px] whitespace-nowrap text-white shadow-[inset_0px_0px_0px_1.8px_rgba(255,255,255,0.25)] disabled:cursor-not-allowed disabled:opacity-70"
-        >
+        }
+      >
+        {/* Status, beside the search box with the other controls rather than
+            inside it — the standard every listing page follows. */}
+        <FilterDropdown
+          label="Status"
+          value={status === "All" ? "" : status}
+          onChange={(next) => setStatus((next || "All") as StatusFilter)}
+          options={[
+            { value: "", label: "All suppliers" },
+            { value: "Active", label: "Active" },
+            { value: "Inactive", label: "Inactive" },
+          ]}
+        />
+        <ActionButton onClick={exportCsv} disabled={exporting || rows.length === 0}>
           <ExportIcon />
           Export
-        </button>
-        <Link
-          href="/purchases/suppliers/add"
-          style={{ backgroundImage: GOLD_GRADIENT }}
-          className="flex h-[48px] shrink-0 cursor-pointer items-center justify-center gap-[12px] rounded-[12px] px-[16px] py-[8px] text-[16px] leading-[24px] font-semibold whitespace-nowrap text-white shadow-[inset_0px_0px_1.5px_0px_rgba(255,255,255,0.25)]"
-        >
+        </ActionButton>
+        <ActionLink href="/purchases/suppliers/add" variant="primary">
           <PlusIcon />
           Add New
-        </Link>
-        </div>
-      </div>
+        </ActionLink>
+      </PageToolbar>
 
       {/* Table card */}
-      <div className="relative w-full overflow-hidden rounded-[12px] bg-white shadow-[inset_0_0_0_1px_#eaeaea]">
+      <div className={TABLE_CARD}>
         <RefreshBar active={fetching} />
         {/* One scroller for the table, the phone cards and the load trigger.
             The trigger has to sit INSIDE it — below the scroller it never
