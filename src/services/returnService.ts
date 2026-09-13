@@ -96,6 +96,15 @@ export class ReturnService {
           item?.lineTotal ?? item?.line_total
             ? toAmount(item?.lineTotal ?? item?.line_total)
             : toAmount(item?.unitPrice ?? item?.unit_price) * toAmount(item?.quantity),
+        // The server's share of what was charged. Falls back to the line total
+        // for a response from before the field existed — right for any sale
+        // with no coupon, points or rounding, which is what it always assumed.
+        chargedTotal:
+          item?.chargedTotal ?? item?.charged_total
+            ? toAmount(item?.chargedTotal ?? item?.charged_total)
+            : item?.lineTotal ?? item?.line_total
+              ? toAmount(item?.lineTotal ?? item?.line_total)
+              : toAmount(item?.unitPrice ?? item?.unit_price) * toAmount(item?.quantity),
       })),
     };
   }
