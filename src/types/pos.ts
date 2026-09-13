@@ -175,6 +175,8 @@ export interface OrderResponse {
     discount: number;
     tax: number;
     grandTotal: number;
+    /** Signed: what whole-taka rounding added (+) or took off (−). */
+    rounding: number;
     paid: number;
     due: number;
   };
